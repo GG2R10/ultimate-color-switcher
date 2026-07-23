@@ -1,0 +1,272 @@
+using Gtk 4.0;
+using Adw 1;
+
+menu palette_menu {
+  section {
+    item {
+      label: _("Nueva paleta…");
+      action: "win.new-palette";
+    }
+    item {
+      label: _("Importar paleta…");
+      action: "win.import-palette";
+    }
+    item {
+      label: _("Agregar color a la paleta…");
+      action: "win.add-color";
+    }
+    item {
+      label: _("Generar paleta desde imagen…");
+      action: "win.generate-palette";
+    }
+    item {
+      label: _("Configurar generación de paleta…");
+      action: "win.palette-generation-settings";
+    }
+  }
+  section {
+    item {
+      label: _("Vincular hex/rgb automáticamente");
+      action: "win.auto-link-siblings";
+    }
+  }
+  section {
+    item {
+      label: _("Archivos a escanear…");
+      action: "win.scanned-files-settings";
+    }
+    item {
+      label: _("Servicios a reiniciar…");
+      action: "win.restart-actions";
+    }
+    item {
+      label: _("Guardar snapshot de detección…");
+      action: "win.snapshot-detect";
+    }
+  }
+}
+
+template $MainWindow: Adw.ApplicationWindow {
+  default-width: 1150;
+  default-height: 760;
+  title: _("Color Switcher");
+
+  content: Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar {
+      title-widget: Adw.WindowTitle {
+        title: _("Color Switcher");
+        subtitle: _("Reemplazo de colores en dotfiles");
+      };
+
+      [end]
+      Gtk.MenuButton {
+        menu-model: palette_menu;
+        tooltip-text: _("Paleta, vínculo hex/rgb, reinicios y snapshots");
+        child: Adw.ButtonContent {
+          icon-name: "view-more-symbolic";
+          label: _("Opciones");
+        };
+      }
+
+      [end]
+      Gtk.Button rescan_button {
+        tooltip-text: _("Volver a escanear los archivos en busca de colores");
+        child: Adw.ButtonContent {
+          icon-name: "view-refresh-symbolic";
+          label: _("Escanear");
+        };
+      }
+    }
+
+    content: Adw.ToastOverlay toast_overlay {
+      Gtk.Box {
+        orientation: vertical;
+
+        Gtk.CenterBox {
+          orientation: horizontal;
+          vexpand: true;
+
+          [start]
+          Gtk.Box {
+            orientation: vertical;
+            hexpand: true;
+
+            Gtk.Label {
+              label: _("Colores detectados");
+              css-classes: ["heading"];
+              xalign: 0;
+              margin-start: 12;
+              margin-top: 10;
+              margin-bottom: 4;
+            }
+
+            Gtk.ScrolledWindow {
+              height-request: 210;
+              hscrollbar-policy: never;
+
+              Gtk.ListBox available_detected_listbox {
+                selection-mode: none;
+                css-classes: ["boxed-list"];
+                margin-start: 10;
+                margin-end: 6;
+              }
+            }
+
+            Gtk.Separator {
+              margin-top: 10;
+              margin-bottom: 4;
+              margin-start: 10;
+              margin-end: 6;
+            }
+
+            Gtk.Label {
+              label: _("A reemplazar (mapping)");
+              css-classes: ["heading"];
+              xalign: 0;
+              margin-start: 12;
+              margin-bottom: 4;
+            }
+
+            Gtk.ScrolledWindow {
+              vexpand: true;
+              hscrollbar-policy: never;
+
+              Gtk.ListBox mapping_old_listbox {
+                selection-mode: none;
+                css-classes: ["boxed-list"];
+                margin-start: 10;
+                margin-end: 6;
+                margin-bottom: 10;
+              }
+            }
+          }
+
+          [end]
+          Gtk.Box {
+            orientation: vertical;
+            hexpand: true;
+
+            Gtk.Label {
+              label: _("Paleta nueva");
+              css-classes: ["heading"];
+              xalign: 0;
+              margin-start: 12;
+              margin-top: 10;
+              margin-bottom: 4;
+            }
+
+            Gtk.ScrolledWindow {
+              height-request: 210;
+              hscrollbar-policy: never;
+
+              Gtk.Box palette_left_area {
+                orientation: vertical;
+                margin-start: 6;
+                margin-end: 10;
+
+                Gtk.Label palette_empty_label {
+                  label: _("Sin paleta todavía.\nUsá el menú (⋮) para crear o importar una.");
+                  wrap: true;
+                  justify: center;
+                  css-classes: ["dim-label"];
+                  vexpand: true;
+                  valign: center;
+                }
+
+                Gtk.ListBox available_palette_listbox {
+                  selection-mode: none;
+                  css-classes: ["boxed-list"];
+                  visible: false;
+                }
+              }
+            }
+
+            Gtk.Separator {
+              margin-top: 10;
+              margin-bottom: 4;
+              margin-start: 6;
+              margin-end: 10;
+            }
+
+            Gtk.Label {
+              label: _("Van a reemplazar (mapping)");
+              css-classes: ["heading"];
+              xalign: 0;
+              margin-start: 12;
+              margin-bottom: 4;
+            }
+
+            Gtk.ScrolledWindow {
+              vexpand: true;
+              hscrollbar-policy: never;
+
+              Gtk.ListBox mapping_new_listbox {
+                selection-mode: none;
+                css-classes: ["boxed-list"];
+                margin-start: 6;
+                margin-end: 10;
+                margin-bottom: 10;
+              }
+            }
+          }
+
+          [center]
+          Gtk.Box {
+            width-request: 96;
+            halign: center;
+            valign: center;
+
+            Gtk.Image {
+              icon-name: "go-next-symbolic";
+              pixel-size: 28;
+              hexpand: true;
+              halign: center;
+              can-target: false;
+              css-classes: ["dim-label"];
+            }
+          }
+        }
+
+        Gtk.Revealer warnings_revealer {
+          Gtk.Box warnings_box {
+            orientation: vertical;
+            spacing: 4;
+            margin-start: 12;
+            margin-end: 12;
+            margin-bottom: 8;
+          }
+        }
+
+        Gtk.Box {
+          orientation: horizontal;
+          spacing: 8;
+          margin-start: 12;
+          margin-end: 12;
+          margin-bottom: 12;
+
+          Gtk.Label status_label {
+            hexpand: true;
+            xalign: 0;
+            css-classes: ["dim-label"];
+            wrap: true;
+          }
+
+          Gtk.Button restore_button {
+            label: _("Restaurar");
+          }
+
+          Gtk.Button test_button {
+            label: _("Simular");
+          }
+
+          Gtk.Button apply_button {
+            label: _("Aplicar");
+            css-classes: ["suggested-action"];
+            sensitive: false;
+          }
+        }
+      }
+    };
+  };
+}

@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""
+config.py — Load config.json and resolve the standard project directories.
+"""
+
+import json
+import os
+from dataclasses import dataclass, field
+
+from .color_detector import expand_path
+
+
+@dataclass
+class Config:
+    project_dir: str
+    files_to_replace: list = field(default_factory=list)
+    backup_dir: str = ""
+    silent_apps: list = field(default_factory=list)
+    restart_commands: list = field(default_factory=list)
+    mappings_dir: str = ""
+    palettes_created_dir: str = ""
+    palettes_detected_dir: str = ""
+
+    @property
+    def detected_palette_csv(self) -> str:
+        """Canonical detected-palette file. Lives under palettes_detected_dir,
+        alongside named snapshots (detect_diff.save_snapshot) -- NOT under
+        backup_dir, unlike the deprecated bash tool this replaced."""
+        return os.path.join(self.palettes_detected_dir, "detected_palette.csv")
+
+    @property
+    def mapping_csv(self) -> str:
+        """Canonical, single mapping file -- always overwritten in place
+        (like detected_palette_csv), rather than one timestamped file per
+        session. Ids in the mapping refer to detected_palette_csv's rows by
+        position/occurrence, not by literal color, so there's no benefit to
+        keeping multiple stale mapping files around."""
+        return os.path.join(self.mappings_dir, "mapping.csv")
+
+
+def _default_project_dir() -> str:
+    # this file lives at <project_dir>/app/backend/config.py
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def load_config(project_dir: str = None) -> Config:
+    project_dir = project_dir or _default_project_dir()
+    cfg_path = os.path.join(project_dir, "config.json")
+
+    with open(cfg_path, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+
+    files_to_replace = [expand_path(p) for p in raw.get("files_to_replace", [])]
+    backup_dir = expand_path(raw.get("backup_dir", "~/.config-colors-backup"))
+    silent_apps = raw.get("silent_apps", [])
+    restart_commands = raw.get("restart_commands", [])
+
+    mappings_dir = os.path.join(project_dir, "mappings")
+    palettes_created_dir = os.path.join(project_dir, "palettes", "created")
+    palettes_detected_dir = os.path.join(project_dir, "palettes", "detected")
+
+    for d in (mappings_dir, palettes_created_dir, palettes_detected_dir, backup_dir):
+        os.makedirs(d, exist_ok=True)
+
+    return Config(
+        project_dir=project_dir,
+        files_to_replace=files_to_replace,
+        backup_dir=backup_dir,
+        silent_apps=silent_apps,
+        restart_commands=restart_commands,
+        mappings_dir=mappings_dir,
+        palettes_created_dir=palettes_created_dir,
+        palettes_detected_dir=palettes_detected_dir,
+    )
+
+
+def _config_json_path(config: Config) -> str:
+    return os.path.join(config.project_dir, "config.json")
+
+
+def read_config_json(config: Config) -> dict:
+    """The raw, un-expanded config.json contents."""
+    with open(_config_json_path(config), "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_config_json(config: Config, raw: dict) -> None:
+    with open(_config_json_path(config), "w", encoding="utf-8") as f:
+        json.dump(raw, f, indent=2)
+        f.write("\n")
+
+
+def to_home_relative(path: str) -> str:
+    """Store an absolute path under $HOME as "$HOME/..." (same convention
+    backup_dir already uses), so config.json stays portable across machines
+    that share these dotfiles. Paths outside $HOME are left as absolute."""
+    home = os.path.expanduser("~")
+    absolute = os.path.abspath(expand_path(path))
+    if absolute == home or absolute.startswith(home + os.sep):
+        return "$HOME" + absolute[len(home):]
+    return absolute
+
+
+def read_files_to_replace(config: Config) -> list:
+    """Raw (un-expanded, e.g. still "$HOME/...") files_to_replace strings,
+    straight from config.json -- for listing/editing. Use
+    config.files_to_replace (already expanded) to actually scan files."""
+    return list(read_config_json(config).get("files_to_replace", []))
+
+
+def write_files_to_replace(config: Config, files: list) -> None:
+    """Persist files_to_replace into config.json, preserving every other key."""
+    raw = read_config_json(config)
+    raw["files_to_replace"] = files
+    write_config_json(config, raw)

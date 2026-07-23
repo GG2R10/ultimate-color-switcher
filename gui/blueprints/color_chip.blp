@@ -1,0 +1,96 @@
+using Gtk 4.0;
+
+template $ColorChip: Gtk.Box {
+  orientation: vertical;
+  spacing: 0;
+
+  Gtk.Box {
+    spacing: 8;
+    margin-start: 6;
+    margin-end: 6;
+    margin-top: 6;
+    margin-bottom: 6;
+
+    Gtk.Overlay {
+      valign: center;
+
+      Gtk.Box swatch {
+        width-request: 30;
+        height-request: 30;
+        css-classes: ["color-swatch"];
+      }
+
+      [overlay]
+      Gtk.Label number_label {
+        css-classes: ["number-badge", "caption-heading"];
+        halign: center;
+        valign: center;
+        visible: false;
+        can-target: false;
+      }
+    }
+
+    Gtk.Box {
+      orientation: vertical;
+      hexpand: true;
+      valign: center;
+      spacing: 2;
+
+      Gtk.Box {
+        spacing: 6;
+
+        Gtk.Label hex_label {
+          xalign: 0;
+          css-classes: ["heading"];
+        }
+
+        Gtk.Image warning_icon {
+          icon-name: "dialog-warning-symbolic";
+          css-classes: ["warning"];
+          visible: false;
+          tooltip-text: _("Este color puede generar conflictos");
+        }
+      }
+
+      Gtk.Label meta_label {
+        xalign: 0;
+        css-classes: ["dim-label", "caption"];
+        visible: false;
+      }
+    }
+
+    Gtk.ToggleButton expand_button {
+      icon-name: "pan-down-symbolic";
+      valign: center;
+      visible: false;
+      css-classes: ["flat"];
+      tooltip-text: _("Ver archivos");
+    }
+
+    Gtk.Button add_button {
+      icon-name: "list-add-symbolic";
+      valign: center;
+      visible: false;
+      css-classes: ["flat"];
+      tooltip-text: _("Agregar al mapping");
+    }
+
+    Gtk.Button remove_button {
+      icon-name: "list-remove-symbolic";
+      valign: center;
+      visible: false;
+      css-classes: ["flat"];
+      tooltip-text: _("Quitar del mapping");
+    }
+  }
+
+  Gtk.Revealer files_revealer {
+    Gtk.Box files_box {
+      orientation: vertical;
+      spacing: 6;
+      margin-start: 46;
+      margin-end: 6;
+      margin-bottom: 8;
+    }
+  }
+}
