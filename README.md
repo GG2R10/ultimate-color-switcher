@@ -1,10 +1,46 @@
-# Color Switcher (`ucs`)
+<div align="center">
 
-![License](https://img.shields.io/badge/license-GPL--2.0-blue) ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+<img src="assets/ucs_banner.png" alt="Ultimate Color Switcher" width="100%">
+
+![License](https://img.shields.io/badge/license-GPL--2.0-blue)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![AUR](https://img.shields.io/badge/AUR-ucs--git-1793d1)
+![Visitas](https://komarev.com/ghpvc/?username=GG2R10&repo=ultimate-color-switcher&label=Visitas&color=blueviolet&style=flat)
 
 Detectá los colores usados en tus dotfiles, armá una paleta nueva —a mano o generada automáticamente desde un wallpaper— y aplicá el reemplazo de forma segura, con backup y un modo de simulación antes de tocar nada de verdad.
 
-Tiene dos formas de usarse sobre el mismo backend: una interfaz gráfica (GTK4 + libadwaita) y una CLI completa para scripts/hooks (por ejemplo, para regenerar el tema cada vez que cambiás de wallpaper).
+</div>
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+### 🎨 Paleta automática
+Genera una paleta directo desde tu wallpaper (K-Means + espacio Lab/ΔE hechos a mano), con 3 modos de selección y ajuste de saturación.
+
+</td>
+<td width="50%" valign="top">
+
+### 🖥️ GUI + CLI
+Mismo backend, dos formas de usarlo: una ventana GTK4/libadwaita para uso interactivo, o una CLI completa para scripts y hooks.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🛡️ Seguro por defecto
+Backup automático de cada archivo antes de tocarlo, modo simulación (`test`/`--test`) y detección de conflictos antes de aplicar nada.
+
+</td>
+<td width="50%" valign="top">
+
+### 🔗 Automatizable
+Un solo comando (`ucs automatic --from-image`) para regenerar todo el tema — ideal como hook al cambiar de wallpaper.
+
+</td>
+</tr>
+</table>
 
 ## Contenidos
 
@@ -23,11 +59,14 @@ Tiene dos formas de usarse sobre el mismo backend: una interfaz gráfica (GTK4 +
 paru -S ucs-git   # o yay, o makepkg -si desde packaging/PKGBUILD
 ```
 
-Esto instala el comando `ucs`, su entrada de menú (`.desktop`) y resuelve automáticamente las dependencias del sistema (GTK4, libadwaita, PyGObject, numpy, Pillow).
+Esto instala el comando `ucs`, su entrada de menú (`.desktop` + ícono) y resuelve automáticamente las dependencias del sistema (GTK4, libadwaita, PyGObject, numpy, Pillow).
 
-### Manual / otras distros
+<details>
+<summary><b>Manual / otras distros</b> (no todo el mundo usa Arch)</summary>
 
-No todo el mundo usa Arch, así que también anda como paquete Python normal. GTK4, libadwaita y PyGObject son librerías del sistema — **no** vienen con pip, hay que instalarlas primero con el gestor de paquetes de tu distro:
+<br>
+
+También anda como paquete Python normal. GTK4, libadwaita y PyGObject son librerías del sistema — **no** vienen con pip, hay que instalarlas primero con el gestor de paquetes de tu distro:
 
 ```bash
 # Arch
@@ -40,7 +79,7 @@ sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 blueprint-compiler
 sudo dnf install python3-gobject gtk4 libadwaita blueprint-compiler
 ```
 
-Después:
+La mayoría de las distros (Debian/Ubuntu/Fedora incluidas) bloquean `pip install` a nivel global o de usuario para proteger el gestor de paquetes del sistema (PEP 668, "externally-managed-environment"). La forma correcta es un entorno virtual — pero uno con `--system-site-packages`, para que herede el PyGObject/GTK4/libadwaita que ya instalaste con el gestor de paquetes en vez de intentar reconstruirlos desde pip (lo cual no funciona sin los headers de desarrollo del sistema):
 
 ```bash
 git clone https://github.com/GG2R10/ultimate-color-switcher.git
@@ -52,10 +91,16 @@ for blp in color_switcher/gui/blueprints/*.blp; do
     blueprint-compiler compile "$blp" --output "${blp%.blp}.ui"
 done
 
-pip install --user .          # o "pip install --user -e ." para desarrollo
+python -m venv --system-site-packages ~/.local/share/ucs-venv
+~/.local/share/ucs-venv/bin/pip install .          # o "pip install -e ." para desarrollo
+ln -s ~/.local/share/ucs-venv/bin/ucs ~/.local/bin/ucs
 ```
 
-Esto deja el comando `ucs` disponible (asegurate de que el directorio de scripts de pip de usuario esté en tu `PATH`, normalmente `~/.local/bin`).
+Alternativa si usás [pipx](https://pipx.pypa.io/): `pipx install --system-site-packages .` hace lo mismo en un paso, sin el `ln -s` manual.
+
+Asegurate de que `~/.local/bin` esté en tu `PATH`.
+
+</details>
 
 ## Configuración inicial
 
@@ -71,7 +116,7 @@ Los datos de usuario (config, paletas, mappings) viven en `~/.config/ucs/`, sepa
 }
 ```
 
-- `files_to_replace`: los archivos de configuración donde se buscan y reemplazan colores. Se pueden gestionar sin editar el JSON a mano — ver [`ucs config files`](#uso--cli-paso-a-paso).
+- `files_to_replace`: los archivos de configuración donde se buscan y reemplazan colores. Se pueden gestionar sin editar el JSON a mano — ver [`ucs config files`](#uso--cli-paso-a-paso) o el menú **Archivos a escanear…** de la GUI. Si está vacío (primera vez), la GUI te va a ofrecer configurarlo ahí mismo o abrir `config.json` directamente antes de escanear nada.
 - `backup_dir`: dónde se guarda una copia de cada archivo antes de tocarlo de verdad.
 
 Las rutas admiten `$HOME`/`~` y se guardan así (no absolutas), para que `config.json` siga siendo válido entre máquinas que comparten estos dotfiles.
@@ -81,6 +126,16 @@ Las rutas admiten `$HOME`/`~` y se guardan así (no absolutas), para que `config
 ```bash
 ucs            # o: ucs gui
 ```
+
+<div align="center">
+<img src="assets/gui.png" alt="Pantalla principal de Ultimate Color Switcher" width="85%">
+</div>
+
+<!--
+TODO (pendiente de assets): agregar acá los dos GIFs de demo una vez estén listos —
+  1. assets/demo_gui.gif      -- uso general de la GUI (armar un mapping y aplicar)
+  2. assets/demo_automatic.gif -- `ucs automatic --from-image` corriendo al cambiar de wallpaper
+-->
 
 La ventana principal tiene dos columnas: colores detectados (izquierda) y la paleta nueva (derecha). Seleccionás un color detectado, le asignás un color de la paleta, y así armás el mapping. El menú (⋮) tiene:
 
@@ -186,6 +241,11 @@ ucs automatic --from-image "$WALLPAPER_FOLDER/actual_wallpaper.jpg" &
 
 ## Referencia rápida de comandos
 
+<details open>
+<summary>Ver tabla completa</summary>
+
+<br>
+
 | Comando | Qué hace |
 |---|---|
 | `detect [--dry-run]` | Escanea y actualiza `detected_palette.csv` |
@@ -204,16 +264,22 @@ ucs automatic --from-image "$WALLPAPER_FOLDER/actual_wallpaper.jpg" &
 
 Corré `ucs <comando> --help` para ver todas las opciones de cada uno.
 
+</details>
+
 ## Desarrollo
 
 ```bash
 git clone https://github.com/GG2R10/ultimate-color-switcher.git
 cd ultimate-color-switcher
-pip install --user -e '.[dev]'
-pytest
+python -m venv --system-site-packages .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest
 ```
 
-### Estructura del proyecto
+<details>
+<summary><b>Estructura del proyecto</b></summary>
+
+<br>
 
 ```
 .
@@ -228,6 +294,8 @@ pytest
 ```
 
 `backend/` no depende de `gui/` en ningún sentido — toda la lógica (detección, reemplazo, mappings, generación de paletas) es invocable y testeable sin abrir ninguna ventana; `main.py` y `gui/` son dos frontends distintos sobre el mismo backend.
+
+</details>
 
 ## Licencia
 

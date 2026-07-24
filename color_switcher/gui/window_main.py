@@ -232,6 +232,10 @@ class MainWindow(Adw.ApplicationWindow):
     # --------------------------------------------------------------- detection
 
     def _start_detection(self):
+        if not self.config.files_to_replace:
+            dialogs.show_no_files_configured(self, self.config, self._on_scanned_files_changed)
+            return GLib.SOURCE_REMOVE
+
         raw = detect_diff.detect_with_route(self.config, save=False)
         route = raw["route"]
         if route == "a":

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""app.py — Adw.Application entrypoint for the Color Switcher GUI."""
+"""app.py — Adw.Application entrypoint for the Ultimate Color Switcher GUI."""
 
 import gi
 

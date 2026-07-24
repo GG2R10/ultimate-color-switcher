@@ -26,7 +26,7 @@ def toast(toast_overlay: Adw.ToastOverlay, message: str, timeout: int = 3):
 def show_welcome(parent: Gtk.Widget, on_continue):
     """Ruta a: no previous detection — explain the app before scanning."""
     dialog = Adw.AlertDialog.new(
-        "¡Bienvenido a Color Switcher!",
+        "¡Bienvenido a Ultimate Color Switcher!",
         "Esta es la primera vez que corrés la app en este proyecto.\n\n"
         "Vamos a escanear los archivos configurados en config.json en busca de "
         "colores (hex y rgb), y después vas a poder armar una paleta nueva y "
@@ -39,6 +39,35 @@ def show_welcome(parent: Gtk.Widget, on_continue):
 
     def _on_response(_d, _response):
         on_continue()
+
+    dialog.connect("response", _on_response)
+    dialog.present(parent)
+
+
+def show_no_files_configured(parent: Gtk.Widget, config, on_configured):
+    """Blocks route a/b/c entirely when files_to_replace is empty (a fresh
+    config.json) -- there's nothing to scan yet. on_configured is called
+    after the user adds at least one file from the in-app dialog (see
+    build_scanned_files_group's on_change); editing config.json externally
+    has no such signal, so the user just rescans manually when done."""
+    dialog = Adw.AlertDialog.new(
+        "Configurá qué archivos escanear",
+        "Todavía no hay ningún archivo configurado para buscar/reemplazar colores "
+        "(files_to_replace está vacío). Podés agregarlos ahora desde acá, o abrir "
+        "config.json y editarlo directamente.",
+    )
+    dialog.add_response("external", "Abrir config.json")
+    dialog.add_response("app", "Configurar acá")
+    dialog.set_response_appearance("app", Adw.ResponseAppearance.SUGGESTED)
+    dialog.set_default_response("app")
+    dialog.set_close_response("external")
+
+    def _on_response(_d, response):
+        if response == "app":
+            show_scanned_files_settings(parent, config, on_change=on_configured)
+        else:
+            path = os.path.join(config.project_dir, "config.json")
+            Gio.AppInfo.launch_default_for_uri(f"file://{path}", None)
 
     dialog.connect("response", _on_response)
     dialog.present(parent)

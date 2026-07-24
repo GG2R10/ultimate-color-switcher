@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=Color Switcher
+Name=Ultimate Color Switcher
 GenericName=Dotfiles Color Theme Switcher
 Comment=Detect, remap and apply colors across your dotfiles
 Exec=ucs gui

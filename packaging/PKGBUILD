@@ -21,6 +21,7 @@ makedepends=(
     'python-hatchling'
     'python-wheel'
     'blueprint-compiler'
+    'imagemagick'
 )
 provides=('ucs')
 conflicts=('ucs')
@@ -52,7 +53,13 @@ package() {
     install -Dm644 packaging/ucs.desktop "$pkgdir/usr/share/applications/ucs.desktop"
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
-    # TODO(icon): once an icon file exists (e.g. packaging/icon.svg), install it as
-    # install -Dm644 packaging/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/ucs.svg"
-    # -- the .desktop file already references Icon=ucs, ready to resolve once it's there.
+    # Icon: generated from the single 1024x1024 master at build time (same
+    # convention as the .blp -> .ui blueprints above) instead of committing
+    # one PNG per size -- the source has gradients/glow that a real SVG
+    # trace wouldn't reproduce, so raster resizing is the faithful option.
+    for size in 16 22 24 32 48 64 128 256 512; do
+        install -d "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps"
+        magick assets/UCS1024x1024.png -resize "${size}x${size}" \
+            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/ucs.png"
+    done
 }
