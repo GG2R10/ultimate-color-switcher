@@ -4,11 +4,11 @@ import sys
 
 import pytest
 
-APP_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
-from backend.config import load_config  # noqa: E402
+from color_switcher.backend.config import load_config  # noqa: E402
 
 
 class FakeProject:

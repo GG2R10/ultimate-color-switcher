@@ -46,14 +46,27 @@ class Config:
         return os.path.join(self.palettes_created_dir, "generated.csv")
 
 
+_DEFAULT_CONFIG_JSON = {"files_to_replace": [], "backup_dir": "$HOME/.config-colors-backup"}
+
+
 def _default_project_dir() -> str:
-    # this file lives at <project_dir>/app/backend/config.py
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    """Per-user data dir (XDG_CONFIG_HOME/ucs, usually ~/.config/ucs) --
+    independent of wherever the installed package's code actually lives."""
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(xdg_config_home, "ucs")
 
 
 def load_config(project_dir: str = None) -> Config:
     project_dir = project_dir or _default_project_dir()
+    os.makedirs(project_dir, exist_ok=True)
     cfg_path = os.path.join(project_dir, "config.json")
+
+    if not os.path.isfile(cfg_path):
+        # first run: bootstrap an empty config instead of crashing --
+        # the user adds files via `ucs config files add` or the GUI menu.
+        with open(cfg_path, "w", encoding="utf-8") as f:
+            json.dump(_DEFAULT_CONFIG_JSON, f, indent=2)
+            f.write("\n")
 
     with open(cfg_path, "r", encoding="utf-8") as f:
         raw = json.load(f)

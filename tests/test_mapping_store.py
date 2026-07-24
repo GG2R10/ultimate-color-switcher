@@ -1,4 +1,4 @@
-from backend import mapping_store as ms
+from color_switcher.backend import mapping_store as ms
 
 
 def test_insertion_order_preserved_across_retargeting(tmp_path):

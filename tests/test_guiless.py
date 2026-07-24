@@ -1,5 +1,5 @@
-from backend import color_replacer as cr
-from backend import detect_diff, guiless, mapping_store, palette_store
+from color_switcher.backend import color_replacer as cr
+from color_switcher.backend import detect_diff, guiless, mapping_store, palette_store
 
 
 def _setup(fake_project, monkeypatch):

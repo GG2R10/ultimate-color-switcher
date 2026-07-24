@@ -1,6 +1,6 @@
 import os
 
-from backend import detect_diff
+from color_switcher.backend import detect_diff
 
 
 def test_route_a_first_run(fake_project):

@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from backend.kmeans import kmeans
+from color_switcher.backend.kmeans import kmeans
 
 
 def test_separates_well_separated_blobs():

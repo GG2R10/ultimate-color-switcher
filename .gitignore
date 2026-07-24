@@ -2,6 +2,11 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Generated from the .blp sources at runtime (template_loader.py); requires
-# blueprint-compiler to be installed, not meant to be committed.
-gui/blueprints/*.ui
+# Generated from the .blp sources (at runtime in dev, at build time when
+# packaged -- see gui/template_loader.py and PKGBUILD); not meant to be committed.
+color_switcher/gui/blueprints/*.ui
+
+# Python packaging build artifacts
+dist/
+build/
+*.egg-info/

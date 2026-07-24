@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from backend import color_math as cm
-from backend import palette_generator as pg
+from color_switcher.backend import color_math as cm
+from color_switcher.backend import palette_generator as pg
 
 
 def _entry(l, a, b, count=10, total=100, label=None):
@@ -205,7 +205,7 @@ def test_generate_palette_rejects_invalid_mode(tmp_path):
 
 
 def test_boost_saturation_raises_saturation_keeps_hue_and_lightness():
-    from backend import color_math as cm
+    from color_switcher.backend import color_math as cm
 
     color = pg._make_color_entry(cm.rgb_to_lab(np.array([120.0, 100.0, 90.0])))  # mildly saturated
     hue_before, sat_before, light_before = cm.rgb_to_hsl(color["rgb"])
@@ -219,7 +219,7 @@ def test_boost_saturation_raises_saturation_keeps_hue_and_lightness():
 
 
 def test_boost_saturation_clamps_at_100():
-    from backend import color_math as cm
+    from color_switcher.backend import color_math as cm
 
     color = pg._make_color_entry(cm.rgb_to_lab(np.array([255.0, 0.0, 0.0])))  # already fully saturated
     boosted = pg._boost_saturation(color, amount=30.0)
@@ -231,7 +231,7 @@ def test_generate_palette_my_eyes_boosts_every_chosen_color(tmp_path):
     image_path = tmp_path / "wallpaper.png"
     _make_test_image(image_path)
 
-    from backend import color_math as cm
+    from color_switcher.backend import color_math as cm
 
     normal = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000, saturate=False)
     boosted = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000, saturate=True)
@@ -270,7 +270,7 @@ def test_generate_palette_shading_mode_produces_monochromatic_ramp(tmp_path):
     labels = [c["label"] for c in palette]
     assert labels == ["primary", "shade1", "shade2", "shade3"]
 
-    from backend import color_math as cm
+    from color_switcher.backend import color_math as cm
     primary_hue, _s, primary_light = cm.rgb_to_hsl(cm.hex_to_rgb(palette[0]["hex"]))
     lightnesses = [primary_light]
     for entry in palette[1:]:
@@ -305,7 +305,7 @@ def test_generate_palette_balanced_mode_can_pick_secondary_close_to_primary(tmp_
     balanced = pg.generate_palette(str(path), n_colors=2, sample_size=8000, mode="balanced")
     contrast = pg.generate_palette(str(path), n_colors=2, sample_size=8000, mode="contrast")
 
-    from backend import color_math as cm
+    from color_switcher.backend import color_math as cm
     def delta_e(hex_a, hex_b):
         return cm.delta_e76(cm.rgb_to_lab(cm.hex_to_rgb(hex_a)), cm.rgb_to_lab(cm.hex_to_rgb(hex_b)))
 

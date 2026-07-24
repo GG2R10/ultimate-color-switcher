@@ -1,7 +1,7 @@
 import json
 import time
 
-from backend import restart_actions as ra
+from color_switcher.backend import restart_actions as ra
 
 
 def test_read_returns_defaults_when_key_missing(fake_project):

@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
 main.py — Color Switcher CLI: detect -> mapping -> conflicts -> apply/test
--> restore -> automatic, plus `gui` to launch the GTK4 + libadwaita window.
+-> restore -> automatic, plus `gui` (the default with no subcommand) to
+launch the GTK4 + libadwaita window.
 
 Examples:
-  main.py detect
-  main.py palette create palettes/created/my-theme.csv \\
+  ucs                   # same as: ucs gui
+  ucs detect
+  ucs palette create palettes/created/my-theme.csv \\
       --add ff00aa primary --add 00ccff secondary
-  main.py mapping new palettes/created/my-theme.csv
-  main.py mapping show mappings/mapping.csv
-  main.py test  --mapping mappings/mapping.csv
-  main.py apply --mapping mappings/mapping.csv
-  main.py restore
-  main.py automatic palette.csv --mapping mappings/mapping.csv
-  main.py gui
+  ucs mapping new palettes/created/my-theme.csv
+  ucs mapping show mappings/mapping.csv
+  ucs test  --mapping mappings/mapping.csv
+  ucs apply --mapping mappings/mapping.csv
+  ucs restore
+  ucs automatic palette.csv --mapping mappings/mapping.csv
 """
 
 import argparse
@@ -21,11 +22,7 @@ import json
 import os
 import sys
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.dirname(SCRIPT_DIR))  # so "app.backend" style imports work if ever needed
-sys.path.insert(0, SCRIPT_DIR)
-
-from backend import (  # noqa: E402
+from .backend import (
     color_detector,
     color_replacer,
     conflicts,
@@ -36,7 +33,7 @@ from backend import (  # noqa: E402
     palette_store,
     restart_actions,
 )
-from backend.config import load_config, read_files_to_replace, to_home_relative, write_files_to_replace  # noqa: E402
+from .backend.config import load_config, read_files_to_replace, to_home_relative, write_files_to_replace
 
 
 def cmd_detect(args, config):
@@ -87,7 +84,7 @@ def cmd_config_files_add(args, config):
     files.append(entry)
     write_files_to_replace(config, files)
     print(f"Agregado: {entry}")
-    print("Corré 'main.py detect' para actualizar los colores detectados.")
+    print("Corré 'ucs detect' para actualizar los colores detectados.")
 
 
 def cmd_config_files_remove(args, config):
@@ -99,7 +96,7 @@ def cmd_config_files_remove(args, config):
         return
     write_files_to_replace(config, remaining)
     print(f"Eliminado: {args.path}")
-    print("Corré 'main.py detect' para actualizar los colores detectados.")
+    print("Corré 'ucs detect' para actualizar los colores detectados.")
 
 
 def _resolve_path(path, default_dir, project_dir=None):
@@ -171,7 +168,7 @@ def cmd_palette_generate(args, config):
     for e in entries:
         print(f"  {e['id']}) #{e['hex']}  {e['label']}")
     print(f"\nGuardada en: {out_path}")
-    print(f"Para aplicarla: main.py automatic {out_path} --mapping <mapping.csv>")
+    print(f"Para aplicarla: ucs automatic {out_path} --mapping <mapping.csv>")
 
 
 def _resolve_detected_csv(args, config):
@@ -320,7 +317,7 @@ def _apply_or_test(args, config, mode):
               "(algunos ids ya no representan el mismo color real). Conviene rehacerlo antes de reusarlo.")
     if not dry_run:
         print(f"Backup en: {config.backup_dir}")
-        print("Para deshacer: main.py restore")
+        print("Para deshacer: ucs restore")
         _refresh_detected_after_change(config)
         started = restart_actions.run_enabled(restart_actions.read_restart_actions(config))
         for a in started:
@@ -345,7 +342,7 @@ def cmd_apply(args, config):
 
 
 def cmd_gui(args, config):
-    from gui.app import main as gui_main
+    from .gui.app import main as gui_main
     sys.exit(gui_main())
 
 
@@ -436,7 +433,8 @@ def cmd_automatic(args, config):
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Color Switcher — CLI")
-    sub = parser.add_subparsers(dest="command", required=True)
+    # not required: no subcommand at all means "launch the GUI" (see main())
+    sub = parser.add_subparsers(dest="command", required=False)
 
     p = sub.add_parser("detect", help="Escanear archivos y actualizar detected_palette.csv")
     p.add_argument("--dry-run", action="store_true", help="No sobrescribir el CSV, solo mostrar")
@@ -553,6 +551,9 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command is None:
+        args.func = cmd_gui
 
     if getattr(args, "command", None) == "automatic" and args.palette == "-":
         args.palette = json.load(sys.stdin)

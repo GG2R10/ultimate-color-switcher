@@ -1,4 +1,4 @@
-from backend import color_detector as cd
+from color_switcher.backend import color_detector as cd
 
 
 def test_detect_hex_and_rgb(fake_project):

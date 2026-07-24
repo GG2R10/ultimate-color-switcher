@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ucs"
+version = "1.0.0"
+description = "Detect colors used in your dotfiles, build a palette (by hand or generated from a wallpaper), and apply the replacement safely -- CLI and GTK4 + libadwaita GUI."
+readme = "README.md"
+license = "GPL-2.0-only"
+requires-python = ">=3.10"
+authors = [{ name = "GG2R10" }]
+
+# PyGObject/numpy/Pillow are listed here for pip users, but on Arch they
+# come from the system (python-gobject, python-numpy, python-pillow) via
+# the AUR package's `depends=` -- see README for both install paths.
+dependencies = [
+    "PyGObject>=3.44",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+ucs = "color_switcher.main:main"
+
+[project.urls]
+Homepage = "https://github.com/GG2R10/ultimate-color-switcher"
+
+[tool.hatch.build.targets.wheel]
+packages = ["color_switcher"]
+
+[tool.hatch.build]
+# .blp sources ride along for reference/dev use; the compiled .ui files are
+# what the app actually loads at runtime (see gui/template_loader.py) --
+# packagers should run blueprint-compiler at build time so a fully-packaged
+# install never needs blueprint-compiler itself, nor writes into its own
+# (typically read-only) install location. See PKGBUILD. `artifacts` is
+# needed because *.ui is .gitignored (generated), which hatchling would
+# otherwise exclude from the build too.
+artifacts = ["color_switcher/gui/blueprints/*.ui"]

@@ -1,0 +1,58 @@
+# Maintainer: GG2R10
+pkgname=ucs-git
+pkgver=r2.d929acb
+pkgrel=1
+pkgdesc="Detect colors used in your dotfiles, build a palette (by hand or generated from a wallpaper), and apply the replacement safely -- CLI and GTK4 + libadwaita GUI"
+arch=('any')
+url="https://github.com/GG2R10/ultimate-color-switcher"
+license=('GPL-2.0-only')
+depends=(
+    'python'
+    'python-gobject'
+    'gtk4'
+    'libadwaita'
+    'python-numpy'
+    'python-pillow'
+)
+makedepends=(
+    'git'
+    'python-build'
+    'python-installer'
+    'python-hatchling'
+    'python-wheel'
+    'blueprint-compiler'
+)
+provides=('ucs')
+conflicts=('ucs')
+source=("$pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$pkgname"
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    cd "$pkgname"
+
+    # Pre-compile the GTK Blueprint UI sources at build time, so the
+    # installed package never needs blueprint-compiler (it's makedepends
+    # only) nor writes into /usr at runtime -- see gui/template_loader.py.
+    for blp in color_switcher/gui/blueprints/*.blp; do
+        blueprint-compiler compile "$blp" --output "${blp%.blp}.ui"
+    done
+
+    python -m build --wheel --no-isolation
+}
+
+package() {
+    cd "$pkgname"
+    python -m installer --destdir="$pkgdir" dist/*.whl
+
+    install -Dm644 packaging/ucs.desktop "$pkgdir/usr/share/applications/ucs.desktop"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    # TODO(icon): once an icon file exists (e.g. packaging/icon.svg), install it as
+    # install -Dm644 packaging/icon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/ucs.svg"
+    # -- the .desktop file already references Icon=ucs, ready to resolve once it's there.
+}

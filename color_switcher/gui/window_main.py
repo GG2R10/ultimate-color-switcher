@@ -11,7 +11,6 @@ format independently.
 """
 
 import os
-import sys
 
 import gi
 
@@ -19,17 +18,12 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk
 
-GUI_DIR = os.path.dirname(os.path.abspath(__file__))
-APP_DIR = os.path.dirname(GUI_DIR)
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
+from ..backend import color_detector, color_replacer, conflicts, detect_diff, mapping_store, palette_store
+from ..backend import palette_generator, restart_actions
+from ..backend.config import load_config
 
-from backend import color_detector, color_replacer, conflicts, detect_diff, mapping_store, palette_store  # noqa: E402
-from backend import palette_generator, restart_actions  # noqa: E402
-from backend.config import load_config  # noqa: E402
-
-from . import dialogs  # noqa: E402
-from .color_chip import ColorChip, ensure_base_styles  # noqa: E402
+from . import dialogs
+from .color_chip import ColorChip, ensure_base_styles
 from .template_loader import compiled_ui_path  # noqa: E402
 
 _TYPE_DISPLAY = {"hex": "hex", "hex_from_rgb": "rgb"}

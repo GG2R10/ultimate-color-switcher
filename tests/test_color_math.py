@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from backend import color_math as cm
+from color_switcher.backend import color_math as cm
 
 
 def test_rgb_lab_roundtrip_known_colors():

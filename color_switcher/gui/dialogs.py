@@ -6,7 +6,6 @@ color-picker prompts, the restart-actions manager, and a toast shortcut.
 """
 
 import os
-import sys
 
 import gi
 
@@ -14,14 +13,10 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, Gtk
 
-APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if APP_DIR not in sys.path:
-    sys.path.insert(0, APP_DIR)
-
-from backend import color_detector as cd  # noqa: E402
-from backend import config as cfg  # noqa: E402
-from backend import palette_generator as pg  # noqa: E402
-from backend import restart_actions as ra  # noqa: E402
+from ..backend import color_detector as cd
+from ..backend import config as cfg
+from ..backend import palette_generator as pg
+from ..backend import restart_actions as ra
 
 
 def toast(toast_overlay: Adw.ToastOverlay, message: str, timeout: int = 3):

@@ -1,6 +1,6 @@
 import os
 
-from backend import color_replacer as cr
+from color_switcher.backend import color_replacer as cr
 
 
 def test_replace_hex_dry_run_does_not_modify(tmp_path):
@@ -84,7 +84,7 @@ def test_apply_mapping_full_flow(fake_project, monkeypatch):
     )
     config = fake_project.load_config()
 
-    from backend import detect_diff, palette_store
+    from color_switcher.backend import detect_diff, palette_store
 
     detected = detect_diff.detect_with_route(config)["colors"]
 
@@ -112,7 +112,7 @@ def test_apply_mapping_dry_run_creates_no_backup(fake_project, monkeypatch):
     fp = fake_project.make_file("app/style.css", ".a { color: #00ccff; }")
     config = fake_project.load_config()
 
-    from backend import detect_diff, palette_store
+    from color_switcher.backend import detect_diff, palette_store
 
     detected = detect_diff.detect_with_route(config)["colors"]
     palette_path = str(fake_project.project_dir / "palettes" / "created" / "p.csv")

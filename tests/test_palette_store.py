@@ -1,4 +1,4 @@
-from backend import palette_store as ps
+from color_switcher.backend import palette_store as ps
 
 
 def test_write_read_roundtrip(tmp_path):

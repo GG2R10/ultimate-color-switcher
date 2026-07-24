@@ -1,4 +1,4 @@
-from backend import conflicts
+from color_switcher.backend import conflicts
 
 
 def _detected():
