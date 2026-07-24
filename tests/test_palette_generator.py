@@ -100,6 +100,28 @@ def test_generate_shading_series_keeps_same_hue_varies_lightness():
     assert len(set(ls)) == len(ls)
 
 
+def test_generate_shading_series_is_monotonic_not_alternating():
+    """Regression: shades used to alternate lighter/darker every step,
+    which read as a jarring zigzag (and the lighter half looked
+    washed-out). The ramp must move in one direction only."""
+    primary = _entry(50, 40, -10)
+    shades = pg.generate_shading_series(primary, 5)
+    ls = [s["lab"][0] for s in shades]
+    assert ls == sorted(ls) or ls == sorted(ls, reverse=True)
+
+
+def test_generate_shading_series_prefers_darker_when_room_is_similar():
+    primary = _entry(50, 40, -10)  # roughly centered -- similar room either way
+    shades = pg.generate_shading_series(primary, 2)
+    assert shades[0]["lab"][0] < 50  # goes darker, not lighter
+
+
+def test_generate_shading_series_prefers_lighter_when_primary_is_already_dark():
+    dark_primary = _entry(12, 30, -5)  # little room left to go darker
+    shades = pg.generate_shading_series(dark_primary, 2)
+    assert shades[0]["lab"][0] > 12  # goes lighter instead
+
+
 def test_select_auxiliaries_avoids_reusing_already_chosen():
     primary = _entry(50, 0, 0, label="p")
     secondary = _entry(20, 0, 0, label="s")

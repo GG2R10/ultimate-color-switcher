@@ -225,34 +225,25 @@ def select_secondary(clusters: list, primary: dict, min_delta_e: float = 25.0,
     return synthesize_shade(primary)
 
 
-def generate_shading_series(primary: dict, n_needed: int, step: float = 28.0,
-                             min_l: float = 8.0, max_l: float = 92.0) -> list:
+def generate_shading_series(primary: dict, n_needed: int, min_l: float = 8.0, max_l: float = 92.0) -> list:
     """"shading" mode: n_needed monochromatic variants of `primary` -- same
-    hue/chroma (Lab a, b), only lightness changes, like "the same color but
-    more/less opaque". Walks outward from primary's lightness alternating
-    lighter/darker (+step, -step, +2*step, -2*step, ...), clipped to
-    [min_l, max_l] and skipping anything too close to a shade already picked
-    or to primary itself."""
+    hue/chroma (Lab a, b), only lightness changes -- as a single, monotonic
+    ramp toward one end (NOT alternating lighter/darker: that reads as a
+    jarring zigzag, and lighter shades of a saturated color look
+    washed-out/pastel regardless of chroma, since the sRGB gamut narrows
+    sharply near white -- an inherent property of RGB, not a bug). Defaults
+    to going darker (stays visually "rich"), unless primary is already dark
+    enough that there's meaningfully more room going lighter instead."""
     lab = np.asarray(primary["lab"], dtype=np.float64)
     a, b = float(lab[1]), float(lab[2])
     base_l = float(lab[0])
 
-    shades = []
-    seen_ls = []
-    direction = 1
-    magnitude = step
-    while len(shades) < n_needed and magnitude < 200:
-        target_l = float(np.clip(base_l + direction * magnitude, min_l, max_l))
-        if abs(target_l - base_l) > 3.0 and all(abs(target_l - s) > 3.0 for s in seen_ls):
-            seen_ls.append(target_l)
-            shades.append(_make_color_entry(np.array([target_l, a, b]), label="shade"))
-        if direction == 1:
-            direction = -1
-        else:
-            direction = 1
-            magnitude += step
+    room_dark = base_l - min_l
+    room_light = max_l - base_l
+    target_end = max_l if room_light > room_dark * 1.5 else min_l
 
-    return shades
+    ls = np.linspace(base_l, target_end, n_needed + 1)[1:]
+    return [_make_color_entry(np.array([float(l), a, b]), label="shade") for l in ls]
 
 
 def select_auxiliaries(clusters: list, chosen: list, n_needed: int, exclude: list = None) -> list:

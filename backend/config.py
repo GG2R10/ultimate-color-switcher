@@ -37,6 +37,14 @@ class Config:
         keeping multiple stale mapping files around."""
         return os.path.join(self.mappings_dir, "mapping.csv")
 
+    @property
+    def generated_palette_csv(self) -> str:
+        """Canonical, single "last generated from image" palette file --
+        overwritten in place unless the caller names an explicit --out
+        (same convention as detected_palette_csv/mapping_csv, instead of a
+        fresh generated-<image>-<timestamp>.csv per run)."""
+        return os.path.join(self.palettes_created_dir, "generated.csv")
+
 
 def _default_project_dir() -> str:
     # this file lives at <project_dir>/app/backend/config.py

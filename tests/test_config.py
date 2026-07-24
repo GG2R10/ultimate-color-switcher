@@ -15,6 +15,7 @@ def test_load_config_resolves_dirs_and_expands(fake_project):
     assert os.path.isdir(config.palettes_detected_dir)
     assert config.detected_palette_csv == os.path.join(config.palettes_detected_dir, "detected_palette.csv")
     assert config.mapping_csv == os.path.join(config.mappings_dir, "mapping.csv")
+    assert config.generated_palette_csv == os.path.join(config.palettes_created_dir, "generated.csv")
 
 
 def test_load_config_defaults_optional_lists(fake_project):

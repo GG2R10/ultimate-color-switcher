@@ -17,7 +17,6 @@ Examples:
 """
 
 import argparse
-import datetime
 import json
 import os
 import sys
@@ -151,9 +150,7 @@ def _generate_and_save_palette(config, image, n_colors, sample_size, background,
     )
 
     if not out_path:
-        base = os.path.splitext(os.path.basename(image))[0]
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        out_path = f"generated-{base}-{ts}.csv"
+        out_path = config.generated_palette_csv
     if not out_path.endswith(".csv"):
         out_path += ".csv"
     if not os.path.isabs(out_path):
@@ -492,7 +489,7 @@ def build_parser():
                           "monocromáticas (mismo tono) de primary")
     pg.add_argument("--my-eyes", action="store_true",
                      help="Saturar los colores elegidos justo antes de guardarlos")
-    pg.add_argument("--out", help="Ruta de salida (relativa a palettes/created/ si no es absoluta)")
+    pg.add_argument("--out", help="Ruta de salida (default: palettes/created/generated.csv, se reemplaza en cada corrida)")
     pg.set_defaults(func=cmd_palette_generate)
 
     mp = sub.add_parser("mapping", help="Gestión de mappings")

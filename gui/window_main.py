@@ -10,7 +10,6 @@ can be turned off from the header menu for full manual control over each
 format independently.
 """
 
-import datetime
 import os
 import sys
 
@@ -187,13 +186,12 @@ class MainWindow(Adw.ApplicationWindow):
             dialogs.toast(self.toast_overlay, f"No se pudo generar la paleta: {e}")
             return
 
-        base = os.path.splitext(os.path.basename(image_path))[0]
-        ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        path = os.path.join(self.config.palettes_created_dir, f"generated-{base}-{ts}.csv")
+        path = self.config.generated_palette_csv
         entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"]} for i, c in enumerate(colors)]
         palette_store.write_palette_csv(path, entries)
 
         self._set_new_palette(path, entries)
+        base = os.path.splitext(os.path.basename(image_path))[0]
         dialogs.toast(self.toast_overlay, f"Paleta generada: {len(entries)} color(es) desde {base}")
 
     def _action_snapshot_detect(self, _action, _param):
