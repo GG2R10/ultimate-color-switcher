@@ -794,7 +794,11 @@ def main():
         args.palette = json.load(sys.stdin)
 
     config = load_config()
-    args.func(args, config)
+    try:
+        args.func(args, config)
+    except palette_generator.ImageLoadError as e:
+        print(e)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

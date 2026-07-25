@@ -6,16 +6,33 @@ inventing/erasing colors), cluster them in Lab space, and describe each
 cluster as {lab, rgb, hex, count, coverage, L, S, label}.
 """
 
+import os
+
 import numpy as np
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from .. import color_math as cm
 from ..kmeans import kmeans as _kmeans
 
 
+class ImageLoadError(ValueError):
+    """Raised when the given path can't be opened as an image (missing, a
+    directory, or not a valid image file). User-facing: carries a clean
+    Spanish message the CLI/GUI can show verbatim instead of a traceback."""
+
+
 def load_image_samples(image_path: str, sample_size: int = 40000, seed: int = 42):
     """Random sample of the image's visible pixels, as an (n, 3) float64 RGB array."""
-    img = Image.open(image_path).convert("RGBA")
+    if not os.path.exists(image_path):
+        raise ImageLoadError(f"No existe la imagen: {image_path}")
+    if os.path.isdir(image_path):
+        raise ImageLoadError(f"La ruta es un directorio, no una imagen: {image_path}")
+    try:
+        img = Image.open(image_path).convert("RGBA")
+    except (UnidentifiedImageError, OSError) as e:
+        raise ImageLoadError(
+            f"No se pudo abrir la imagen {image_path}: ¿es un archivo de imagen válido?"
+        ) from e
     pixels = np.asarray(img).reshape(-1, 4)
 
     visible = pixels[pixels[:, 3] > 0]

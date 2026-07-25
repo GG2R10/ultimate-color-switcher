@@ -229,6 +229,23 @@ def test_generate_palette_end_to_end(tmp_path):
         int(entry["hex"], 16)  # valid hex
 
 
+def test_generate_palette_raises_clean_error_on_directory(tmp_path):
+    with pytest.raises(pg.ImageLoadError):
+        pg.generate_palette(str(tmp_path), n_colors=4)
+
+
+def test_generate_palette_raises_clean_error_on_missing_path(tmp_path):
+    with pytest.raises(pg.ImageLoadError):
+        pg.generate_palette(str(tmp_path / "nope.png"), n_colors=4)
+
+
+def test_generate_palette_raises_clean_error_on_non_image_file(tmp_path):
+    not_an_image = tmp_path / "notes.txt"
+    not_an_image.write_text("just text, not an image")
+    with pytest.raises(pg.ImageLoadError):
+        pg.generate_palette(str(not_an_image), n_colors=4)
+
+
 def test_generate_palette_respects_n_colors_of_one(tmp_path):
     image_path = tmp_path / "wallpaper.png"
     _make_test_image(image_path)
