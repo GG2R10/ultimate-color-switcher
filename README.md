@@ -16,7 +16,7 @@ Detectá los colores usados en tus dotfiles, armá una paleta nueva —a mano o 
 <td width="50%" valign="top">
 
 ### 🎨 Paleta automática
-Genera una paleta directo desde tu wallpaper (K-Means + espacio Lab/ΔE hechos a mano), con 3 modos de selección y ajuste de saturación.
+Genera una paleta directo desde tu wallpaper (K-Means + espacio Lab/ΔE hechos a mano): 3 modos de selección, ponderación de scoring configurable, paleta complementaria (Ying Yang), variantes con shuffle/overfetch y ajuste de saturación.
 
 </td>
 <td width="50%" valign="top">
@@ -116,7 +116,7 @@ Los datos de usuario (config, paletas, mappings) viven en `~/.config/ucs/`, sepa
 }
 ```
 
-- `files_to_replace`: los archivos de configuración donde se buscan y reemplazan colores. Se pueden gestionar sin editar el JSON a mano — ver [`ucs config files`](#uso--cli-paso-a-paso) o el menú **Archivos a escanear…** de la GUI. Si está vacío (primera vez), la GUI te va a ofrecer configurarlo ahí mismo o abrir `config.json` directamente antes de escanear nada.
+- `files_to_replace`: los archivos de configuración donde se buscan y reemplazan colores. Se pueden gestionar sin editar el JSON a mano — ver [`ucs config files`](#uso--cli-paso-a-paso) o el menú **Archivos a escanear…** de la GUI. Si está vacío (primera vez), después de la bienvenida la GUI te ofrece **buscar automáticamente en `~/.config`** los archivos que tengan colores (con un árbol para revisar y descartar carpetas/archivos antes de confirmar), agregarlos a mano o editar `config.json`. Lo mismo desde la CLI con [`ucs config files scan-config`](#1-elegir-qué-archivos-escanear).
 - `backup_dir`: dónde se guarda una copia de cada archivo antes de tocarlo de verdad.
 
 Las rutas admiten `$HOME`/`~` y se guardan así (no absolutas), para que `config.json` siga siendo válido entre máquinas que comparten estos dotfiles.
@@ -141,9 +141,9 @@ La ventana principal tiene dos columnas: colores detectados (izquierda) y la pal
 
 - **Nueva paleta… / Importar paleta… / Agregar color…** — gestión de la paleta objetivo.
 - **Generar paleta desde imagen…** — arma una paleta automáticamente a partir de un wallpaper.
-- **Configurar generación de paleta…** — modo de selección (contraste / balanceado / shading) y saturación extra (`--my-eyes`).
+- **Configurar generación de paleta…** — modo de selección (contraste / balanceado / shading), saturación extra (`--my-eyes`), **Ying Yang** (paleta complementaria), ponderación de scoring (default / alternativo / custom), comparación de contraste (ponderado vs solo background) y opciones avanzadas (overfetch y shuffle para explorar variantes).
 - **Vincular hex/rgb automáticamente** — un mismo color que aparece en dos formatos distintos en tus archivos se trata como uno solo por defecto.
-- **Archivos a escanear…** — agregar/quitar archivos de `files_to_replace`.
+- **Archivos a escanear…** — agregar/quitar archivos de `files_to_replace` (incluye la búsqueda automática en `~/.config`).
 - **Servicios a reiniciar…** — comandos a correr después de un apply real (ej. reiniciar waybar).
 - **Guardar snapshot de detección…** — guarda una copia con nombre de la detección actual, para volver a usarla después.
 
@@ -159,7 +159,13 @@ Todos los comandos son no-interactivos salvo `mapping new` (que es una sesión g
 ucs config files list
 ucs config files add ~/.config/waybar/colors.css
 ucs config files remove '$HOME/.config/waybar/colors.css'
+
+# o dejá que busque solo en ~/.config los archivos con colores:
+ucs config files scan-config --dry-run   # previsualizar sin agregar
+ucs config files scan-config             # buscar + confirmar + agregar
 ```
+
+`scan-config` recorre `~/.config` filtrando por formato (`.conf`, `.toml`, `.css`, `.rasi`, `.lua`, … y archivos llamados `config`), salta binarios, archivos grandes y directorios de cache/logs/`.git`/`node_modules`, y no sigue symlinks de directorio. Es una base para empezar: puede incluir hex que no son colores (ej. `0xADDR`) o archivos que no querés tocar — revisalos y quitá lo que sobre con `ucs config files remove`.
 
 ### 2. Detectar los colores actuales
 
@@ -181,9 +187,22 @@ Opción B — generada automáticamente desde un wallpaper:
 
 ```bash
 ucs palette generate ~/wallpapers/actual.jpg --colors 4 --mode contrast
+ucs palette show palettes/created/generated.csv   # verla en la terminal con swatches
 ```
 
-`--mode` puede ser `contrast` (default: el secondary contrasta con el primary), `balanced` (el secondary se elige por calidad general, sin ese sesgo — suele parecerse más al primary) o `shading` (el resto de la paleta son variantes de luminosidad del primary). `--my-eyes` satura un poco más los colores elegidos. Sin `--out`, se guarda siempre en el mismo archivo (`palettes/created/generated.csv`, se reemplaza cada vez).
+Opciones de `palette generate` (todas también disponibles en `automatic --from-image`):
+
+| Opción | Qué hace |
+|---|---|
+| `--mode contrast\|balanced\|shading` | `contrast` (default): el secondary contrasta con el primary. `balanced`: el secondary se elige por calidad general, sin ese sesgo (suele parecerse más al primary). `shading`: el resto de la paleta son variantes de luminosidad del primary. |
+| `--my-eyes` | Satura un poco más los colores elegidos. |
+| `--ying-yang on\|off` | Ying Yang (default `off`): usa la paleta complementaria (rota todos los tonos 180°). |
+| `--scoring default\|alternative\|custom` | Cómo se pondera coverage / saturación / midtone / contraste al elegir colores. `custom` usa `--custom-scoring-values coverage=20,saturation=40,midtone=30,contrast=10` (deben sumar 100), o lo guardado en `config.json`. |
+| `--no-weighted-contrast` | Compara el contraste solo contra el color más dominante, en vez del sistema ponderado contra todos los clusters (default: ponderado). |
+| `--shuffle N\|next` | Saltea los primeros N candidatos a primary (todo lo demás se reelige a partir de eso). `next` retoma desde el último valor + 1, cíclico — pensado para scripts que van probando variantes. |
+| `--overfetch N` | Considera N candidatos extra más allá de `--colors`, para darle más margen a `--shuffle`. |
+
+Sin `--out`, se guarda siempre en el mismo archivo (`palettes/created/generated.csv`, se reemplaza cada vez). `ucs palette show <paleta>` imprime cualquier paleta con sus colores en la terminal.
 
 ### 4. Armar el mapping (qué color detectado va a qué color de la paleta)
 
@@ -225,13 +244,19 @@ Una vez que ya tenés un mapping armado (paso 4), podés reaplicarlo con una pal
 ucs automatic --from-image ~/wallpapers/actual_wallpaper.jpg
 ```
 
-`--from-image` genera la paleta en el momento (usando la configuración guardada, o `--colors`/`--mode`/`--my-eyes` explícitos) y la aplica contra el mapping canónico. `--mapping` es opcional (default: el mapping canónico). También podés pasarle una paleta ya generada en vez de `--from-image`:
+`--from-image` genera la paleta en el momento (usando la configuración guardada, o cualquier opción de [`palette generate`](#3-conseguir-una-paleta-objetivo) explícita: `--colors`, `--mode`, `--my-eyes`, `--ying-yang`, `--scoring`, `--shuffle`, `--overfetch`…) y la aplica contra el mapping canónico. `--mapping` es opcional (default: el mapping canónico). También podés pasarle una paleta ya generada en vez de `--from-image`:
 
 ```bash
 ucs automatic palettes/created/mi-tema.csv --mapping mappings/mapping.csv
 ```
 
-Si la paleta tiene menos colores de los que el mapping necesita, se bloquea (no hay de dónde sacar el color faltante). Si tiene de más, pide confirmación — `--force` la salta. `--test` simula sin aplicar.
+Bloqueos y cómo saltarlos:
+
+- **Paleta insuficiente** (menos colores que roles necesita el mapping): bloqueo duro, no se puede saltar — no hay de dónde sacar el color faltante.
+- **Colores de más** (más colores que roles, los extra quedan sin usar): pide confirmación con `--yolo`.
+- **Conflictos** (caso 1 / convergencia: un color chocaría con otro color detectado y se perdería la distinción): pide confirmación con `--force`.
+
+`--force` y `--yolo` están separados a propósito: aceptar "sobran colores" no te cuela un conflicto real, y viceversa. `--test` simula sin aplicar.
 
 **Ejemplo real**: hook para regenerar el tema automáticamente al cambiar de wallpaper (agregado al final del script que setea el wallpaper, en background para no agregar latencia):
 
@@ -250,8 +275,10 @@ ucs automatic --from-image "$WALLPAPER_FOLDER/actual_wallpaper.jpg" &
 |---|---|
 | `detect [--dry-run]` | Escanea y actualiza `detected_palette.csv` |
 | `config files list\|add\|remove` | Gestiona `files_to_replace` |
+| `config files scan-config [--dry-run] [--yes]` | Busca en `~/.config` archivos con colores y los agrega |
 | `palette create <ruta> --add HEX LABEL ...` | Crea una paleta a mano |
-| `palette generate <imagen> [--colors N] [--mode ...] [--my-eyes]` | Genera una paleta desde un wallpaper |
+| `palette generate <imagen> [--colors N] [--mode ...] [--my-eyes] [--ying-yang on\|off] [--scoring ...] [--shuffle N\|next] [--overfetch N] [--no-weighted-contrast]` | Genera una paleta desde un wallpaper |
+| `palette show <paleta>` | Muestra una paleta con sus colores en la terminal |
 | `palette list` | Lista las paletas creadas |
 | `palette add-color <paleta> <hex> [label]` | Agrega un color a una paleta existente |
 | `mapping new <paleta>` | Sesión interactiva para armar el mapping |
@@ -259,7 +286,7 @@ ucs automatic --from-image "$WALLPAPER_FOLDER/actual_wallpaper.jpg" &
 | `test [--mapping <mapping>]` | Simula un apply |
 | `apply [--mapping <mapping>]` | Aplica de verdad (con backup) |
 | `restore [--restart\|--no-restart]` | Deshace desde el backup |
-| `automatic <paleta>\|--from-image <img> [--mapping <mapping>]` | Aplica una paleta (existente o generada) contra un mapping ya armado |
+| `automatic <paleta>\|--from-image <img> [--mapping <mapping>] [--force] [--yolo]` | Aplica una paleta (existente o generada) contra un mapping ya armado |
 | `gui` | Lanza la interfaz gráfica (también: `ucs` sin argumentos) |
 
 Corré `ucs <comando> --help` para ver todas las opciones de cada uno.

@@ -99,6 +99,49 @@ def cmd_config_files_remove(args, config):
     print("Corré 'ucs detect' para actualizar los colores detectados.")
 
 
+def cmd_config_files_scan(args, config):
+    print("Buscando archivos con colores en ~/.config …")
+    found = color_detector.scan_config_dir_for_color_files()
+    if not found:
+        print("No se encontró ningún archivo con colores.")
+        return
+
+    existing = set(read_files_to_replace(config))
+    new_paths = [to_home_relative(p) for p in found]
+    new_paths = [hr for hr in new_paths if hr not in existing]
+
+    for folder, files in color_detector.group_paths_by_top_level(found):
+        print(f"\n{to_home_relative(folder)}/")
+        for p, display in files:
+            hr = to_home_relative(p)
+            marker = "  (ya en la lista)" if hr in existing else ""
+            print(f"    {display}{marker}")
+
+    print(f"\nTotal: {len(found)} archivo(s) con colores, {len(new_paths)} nuevo(s).")
+    print("⚠ Puede incluir hex que no son colores (ej. direcciones 0xADDR) o archivos que no querés "
+          "modificar. Quitá lo que no sirva con: ucs config files remove <ruta>")
+
+    if args.dry_run:
+        print("\n(--dry-run: no se agregó nada)")
+        return
+    if not new_paths:
+        print("\nTodos ya estaban en la lista, nada para agregar.")
+        return
+    if not args.yes:
+        try:
+            answer = input(f"\n¿Agregar los {len(new_paths)} archivo(s) nuevo(s)? (y/N): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in ("y", "yes", "s", "si", "sí"):
+            print("Cancelado.")
+            return
+
+    merged = read_files_to_replace(config)
+    merged.extend(new_paths)
+    write_files_to_replace(config, merged)
+    print(f"Agregados {len(new_paths)} archivo(s). Corré 'ucs detect' para actualizar los colores detectados.")
+
+
 def _resolve_path(path, default_dir, project_dir=None):
     """Absolute paths are used as-is; paths that exist relative to cwd or to
     project_dir are used as-is; a bare name is resolved under default_dir."""
@@ -113,6 +156,37 @@ def _resolve_path(path, default_dir, project_dir=None):
     return os.path.join(default_dir, path)
 
 
+def _use_color() -> bool:
+    """Whether to emit ANSI color. Honors the NO_COLOR / FORCE_COLOR
+    conventions, otherwise only colors when stdout is a real terminal (so
+    swatches don't leak escape codes into pipes/files)."""
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    return sys.stdout.isatty()
+
+
+def _color_swatch(hex_str: str, width: int = 3) -> str:
+    """A `width`-cell block painted with `hex_str` as its background, via an
+    ANSI truecolor escape -- or "" when color output is suppressed."""
+    if not _use_color():
+        return ""
+    h = hex_str.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"\x1b[48;2;{r};{g};{b}m{' ' * width}\x1b[0m"
+
+
+def _print_palette(entries, show_id: bool = True) -> None:
+    """Print a palette one color per line, each led by its swatch (falls back
+    to just hex + label when color is off)."""
+    for e in entries:
+        swatch = _color_swatch(e["hex"])
+        prefix = f"  {e['id']}) " if show_id else "  "
+        cells = [swatch, f"#{e['hex']}", e.get("label", "")]
+        print((prefix + "  ".join(c for c in cells if c)).rstrip())
+
+
 def cmd_palette_create(args, config):
     path = args.path
     if not os.path.isabs(path):
@@ -123,27 +197,71 @@ def cmd_palette_create(args, config):
         entries.append({"id": next_id, "hex": hexval.lstrip("#").lower(), "label": label})
     palette_store.write_palette_csv(path, entries)
     print(f"Paleta creada: {path} ({len(entries)} colores)")
+    _print_palette(entries)
 
 
 def cmd_palette_list(args, config):
     for p in palette_store.list_palettes(config.palettes_created_dir):
         entries = palette_store.read_palette_csv(p)
-        print(f"{p} ({len(entries)} colores)")
+        strip = "".join(_color_swatch(e["hex"], width=2) for e in entries)
+        sep = "  " if strip else ""
+        print(f"{p} ({len(entries)} colores){sep}{strip}")
+
+
+def cmd_palette_show(args, config):
+    path = args.path
+    if not os.path.isabs(path):
+        path = _resolve_path(path, config.palettes_created_dir, config.project_dir)
+    entries = palette_store.read_palette_csv(path)
+    if not entries:
+        print(f"Paleta vacía o no encontrada: {path}")
+        sys.exit(1)
+    print(f"{path} ({len(entries)} colores):")
+    _print_palette(entries)
 
 
 def cmd_palette_add_color(args, config):
     entry = palette_store.add_color(args.path, args.hex, args.label or "")
-    print(f"Agregado: id {entry['id']} #{entry['hex']} {entry['label']}")
+    swatch = _color_swatch(entry["hex"])
+    cells = ["Agregado:", swatch, f"#{entry['hex']}", entry.get("label", "")]
+    print(" ".join(c for c in cells if c))
+    print("Paleta actual:")
+    _print_palette(palette_store.read_palette_csv(args.path))
 
 
-def _generate_and_save_palette(config, image, n_colors, sample_size, background, mode, saturate,
-                                out_path=None):
+def _parse_on_off(raw: str) -> bool:
+    """--ying-yang on|off -- argparse type= callable (ArgumentTypeError for a
+    clean CLI error instead of a traceback)."""
+    v = raw.strip().lower()
+    if v in ("on", "true", "1", "yes", "si", "sí"):
+        return True
+    if v in ("off", "false", "0", "no"):
+        return False
+    raise argparse.ArgumentTypeError(f"valor debe ser 'on' u 'off', se recibió {raw!r}")
+
+
+def _generate_and_save_palette(config, image, n_colors, sample_size, mode, saturate,
+                                out_path=None, scoring="default", custom_scoring_values=None,
+                                weighted_contrast=True, shuffle=None, overfetch=0, ying_yang=False):
     """Shared by `palette generate` and `automatic --from-image`. Returns
     (entries, saved_path) — entries is the id/hex/label list ready to hand
-    to guiless.apply_palette directly (no need to re-read the file back)."""
+    to guiless.apply_palette directly (no need to re-read the file back).
+
+    shuffle=None means "--shuffle wasn't passed at all" -- distinct from an
+    explicit 0, since resolving it (and persisting it as the new
+    "last_shuffle" anchor for a future --shuffle next) only happens when
+    the flag was actually used."""
+    weights = palette_generator.resolve_scoring_weights(
+        scoring, custom_percentages=custom_scoring_values, config=config,
+    )
+    resolved_shuffle = (
+        palette_generator.resolve_shuffle_index(shuffle, n_colors, overfetch=overfetch, config=config)
+        if shuffle is not None else 0
+    )
     colors = palette_generator.generate_palette(
-        image, n_colors=n_colors, sample_size=sample_size, background_hex=background, mode=mode,
-        saturate=saturate,
+        image, n_colors=n_colors, sample_size=sample_size, mode=mode,
+        saturate=saturate, weights=weights, weighted_contrast=weighted_contrast,
+        shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=ying_yang,
     )
 
     if not out_path:
@@ -160,13 +278,14 @@ def _generate_and_save_palette(config, image, n_colors, sample_size, background,
 
 def cmd_palette_generate(args, config):
     entries, out_path = _generate_and_save_palette(
-        config, args.image, args.colors, args.sample_size, args.background, args.mode,
-        args.my_eyes, args.out,
+        config, args.image, args.colors, args.sample_size, args.mode, args.my_eyes, args.out,
+        scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
+        weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
+        ying_yang=args.ying_yang,
     )
 
     print(f"Paleta generada desde {args.image}:")
-    for e in entries:
-        print(f"  {e['id']}) #{e['hex']}  {e['label']}")
+    _print_palette(entries)
     print(f"\nGuardada en: {out_path}")
     print(f"Para aplicarla: ucs automatic {out_path} --mapping <mapping.csv>")
 
@@ -383,9 +502,13 @@ def cmd_automatic(args, config):
             sys.exit(1)
         n_colors = args.colors or len({e["new_id"] for e in entries})
         palette_source, saved_path = _generate_and_save_palette(
-            config, args.from_image, n_colors, args.sample_size, args.background, args.mode, args.my_eyes
+            config, args.from_image, n_colors, args.sample_size, args.mode, args.my_eyes,
+            scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
+            weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
+            ying_yang=args.ying_yang,
         )
         print(f"Paleta generada desde {args.from_image} ({n_colors} color(es)) — guardada en: {saved_path}")
+        _print_palette(palette_source)
 
     result = guiless.apply_palette(
         palette_source,
@@ -393,6 +516,7 @@ def cmd_automatic(args, config):
         config.backup_dir,
         dry_run=args.test,
         force=args.force,
+        yolo=args.yolo,
         project_dir=config.project_dir,
     )
     status = result["status"]
@@ -403,7 +527,7 @@ def cmd_automatic(args, config):
         sys.exit(1)
     elif status == "needs_confirmation":
         print(f"La paleta nueva tiene {result['surplus_palette_count']} color(es) de más que no se van a usar.")
-        print("Volvé a correr con --force para aplicar de todas formas.")
+        print("Volvé a correr con --yolo para aplicar de todas formas.")
         sys.exit(1)
     elif status == "conflicts":
         print("⚠ Se detectaron conflictos. Usá --force para continuar de todas formas:")
@@ -429,6 +553,84 @@ def cmd_automatic(args, config):
             started = restart_actions.run_enabled(restart_actions.read_restart_actions(config))
             for a in started:
                 print(f"  Reiniciando: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
+
+
+def _parse_custom_scoring_values(raw: str) -> dict:
+    """--custom-scoring-values coverage=20,saturation=40,midtone=30,contrast=10
+    -- argparse type= callable, so failures must raise ArgumentTypeError to
+    get a clean CLI error instead of a traceback."""
+    percentages = {}
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise argparse.ArgumentTypeError(f"formato inválido: {part!r} (esperado clave=valor)")
+        key, _, value = part.partition("=")
+        key = key.strip()
+        try:
+            percentages[key] = float(value.strip())
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"valor no numérico para {key!r}: {value.strip()!r}")
+
+    try:
+        palette_generator.percentages_to_weights(dict(percentages))
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e))
+    return percentages
+
+
+def _parse_shuffle(raw: str):
+    """--shuffle N or --shuffle next -- argparse type= callable, so failures
+    must raise ArgumentTypeError to get a clean CLI error."""
+    if raw == "next":
+        return "next"
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--shuffle debe ser un entero >= 0 o 'next'")
+    if value < 0:
+        raise argparse.ArgumentTypeError("--shuffle debe ser un entero >= 0 o 'next'")
+    return value
+
+
+def _parse_overfetch(raw: str):
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--overfetch debe ser un entero >= 0")
+    if value < 0:
+        raise argparse.ArgumentTypeError("--overfetch debe ser un entero >= 0")
+    return value
+
+
+def _add_shuffle_args(parser, from_image_note=""):
+    parser.add_argument(
+        "--shuffle", type=_parse_shuffle, default=None,
+        help=f"Saltear los primeros N candidatos a primary{from_image_note} (todo lo demás se elige "
+             "relativo a ese nuevo primary). También acepta 'next': retoma desde el último valor "
+             "usado + 1, cíclico según el tamaño del pool (--colors + --overfetch) -- pensado para "
+             "scripts que llaman esto repetidamente para ir probando variantes.",
+    )
+    parser.add_argument(
+        "--overfetch", type=_parse_overfetch, default=0,
+        help=f"Candidatos extra a considerar más allá de --colors{from_image_note} (default: 0). "
+             "Le da a --shuffle más margen para saltear sin quedarse sin candidatos.",
+    )
+
+
+def _add_scoring_args(parser, from_image_note=""):
+    parser.add_argument(
+        "--scoring", choices=["default", "alternative", "custom"], default="default",
+        help=f"Cómo ponderar coverage/saturación/midtone/contraste al elegir colores{from_image_note} "
+             "(default: default). 'custom' usa --custom-scoring-values, o si no se pasa, los valores "
+             "guardados en config.json (y si tampoco hay, cae a 'default').",
+    )
+    parser.add_argument(
+        "--custom-scoring-values", type=_parse_custom_scoring_values,
+        help="Solo con --scoring custom: 'coverage=20,saturation=40,midtone=30,contrast=10' "
+             "(deben sumar 100). Tiene prioridad sobre lo guardado en config.json.",
+    )
 
 
 def build_parser():
@@ -457,6 +659,13 @@ def build_parser():
     cfl_remove.add_argument("path", help="Tal como aparece en 'config files list', o su ruta absoluta")
     cfl_remove.set_defaults(func=cmd_config_files_remove)
 
+    cfl_scan = cflsub.add_parser(
+        "scan-config", help="Buscar en ~/.config archivos con colores y agregarlos a la lista")
+    cfl_scan.add_argument("--dry-run", action="store_true",
+                           help="Solo mostrar lo que encontraría, sin agregar nada")
+    cfl_scan.add_argument("--yes", action="store_true", help="Agregar sin pedir confirmación")
+    cfl_scan.set_defaults(func=cmd_config_files_scan)
+
     pp = sub.add_parser("palette", help="Gestión de paletas creadas")
     psub = pp.add_subparsers(dest="palette_command", required=True)
 
@@ -469,6 +678,10 @@ def build_parser():
     pl = psub.add_parser("list", help="Listar paletas creadas")
     pl.set_defaults(func=cmd_palette_list)
 
+    ps = psub.add_parser("show", help="Mostrar una paleta con sus colores en la terminal")
+    ps.add_argument("path", help="Ruta a la paleta CSV (o su nombre en palettes/created/)")
+    ps.set_defaults(func=cmd_palette_show)
+
     pa = psub.add_parser("add-color", help="Agregar un color a una paleta existente")
     pa.add_argument("path")
     pa.add_argument("hex")
@@ -479,7 +692,6 @@ def build_parser():
     pg.add_argument("image", help="Ruta a la imagen")
     pg.add_argument("--colors", type=int, default=6, help="Cantidad de colores a generar (default: 6)")
     pg.add_argument("--sample-size", type=int, default=40000, help="Píxeles a samplear (default: 40000)")
-    pg.add_argument("--background", help="Hex de fondo para validar contraste (opcional)")
     pg.add_argument("--mode", choices=["balanced", "contrast", "shading"], default="contrast",
                      help="Cómo elegir secondary/auxN (default: contrast). 'balanced': secondary por score, "
                           "sin sesgo respecto al contraste con primary. 'contrast': secondary maximiza contraste "
@@ -487,6 +699,17 @@ def build_parser():
                           "monocromáticas (mismo tono) de primary")
     pg.add_argument("--my-eyes", action="store_true",
                      help="Saturar los colores elegidos justo antes de guardarlos")
+    pg.add_argument("--ying-yang", type=_parse_on_off, default=False, metavar="on|off",
+                     help="Ying Yang: usar la paleta complementaria (todos los colores rotados 180° en el "
+                          "tono). 'on' u 'off' (default: off)")
+    _add_scoring_args(pg)
+    pg.add_argument(
+        "--no-weighted-contrast", dest="weighted_contrast", action="store_false", default=True,
+        help="Comparar contraste solo contra el cluster más dominante de la imagen, en vez del sistema "
+             "ponderado contra todos los clusters (default: ponderado, recomendado; sirve mejor para "
+             "imágenes con un background de un solo color claro).",
+    )
+    _add_shuffle_args(pg)
     pg.add_argument("--out", help="Ruta de salida (default: palettes/created/generated.csv, se reemplaza en cada corrida)")
     pg.set_defaults(func=cmd_palette_generate)
 
@@ -533,16 +756,28 @@ def build_parser():
                      help="Cantidad de colores a generar con --from-image "
                           "(default: la cantidad de roles distintos que usa el mapping)")
     au.add_argument("--sample-size", type=int, default=40000, help="Píxeles a samplear con --from-image (default: 40000)")
-    au.add_argument("--background", help="Hex de fondo para validar contraste con --from-image (opcional)")
     au.add_argument("--mode", choices=["balanced", "contrast", "shading"], default="contrast",
                      help="Cómo elegir secondary/auxN con --from-image (default: contrast, ver 'palette generate --help')")
     au.add_argument("--my-eyes", action="store_true",
                      help="Saturar los colores generados con --from-image justo antes de aplicarlos")
+    au.add_argument("--ying-yang", type=_parse_on_off, default=False, metavar="on|off",
+                     help="Ying Yang: usar la paleta complementaria con --from-image (tonos rotados 180°). "
+                          "'on' u 'off' (default: off)")
+    _add_scoring_args(au, from_image_note=" con --from-image")
+    au.add_argument(
+        "--no-weighted-contrast", dest="weighted_contrast", action="store_false", default=True,
+        help="Comparar contraste solo contra el cluster más dominante de la imagen con --from-image, "
+             "en vez del sistema ponderado contra todos los clusters (default: ponderado, recomendado).",
+    )
+    _add_shuffle_args(au, from_image_note=" con --from-image")
     au.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
     au.add_argument("--test", action="store_true", help="Simular, no modificar archivos")
     au.add_argument("--force", action="store_true",
-                     help="Aplicar aunque sobren colores o haya conflictos de caso 1/convergencia "
-                          "(no salta el bloqueo por paleta insuficiente)")
+                     help="Aplicar aunque haya conflictos de caso 1/convergencia "
+                          "(no salta el bloqueo por paleta insuficiente ni el de colores sobrantes)")
+    au.add_argument("--yolo", action="store_true",
+                     help="Aplicar aunque sobren colores en la paleta (los de más quedan sin usar). "
+                          "Separado de --force, que es solo para conflictos.")
     au.set_defaults(func=cmd_automatic)
 
     return parser

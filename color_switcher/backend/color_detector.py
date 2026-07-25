@@ -184,3 +184,103 @@ def generate_rgb_regex_for_color(hex_color: str) -> str:
     """Generate a regex to match this color as rgb(r, g, b), spaces tolerant."""
     r, g, b = hex_to_rgb(hex_color)
     return f"{r}\\s*,\\s*{g}\\s*,\\s*{b}"
+
+
+# --- Auto-scan ~/.config for color-bearing config files -----------------------
+#
+# First-run helper: propose files_to_replace candidates by walking ~/.config
+# for config-format files that actually contain colors, so the user starts
+# from a real base instead of an empty list. It is deliberately a *proposal* --
+# HEX_PATTERN matches any 6 hex digits (so a memory address 0xDEADBE or a hash
+# can read as a "color"), and a file can be config-shaped without being one you
+# want rewritten. The GUI/CLI both warn about this and let the user drop the
+# junk (fine-grained tree in the GUI, `config files remove` / --dry-run in the
+# CLI). The format allowlist below is what keeps the noise manageable.
+
+_SCAN_COLOR_EXTENSIONS = frozenset({
+    ".conf", ".ini", ".toml", ".yaml", ".yml", ".json", ".jsonc", ".lua", ".sh",
+    ".bash", ".zsh", ".fish", ".el", ".micro", ".css", ".rasi", ".theme",
+    ".colors", ".qss",
+})
+_SCAN_MAX_BYTES = 1_000_000  # skip anything bigger -- not a hand-edited config
+
+
+def _is_scannable_config_name(name: str) -> bool:
+    """A file worth opening: a known config extension, or literally named
+    'config' (git, some app configs have no extension)."""
+    lower = name.lower()
+    if lower == "config":
+        return True
+    return os.path.splitext(lower)[1] in _SCAN_COLOR_EXTENSIONS
+
+
+def _scan_dir_should_skip(name: str) -> bool:
+    """Prune heavy/noise directories by name: caches, logs, VCS internals,
+    dependency trees -- case-insensitive substring for cache/logs so
+    'Cache', 'GPUCache', 'Logs' all match."""
+    lower = name.lower()
+    return name in (".git", "node_modules") or "cache" in lower or "logs" in lower
+
+
+def _file_has_colors(path: str, min_hits: int = 1) -> bool:
+    """Whether `path` is a small, text (non-binary) file with at least
+    `min_hits` color matches. Size/binary checks run before reading the whole
+    file so the walk stays cheap."""
+    try:
+        if os.path.getsize(path) > _SCAN_MAX_BYTES:
+            return False
+        with open(path, "rb") as f:
+            head = f.read(1024)
+    except OSError:
+        return False
+    if b"\x00" in head:  # a NUL byte in the first KB -> treat as binary
+        return False
+
+    counts = detect_colors_in_file(path)
+    total = sum(counts["hex"].values()) + sum(counts["rgb"].values())
+    return total >= min_hits
+
+
+def scan_config_dir_for_color_files(config_dir: str = None, min_hits: int = 1) -> list:
+    """Walk `config_dir` (default ~/.config) for config-format files that
+    contain colors. Skips heavy dirs (see _scan_dir_should_skip), does NOT
+    follow directory symlinks (dotfile managers symlink real files in, which
+    are still listed and included; only recursion into symlinked dirs is
+    avoided, dodging loops and escapes out of the tree). Returns absolute
+    paths, sorted -- callers convert to home-relative before storing."""
+    base = config_dir or os.path.join(os.path.expanduser("~"), ".config")
+    found = []
+    if not os.path.isdir(base):
+        return found
+    for root, dirs, files in os.walk(base, followlinks=False):
+        dirs[:] = [d for d in dirs if not _scan_dir_should_skip(d)]
+        for name in files:
+            if not _is_scannable_config_name(name):
+                continue
+            path = os.path.join(root, name)
+            if _file_has_colors(path, min_hits=min_hits):
+                found.append(path)
+    return sorted(found)
+
+
+def group_paths_by_top_level(paths: list, base_dir: str = None) -> list:
+    """Group by the FIRST directory segment under base_dir (~/.config), so a
+    deeply-nested tree (e.g. ~/.config/claude/projects/a/b/c.json) collapses
+    into one toggleable group per top-level ~/.config child instead of a
+    separate group per leaf folder -- otherwise a single app with hundreds of
+    nested files floods the list with hundreds of near-identical folder rows.
+
+    Returns [(top_folder_abs, [(abs_path, display), ...]), ...] sorted, where
+    `display` is the path relative to top_folder so files deep in different
+    subfolders stay distinguishable (a bare basename would collide)."""
+    base = base_dir or os.path.join(os.path.expanduser("~"), ".config")
+    groups = OrderedDict()
+    for p in sorted(paths):
+        rel = os.path.relpath(p, base)
+        parts = rel.split(os.sep)
+        if len(parts) == 1:  # file sitting directly in ~/.config
+            top, display = base, parts[0]
+        else:
+            top, display = os.path.join(base, parts[0]), os.sep.join(parts[1:])
+        groups.setdefault(top, []).append((p, display))
+    return [(top, files) for top, files in sorted(groups.items())]

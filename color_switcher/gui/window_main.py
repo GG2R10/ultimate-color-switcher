@@ -59,6 +59,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.new_palette = []
         self.mapping = None
         self.active_group_ids = frozenset()
+        self._welcomed = False  # welcome dialog shows once per session, before anything else
         self.auto_link_siblings = True
 
         self._setup_actions()
@@ -173,8 +174,21 @@ class MainWindow(Adw.ApplicationWindow):
 
         settings = palette_generator.read_generation_settings(self.config)
         try:
+            weights = palette_generator.resolve_scoring_weights(
+                settings["scoring"], custom_percentages=settings.get("custom_percentages"), config=self.config,
+            )
+            overfetch = int(settings.get("overfetch", 0))
+            shuffle_arg = None
+            if settings.get("shuffle_enabled", False):
+                shuffle_arg = "next" if settings.get("shuffle_mode") == "next" else int(settings.get("shuffle_value", 0))
+            resolved_shuffle = (
+                palette_generator.resolve_shuffle_index(shuffle_arg, n_colors, overfetch=overfetch, config=self.config)
+                if shuffle_arg is not None else 0
+            )
             colors = palette_generator.generate_palette(
                 image_path, n_colors=n_colors, mode=settings["mode"], saturate=settings["saturate"],
+                weights=weights, weighted_contrast=settings.get("weighted_contrast", True),
+                shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=settings.get("ying_yang", False),
             )
         except Exception as e:
             dialogs.toast(self.toast_overlay, f"No se pudo generar la paleta: {e}")
@@ -233,7 +247,18 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _start_detection(self):
         if not self.config.files_to_replace:
-            dialogs.show_no_files_configured(self, self.config, self._on_scanned_files_changed)
+            # Fresh config: welcome FIRST (once), THEN the "configure files"
+            # step (auto-scan ~/.config / manual). on_done reloads config and
+            # loops back here -- files present now, and _welcomed already set,
+            # so no second welcome.
+            configure = lambda: dialogs.show_configure_files_onboarding(
+                self, self.config, on_done=self._on_scanned_files_changed
+            )
+            if self._welcomed:
+                configure()
+            else:
+                self._welcomed = True
+                dialogs.show_welcome(self, configure)
             return GLib.SOURCE_REMOVE
 
         raw = detect_diff.detect_with_route(self.config, save=False)
@@ -244,7 +269,11 @@ class MainWindow(Adw.ApplicationWindow):
                     self, self.config, lambda: self._finish_detection(raw["colors"], persist=True)
                 )
 
-            dialogs.show_welcome(self, after_welcome)
+            if self._welcomed:
+                after_welcome()
+            else:
+                self._welcomed = True
+                dialogs.show_welcome(self, after_welcome)
         elif route == "b":
             self._finish_detection(raw["colors"], persist=True)
         else:

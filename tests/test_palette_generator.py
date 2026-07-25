@@ -45,6 +45,17 @@ def test_filter_relaxes_when_image_is_near_monochrome():
     assert len(result) >= 3
 
 
+def test_filter_drops_low_saturation_greys_even_at_midtone():
+    # A high-coverage grey at a perfectly fine lightness is still no good as a
+    # palette color -- the strict saturation floor should cut it (Fix B), even
+    # though it dominates the image, keeping only the saturated one.
+    saturated = _entry(50, 40, 0, count=10)
+    grey = _entry(50, 2, 0, count=60)
+    result = pg.filter_clusters([saturated, grey], min_needed=1)
+    assert len(result) == 1
+    assert result[0]["S"] > 18
+
+
 def test_select_primary_prefers_usable_range():
     unusable_but_higher_score = _entry(95, 0, 0, count=100, total=100)  # very light, desaturated
     unusable_but_higher_score["score"] = 0.9
@@ -52,6 +63,26 @@ def test_select_primary_prefers_usable_range():
     usable["score"] = 0.5
     result = pg.select_primary([unusable_but_higher_score, usable])
     assert result is usable
+
+
+def test_select_primary_skip_takes_next_ranked_candidate():
+    a = _entry(50, 40, 0, count=10, total=100)
+    a["score"] = 0.9
+    b = _entry(55, 35, 5, count=10, total=100)
+    b["score"] = 0.7
+    c = _entry(45, 45, -5, count=10, total=100)
+    c["score"] = 0.5
+    assert pg.select_primary([a, b, c]) is a
+    assert pg.select_primary([a, b, c], skip=1) is b
+    assert pg.select_primary([a, b, c], skip=2) is c
+
+
+def test_select_primary_skip_clamps_to_last_candidate():
+    a = _entry(50, 40, 0, count=10, total=100)
+    a["score"] = 0.9
+    b = _entry(55, 35, 5, count=10, total=100)
+    b["score"] = 0.7
+    assert pg.select_primary([a, b], skip=5) is b
 
 
 def test_select_secondary_prefers_farthest_delta_e():
@@ -62,6 +93,22 @@ def test_select_secondary_prefers_farthest_delta_e():
         c["score"] = pg.score_cluster(c)
     result = pg.select_secondary([primary, close, far], primary)
     assert result is far
+
+
+def test_select_secondary_contrast_weights_by_score_not_raw_delta_e():
+    # A near-black is the farthest cluster in raw ΔE from a light primary, but
+    # it's a low-quality color; a saturated mid-tone sits a bit closer yet is
+    # far better. Fix A weights ΔE by score, so the saturated one must win --
+    # under the old pure-ΔE rule the near-black would have been picked.
+    primary = _entry(80, 0, 0)
+    near_black_far = _entry(5, 0, 0)
+    saturated_closer = _entry(60, 50, 30)
+    near_black_far["score"] = 0.30
+    saturated_closer["score"] = 0.70
+    assert (cm.delta_e76(near_black_far["lab"], primary["lab"])
+            > cm.delta_e76(saturated_closer["lab"], primary["lab"]))  # near-black really is farther
+    result = pg.select_secondary([primary, near_black_far, saturated_closer], primary)
+    assert result is saturated_closer
 
 
 def test_select_secondary_falls_back_to_synthesized_shade_when_all_too_close():
@@ -197,6 +244,42 @@ def test_generate_palette_rejects_invalid_n_colors(tmp_path):
         pg.generate_palette(str(image_path), n_colors=0)
 
 
+def test_generate_palette_shuffle_changes_primary_pick(tmp_path):
+    # _make_test_image has 4 distinctly-hued saturated patches, several of
+    # which qualify as "usable" -- overfetch keeps enough of them around for
+    # shuffle to have real candidates to skip to.
+    image_path = tmp_path / "wallpaper.png"
+    _make_test_image(image_path)
+
+    baseline = pg.generate_palette(str(image_path), n_colors=1, sample_size=5000, overfetch=3)
+    shuffled = pg.generate_palette(str(image_path), n_colors=1, sample_size=5000, overfetch=3, shuffle=1)
+
+    assert baseline[0]["hex"] != shuffled[0]["hex"]
+
+
+def test_generate_palette_shuffle_cascades_to_shading_ramp(tmp_path):
+    # Same mechanism (select_primary's skip), no shading-specific code path
+    # -- shuffle=1 should pick a different primary hue, so the whole ramp
+    # (built from that primary's own hue/chroma) comes out different too.
+    image_path = tmp_path / "wallpaper.png"
+    _make_test_image(image_path)
+
+    baseline = pg.generate_palette(str(image_path), n_colors=3, sample_size=5000, mode="shading", overfetch=3)
+    shuffled = pg.generate_palette(
+        str(image_path), n_colors=3, sample_size=5000, mode="shading", overfetch=3, shuffle=1,
+    )
+
+    assert baseline[0]["hex"] != shuffled[0]["hex"]
+
+
+def test_generate_palette_shuffle_beyond_pool_clamps_instead_of_crashing(tmp_path):
+    image_path = tmp_path / "wallpaper.png"
+    _make_test_image(image_path)
+    palette = pg.generate_palette(str(image_path), n_colors=1, sample_size=5000, overfetch=1, shuffle=50)
+    assert len(palette) == 1
+    int(palette[0]["hex"], 16)  # still a valid color, not a crash
+
+
 def test_generate_palette_rejects_invalid_mode(tmp_path):
     image_path = tmp_path / "wallpaper.png"
     _make_test_image(image_path)
@@ -243,6 +326,35 @@ def test_generate_palette_my_eyes_boosts_every_chosen_color(tmp_path):
         assert s2 >= s1 - 1e-6  # never LESS saturated
 
 
+def test_complement_hue_rotates_180_keeps_sat_and_lightness():
+    color = pg._make_color_entry(cm.rgb_to_lab(np.array([200.0, 90.0, 60.0])))  # warm orange
+    hue_before, sat_before, light_before = cm.rgb_to_hsl(color["rgb"])
+
+    flipped = pg._complement_hue(color)
+    hue_after, sat_after, light_after = cm.rgb_to_hsl(flipped["rgb"])
+
+    expected_hue = (hue_before + 180.0) % 360.0
+    diff = abs(hue_after - expected_hue)
+    assert min(diff, 360.0 - diff) < 2.0            # ~180° around the wheel
+    assert sat_after == pytest.approx(sat_before, abs=2.0)
+    assert light_after == pytest.approx(light_before, abs=2.0)
+
+
+def test_generate_palette_ying_yang_flips_every_color_to_its_complement(tmp_path):
+    image_path = tmp_path / "wallpaper.png"
+    _make_test_image(image_path)
+
+    normal = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000, ying_yang=False)
+    flipped = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000, ying_yang=True)
+
+    assert len(normal) == len(flipped) == 4
+    for n, f in zip(normal, flipped):
+        h_n, _s, _l = cm.rgb_to_hsl(cm.hex_to_rgb(n["hex"]))
+        h_f, _s, _l = cm.rgb_to_hsl(cm.hex_to_rgb(f["hex"]))
+        diff = abs(h_f - (h_n + 180.0) % 360.0)
+        assert min(diff, 360.0 - diff) < 12.0  # each role flipped to its complement (loose: gamut round-trip drift)
+
+
 def _make_moderate_saturation_image(path):
     # A moderately saturated (not gamut-extreme) steel-blue patch as the
     # main subject, over a distinct dark neutral background -- unlike
@@ -279,6 +391,39 @@ def test_generate_palette_shading_mode_produces_monochromatic_ramp(tmp_path):
         assert abs(light - primary_light) > 2.0  # but a genuinely different lightness
         lightnesses.append(light)
     assert len(set(round(l, 1) for l in lightnesses)) == len(lightnesses)  # all distinct
+
+
+def _make_similar_lightness_image(path):
+    # Background and subject are close in Lab lightness (~7pt apart) but
+    # different in hue/saturation -- like a real photo's midtones, unlike
+    # _make_moderate_saturation_image's dark-vs-medium (already high
+    # contrast) pairing. Reproduces the bug where shading mode's primary
+    # got contrast-adjusted toward an extreme (since reaching contrast
+    # ratio 3.0 against a similarly-light background takes a large L push),
+    # and with few colors requested the remaining shade had nowhere to go
+    # but the opposite extreme -- see generate_palette's mode=="shading"
+    # branch.
+    img = Image.new("RGB", (60, 60), (90, 90, 90))
+    pixels = img.load()
+    for x in range(15, 45):
+        for y in range(15, 45):
+            pixels[x, y] = (200, 40, 90)
+    img.save(path)
+
+
+def test_generate_palette_shading_mode_two_colors_not_pushed_to_extremes(tmp_path):
+    image_path = tmp_path / "wallpaper.png"
+    _make_similar_lightness_image(image_path)
+
+    palette = pg.generate_palette(str(image_path), n_colors=2, sample_size=5000, mode="shading")
+
+    assert len(palette) == 2
+    from color_switcher.backend import color_math as cm
+
+    lab_ls = [cm.rgb_to_lab(cm.hex_to_rgb(c["hex"]))[0] for c in palette]
+    for l in lab_ls:
+        assert 8.0 < l < 92.0  # neither color slammed into the ramp's floor/ceiling
+    assert abs(lab_ls[0] - lab_ls[1]) < 50.0  # no jarring primary-vs-shade jump
 
 
 def test_generate_palette_balanced_mode_can_pick_secondary_close_to_primary(tmp_path):
@@ -340,6 +485,99 @@ def test_score_without_background_is_unaffected_by_the_new_term():
     assert pg.score_cluster(high) > pg.score_cluster(low)
 
 
+def test_weighted_contrast_matches_single_background_when_one_cluster_dominates():
+    # A dominant cluster's coverage should pull the weighted average close
+    # to "just compare against it", reproducing the old single-background
+    # behavior when there really is one clear background. Uses contrast-heavy
+    # weights so this exercises the weighted-contrast MECHANISM specifically,
+    # not whatever balance the current presets happen to strike between
+    # contrast and coverage.
+    contrast_heavy = {"coverage": 0.1, "saturation": 0.1, "midtone": 0.1, "contrast": 0.7}
+    background = _entry(45, 50, 20, count=90, total=100)
+    tiny_other = _entry(60, -30, 10, count=10, total=100)
+    same_as_background = _entry(46, 51, 21, count=80, total=100)
+    distinct = _entry(45, -50, -20, count=10, total=100)
+
+    all_clusters = [background, tiny_other, same_as_background, distinct]
+    score_same = pg.score_cluster(same_as_background, all_clusters=all_clusters, weights=contrast_heavy)
+    score_distinct = pg.score_cluster(distinct, all_clusters=all_clusters, weights=contrast_heavy)
+    assert score_distinct > score_same
+
+
+def test_weighted_contrast_spreads_across_clusters_when_no_background_dominates():
+    # Three similarly-sized clusters (no single dominant "background") --
+    # a candidate close to just ONE of them should still score reasonably,
+    # since the pull toward "must contrast" is now spread across all three
+    # instead of anchored to one arbitrary highest-coverage pick.
+    a = _entry(45, 50, 20, count=34, total=100)
+    b = _entry(45, -50, 20, count=33, total=100)
+    close_to_a = _entry(46, 51, 21, count=10, total=100)
+
+    all_clusters = [a, b, close_to_a]
+    weighted = pg._weighted_contrast_term(close_to_a, all_clusters)
+    single_vs_a = min(cm.delta_e76(close_to_a["lab"], a["lab"]) / 60.0, 1.0)
+    # averaging in cluster b's distance should push the term higher than
+    # comparing against a (its closest neighbor) alone would
+    assert weighted > single_vs_a
+
+
+def test_weighted_contrast_term_sums_to_convex_combination_bounded_by_60():
+    # Sanity check on the normalization claim: since Σcoverage == 1 across
+    # the full cluster set, the weighted term can never exceed what the
+    # /60.0 clip already handles, no matter how many clusters are summed.
+    many_clusters = [_entry(l, 40, 0, count=1, total=20) for l in range(5, 95, 5)]
+    for c in many_clusters:
+        term = pg._weighted_contrast_term(c, many_clusters)
+        assert 0.0 <= term <= 1.0
+
+
+def test_saturation_term_is_steep_low_chroma_gets_almost_nothing():
+    # A near-grey (low S) should score ~0 on saturation, a vivid color ~1 --
+    # the steep curve (Fix C), unlike the old linear S/100 that gave S=20 a
+    # full 0.20.
+    assert pg._saturation_term(10) < 0.05
+    assert pg._saturation_term(20) < 0.2
+    assert pg._saturation_term(70) > 0.95
+    assert pg._saturation_term(45) > pg._saturation_term(25)  # monotonic increasing
+
+
+def test_midtone_term_plateaus_in_band_and_drops_at_extremes():
+    assert pg._midtone_term(50) == pytest.approx(1.0)      # comfortable middle
+    assert pg._midtone_term(45) == pytest.approx(1.0)      # still in the plateau
+    assert pg._midtone_term(8) < 0.05                      # near-black
+    assert pg._midtone_term(95) < 0.05                     # near-white
+    assert pg._midtone_term(25) < pg._midtone_term(40)     # falls off toward dark
+
+
+def test_normalize_extreme_lightness_pulls_pure_black_and_white_inward():
+    white = pg._make_color_entry(cm.rgb_to_lab(np.array([255.0, 255.0, 255.0])), label="x")
+    black = pg._make_color_entry(cm.rgb_to_lab(np.array([1.0, 1.0, 1.0])), label="x")
+    nw = pg._normalize_extreme_lightness(white)
+    nb = pg._normalize_extreme_lightness(black)
+    assert nw["hex"] != "ffffff" and nw["L"] <= 90.5
+    assert nb["hex"] != "010101" and nb["L"] >= 9.5
+
+
+def test_normalize_extreme_lightness_leaves_in_band_colors_untouched():
+    mid = pg._make_color_entry(cm.rgb_to_lab(np.array([120.0, 90.0, 60.0])), label="x")
+    result = pg._normalize_extreme_lightness(mid)
+    assert result is mid  # in-band -> returned as-is, not a rebuilt copy
+
+
+def test_generate_palette_never_emits_pure_black_or_white(tmp_path):
+    # A grayscale image asking for many colors used to surface #ffffff/#010101
+    # as farthest-point auxiliaries; the normalization pass must keep every
+    # final color inside the usable lightness band.
+    image_path = tmp_path / "grey.png"
+    _make_grayscale_image(image_path)
+    palette = pg.generate_palette(str(image_path), n_colors=10, sample_size=5000)
+    for entry in palette:
+        h = entry["hex"]
+        assert h not in ("ffffff", "000000", "010101")
+        _hue, _s, light = cm.rgb_to_hsl(cm.hex_to_rgb(h))
+        assert 9.0 <= light <= 91.0
+
+
 def test_synthesize_accent_color_is_saturated():
     accent = pg.synthesize_accent_color(seed=1)
     assert accent["S"] > 30
@@ -377,6 +615,51 @@ def test_generate_palette_synthesizes_accent_for_monochrome_image(tmp_path):
         assert sat > 30
 
 
+def test_is_monochrome_ignores_extreme_lightness_saturation_noise():
+    # Greyscale midtones plus a near-black cluster whose HSL saturation is
+    # spuriously high (the JPEG-noise artifact) must still read as monochrome:
+    # the noise sits outside the trustworthy lightness band and is ignored.
+    greys = [_entry(l, 1, 0) for l in (30, 50, 70)]
+    noise = pg._make_color_entry(cm.rgb_to_lab(np.array([12.0, 0.0, 2.0])))
+    assert noise["S"] > 8 and noise["L"] < 8  # sanity: high fake S at an extreme-dark L
+    assert pg._is_monochrome(greys + [noise])
+
+
+def test_is_monochrome_false_when_real_midtone_hue_present():
+    greys = [_entry(l, 1, 0) for l in (30, 70)]
+    real_color = _entry(50, 40, 10)  # genuinely saturated at a trustworthy lightness
+    assert real_color["S"] > 8
+    assert not pg._is_monochrome(greys + [real_color])
+
+
+def test_monochrome_accent_differs_between_images(tmp_path):
+    # Two different greyscale wallpapers must NOT get the same synthesized
+    # accent -- the old fixed seed handed every greyscale image one identical
+    # color regardless of content.
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    _make_grayscale_image(a, dark_fraction=0.30)
+    _make_grayscale_image(b, dark_fraction=0.45)  # same accent_l side, different pixels
+    pa = pg.generate_palette(str(a), n_colors=2, sample_size=3000)
+    pb = pg.generate_palette(str(b), n_colors=2, sample_size=3000)
+    assert pa[0]["hex"] != pb[0]["hex"]
+
+
+def test_monochrome_accent_is_reproducible_for_same_image(tmp_path):
+    img = tmp_path / "a.png"
+    _make_grayscale_image(img, dark_fraction=0.30)
+    p1 = pg.generate_palette(str(img), n_colors=2, sample_size=3000)
+    p2 = pg.generate_palette(str(img), n_colors=2, sample_size=3000)
+    assert p1[0]["hex"] == p2[0]["hex"]  # same wallpaper -> same accent (hook relies on this)
+
+
+def test_monochrome_accent_cycles_with_shuffle(tmp_path):
+    img = tmp_path / "a.png"
+    _make_grayscale_image(img, dark_fraction=0.30)
+    p0 = pg.generate_palette(str(img), n_colors=2, sample_size=3000, shuffle=0)
+    p1 = pg.generate_palette(str(img), n_colors=2, sample_size=3000, shuffle=1)
+    assert p0[0]["hex"] != p1[0]["hex"]  # shuffle now varies the monochrome accent too
+
+
 def _make_dominant_background_image(path):
     # A large saturated red background with one small, distinctly different
     # saturated patch -- the naive (no background-awareness) scorer would
@@ -412,7 +695,22 @@ def test_write_then_read_generation_settings_roundtrip(fake_project):
     fake_project.make_file("a.css", "#111111")
     config = fake_project.load_config()
     pg.write_generation_settings(config, {"mode": "shading", "saturate": True})
-    assert pg.read_generation_settings(config) == {"mode": "shading", "saturate": True}
+    # read_generation_settings merges onto DEFAULT_GENERATION_SETTINGS, so
+    # keys not passed to write_generation_settings (scoring, custom_percentages)
+    # come back filled in with their defaults.
+    assert pg.read_generation_settings(config) == {
+        "mode": "shading",
+        "saturate": True,
+        "scoring": "default",
+        "custom_percentages": None,
+        "weighted_contrast": True,
+        "ying_yang": False,
+        "shuffle_enabled": False,
+        "shuffle_mode": "manual",
+        "shuffle_value": 0,
+        "overfetch": 0,
+        "last_shuffle": -1,
+    }
 
 
 def test_write_generation_settings_preserves_other_config_keys(fake_project):
@@ -424,3 +722,196 @@ def test_write_generation_settings_preserves_other_config_keys(fake_project):
     with open(config.project_dir + "/config.json") as f:
         raw = json.load(f)
     assert raw["files_to_replace"] == fake_project.files
+
+
+def test_scoring_presets_add_up_to_one():
+    for name, weights in pg._SCORING_PRESETS.items():
+        assert sum(weights.values()) == pytest.approx(1.0), name
+
+
+def test_percentages_to_weights_converts_and_normalizes():
+    weights = pg.percentages_to_weights(
+        {"coverage": 20, "saturation": 40, "midtone": 30, "contrast": 10}
+    )
+    assert weights == {"coverage": 0.20, "saturation": 0.40, "midtone": 0.30, "contrast": 0.10}
+
+
+def test_percentages_to_weights_rejects_wrong_sum():
+    with pytest.raises(ValueError):
+        pg.percentages_to_weights({"coverage": 25, "saturation": 25, "midtone": 25, "contrast": 30})
+
+
+def test_percentages_to_weights_rejects_missing_key():
+    with pytest.raises(ValueError):
+        pg.percentages_to_weights({"coverage": 40, "saturation": 40, "midtone": 20})
+
+
+def test_percentages_to_weights_rejects_unknown_key():
+    with pytest.raises(ValueError):
+        pg.percentages_to_weights(
+            {"coverage": 20, "saturation": 30, "midtone": 30, "contrast": 10, "extra": 10}
+        )
+
+
+def test_percentages_to_weights_rejects_negative():
+    with pytest.raises(ValueError):
+        pg.percentages_to_weights({"coverage": -10, "saturation": 50, "midtone": 30, "contrast": 30})
+
+
+def test_resolve_scoring_weights_default_and_alternative_presets():
+    assert pg.resolve_scoring_weights("default") == pg._SCORING_PRESETS["default"]
+    assert pg.resolve_scoring_weights("alternative") == pg._SCORING_PRESETS["alternative"]
+
+
+def test_resolve_scoring_weights_rejects_unknown_scoring_name():
+    with pytest.raises(ValueError):
+        pg.resolve_scoring_weights("nonsense")
+
+
+def test_resolve_scoring_weights_custom_prefers_explicit_over_config(fake_project):
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+    pg.write_generation_settings(config, {
+        "mode": "contrast", "saturate": False, "scoring": "custom",
+        "custom_percentages": {"coverage": 10, "saturation": 10, "midtone": 10, "contrast": 70},
+    })
+
+    explicit = {"coverage": 20, "saturation": 40, "midtone": 30, "contrast": 10}
+    weights = pg.resolve_scoring_weights("custom", custom_percentages=explicit, config=config)
+    assert weights == {"coverage": 0.20, "saturation": 0.40, "midtone": 0.30, "contrast": 0.10}
+
+
+def test_resolve_scoring_weights_custom_falls_back_to_config_when_not_given(fake_project):
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+    pg.write_generation_settings(config, {
+        "mode": "contrast", "saturate": False, "scoring": "custom",
+        "custom_percentages": {"coverage": 10, "saturation": 10, "midtone": 10, "contrast": 70},
+    })
+
+    weights = pg.resolve_scoring_weights("custom", config=config)
+    assert weights == {"coverage": 0.10, "saturation": 0.10, "midtone": 0.10, "contrast": 0.70}
+
+
+def test_resolve_scoring_weights_custom_falls_back_to_default_when_nothing_configured(fake_project):
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+    assert pg.resolve_scoring_weights("custom", config=config) == pg._SCORING_PRESETS["default"]
+    assert pg.resolve_scoring_weights("custom") == pg._SCORING_PRESETS["default"]
+
+
+def test_resolve_scoring_weights_custom_still_raises_on_invalid_stored_values(fake_project):
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+    pg.write_generation_settings(config, {
+        "mode": "contrast", "saturate": False, "scoring": "custom",
+        "custom_percentages": {"coverage": 10, "saturation": 10, "midtone": 10, "contrast": 10},  # sums to 40
+    })
+    with pytest.raises(ValueError):
+        pg.resolve_scoring_weights("custom", config=config)
+
+
+def test_resolve_shuffle_index_manual_value_used_as_is_and_persisted(fake_project):
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+
+    resolved = pg.resolve_shuffle_index(3, n_colors=4, overfetch=2, config=config)
+
+    assert resolved == 3
+    assert pg.read_generation_settings(config)["last_shuffle"] == 3
+
+
+def test_resolve_shuffle_index_next_starts_at_zero_with_no_prior_anchor(fake_project):
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+
+    assert pg.resolve_shuffle_index("next", n_colors=4, overfetch=2, config=config) == 0
+
+
+def test_resolve_shuffle_index_next_continues_from_last_anchor(fake_project):
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+    pg.resolve_shuffle_index(2, n_colors=4, overfetch=2, config=config)  # anchor=2, pool_bound=6
+
+    assert pg.resolve_shuffle_index("next", n_colors=4, overfetch=2, config=config) == 3
+
+
+def test_resolve_shuffle_index_next_wraps_around_pool_bound(fake_project):
+    # pool_bound = n_colors + overfetch = 6 -- an anchor at the last index
+    # (5) should wrap back to 0 instead of getting stuck at a clamp.
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+    pg.resolve_shuffle_index(5, n_colors=4, overfetch=2, config=config)
+
+    assert pg.resolve_shuffle_index("next", n_colors=4, overfetch=2, config=config) == 0
+
+
+def test_resolve_shuffle_index_without_config_does_not_persist():
+    # no config to read/write an anchor from -- "next" always starts at 0.
+    assert pg.resolve_shuffle_index("next", n_colors=4, overfetch=2, config=None) == 0
+    assert pg.resolve_shuffle_index("next", n_colors=4, overfetch=2, config=None) == 0
+
+
+def test_resolve_shuffle_index_rejects_negative():
+    with pytest.raises(ValueError):
+        pg.resolve_shuffle_index(-1, n_colors=4, overfetch=0, config=None)
+
+
+def test_score_cluster_accepts_custom_weights():
+    # "default" leans harder into contrast and less into coverage than
+    # "alternative" does -- a candidate that's far from the background but
+    # low-coverage should be favored more under "default" than "alternative".
+    background = _entry(50, 0, 0, count=50, total=100)
+    high_contrast_low_coverage = _entry(50, 80, 0, count=5, total=100)
+    low_contrast_high_coverage = _entry(50, 5, 0, count=40, total=100)
+
+    default_weights = pg._SCORING_PRESETS["default"]
+    alt_weights = pg._SCORING_PRESETS["alternative"]
+
+    default_gap = (pg.score_cluster(high_contrast_low_coverage, background=background, weights=default_weights)
+                   - pg.score_cluster(low_contrast_high_coverage, background=background, weights=default_weights))
+    alt_gap = (pg.score_cluster(high_contrast_low_coverage, background=background, weights=alt_weights)
+               - pg.score_cluster(low_contrast_high_coverage, background=background, weights=alt_weights))
+    assert default_gap > alt_gap
+
+
+def _spy_on_score_cluster(monkeypatch):
+    """Records the (background, all_clusters) kwargs generate_palette's
+    internal `score` closure passes to score_cluster on every call, without
+    changing its behavior."""
+    calls = []
+    original = pg.score_cluster
+
+    def spy(c, background=None, all_clusters=None, weights=None):
+        calls.append((background, all_clusters))
+        return original(c, background=background, all_clusters=all_clusters, weights=weights)
+
+    # generate_palette lives in pg.core and calls the score_cluster imported
+    # into THAT module's namespace, so patch the name there -- patching the
+    # package-level re-export (pg.score_cluster) wouldn't be seen by core.
+    monkeypatch.setattr(pg.core, "score_cluster", spy)
+    return calls
+
+
+def test_generate_palette_weighted_contrast_true_scores_against_all_clusters(tmp_path, monkeypatch):
+    image_path = tmp_path / "wallpaper.png"
+    _make_moderate_saturation_image(image_path)
+    calls = _spy_on_score_cluster(monkeypatch)
+
+    pg.generate_palette(str(image_path), n_colors=2, sample_size=3000, weighted_contrast=True)
+
+    assert calls  # sanity: the spy actually intercepted calls
+    assert all(all_clusters is not None for _background, all_clusters in calls)
+    assert all(background is None for background, _all_clusters in calls)
+
+
+def test_generate_palette_weighted_contrast_false_scores_against_single_background(tmp_path, monkeypatch):
+    image_path = tmp_path / "wallpaper.png"
+    _make_moderate_saturation_image(image_path)
+    calls = _spy_on_score_cluster(monkeypatch)
+
+    pg.generate_palette(str(image_path), n_colors=2, sample_size=3000, weighted_contrast=False)
+
+    assert calls
+    assert all(background is not None for background, _all_clusters in calls)
+    assert all(all_clusters is None for _background, all_clusters in calls)

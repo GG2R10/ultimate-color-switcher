@@ -1,6 +1,6 @@
-# Maintainer: GG2R10 <FILL_ME_IN at example dot com>
+# Maintainer: GG2R10 <herc2435 at gmail dot com>
 pkgname=ucs-git
-pkgver=r2.d929acb
+pkgver=r7.b82a971
 pkgrel=1
 pkgdesc="Remap colors across your dotfiles from a manual or wallpaper-generated palette"
 arch=('any')

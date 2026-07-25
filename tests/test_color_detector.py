@@ -76,3 +76,85 @@ def test_grouped_by_hex_finds_siblings():
     assert len(groups["00ccff"]) == 2
     assert {c["id"] for c in groups["00ccff"]} == {1, 2}
     assert len(groups["ff0000"]) == 1
+
+
+# --- auto-scan ~/.config -------------------------------------------------------
+
+def test_scan_finds_color_config_files_by_format(tmp_path):
+    cfg = tmp_path / ".config"
+    (cfg / "waybar").mkdir(parents=True)
+    (cfg / "waybar" / "style.css").write_text(".a { color: #1affcc; }")   # css + color -> in
+    (cfg / "hypr").mkdir()
+    (cfg / "hypr" / "hyprland.conf").write_text("col.active = rgb(255,0,0)")  # conf + rgb -> in
+    (cfg / "notes.txt").write_text("my #1affcc note")                    # color but wrong format -> out
+    (cfg / "empty.toml").write_text("name = 'no colors here'")           # right format, no color -> out
+
+    found = cd.scan_config_dir_for_color_files(str(cfg))
+    names = {__import__("os").path.basename(p) for p in found}
+    assert names == {"style.css", "hyprland.conf"}
+
+
+def test_scan_matches_bare_config_filename(tmp_path):
+    cfg = tmp_path / ".config"
+    (cfg / "git").mkdir(parents=True)
+    (cfg / "git" / "config").write_text("[color] ui = #336699")  # no extension, named 'config'
+    found = cd.scan_config_dir_for_color_files(str(cfg))
+    assert len(found) == 1 and found[0].endswith("git/config")
+
+
+def test_scan_skips_cache_logs_git_and_node_modules_dirs(tmp_path):
+    cfg = tmp_path / ".config"
+    for noise in ("Cache", "GPUCache", "logs", ".git", "node_modules"):
+        d = cfg / "app" / noise
+        d.mkdir(parents=True)
+        (d / "theme.css").write_text("color: #abcdef")
+    (cfg / "app" / "real.css").write_text("color: #abcdef")  # the only one kept
+    found = cd.scan_config_dir_for_color_files(str(cfg))
+    assert len(found) == 1 and found[0].endswith("app/real.css")
+
+
+def test_scan_skips_binary_and_oversized_files(tmp_path):
+    cfg = tmp_path / ".config"
+    cfg.mkdir()
+    (cfg / "bin.conf").write_bytes(b"#abcdef\x00\x00 binary junk")        # NUL byte -> binary -> out
+    big = "\n".join(f"#{i:06x}" for i in range(200000))                   # > 1MB of hex -> out
+    (cfg / "huge.css").write_text(big)
+    (cfg / "ok.conf").write_text("#abcdef")                               # kept
+    found = cd.scan_config_dir_for_color_files(str(cfg))
+    assert len(found) == 1 and found[0].endswith("ok.conf")
+
+
+def test_scan_does_not_recurse_into_symlinked_dirs(tmp_path):
+    import os
+    cfg = tmp_path / ".config"
+    (cfg / "real").mkdir(parents=True)
+    (cfg / "real" / "a.css").write_text("#111111")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "escaped.css").write_text("#222222")
+    os.symlink(str(outside), str(cfg / "link"))  # symlinked dir must not be walked into
+    found = cd.scan_config_dir_for_color_files(str(cfg))
+    assert any(p.endswith("real/a.css") for p in found)
+    assert not any("escaped.css" in p for p in found)
+
+
+def test_group_paths_by_top_level_collapses_nested_subfolders():
+    base = "/c"
+    paths = [
+        "/c/waybar/style.css",
+        "/c/claude/projects/a/x.json",   # deep nesting must collapse under "claude"
+        "/c/claude/projects/b/y.json",
+        "/c/claude/settings.json",
+        "/c/app.conf",                    # file directly under base
+    ]
+    groups = cd.group_paths_by_top_level(paths, base_dir=base)
+    as_dict = {top: files for top, files in groups}
+
+    # everything under claude/** is one toggleable group, files keep their subpath
+    assert as_dict["/c/claude"] == [
+        ("/c/claude/projects/a/x.json", "projects/a/x.json"),
+        ("/c/claude/projects/b/y.json", "projects/b/y.json"),
+        ("/c/claude/settings.json", "settings.json"),
+    ]
+    assert as_dict["/c/waybar"] == [("/c/waybar/style.css", "style.css")]
+    assert as_dict["/c"] == [("/c/app.conf", "app.conf")]  # top-level file grouped under base

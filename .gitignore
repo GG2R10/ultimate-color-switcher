@@ -10,3 +10,12 @@ color_switcher/gui/blueprints/*.ui
 dist/
 build/
 *.egg-info/
+
+# makepkg build artifacts (running makepkg inside packaging/ leaves these behind)
+packaging/pkg/
+packaging/src/
+packaging/*.pkg.tar.zst
+packaging/*.log
+packaging/ucs-git/
+# Local clone of the AUR package repo (pushed to AUR separately, not part of this repo)
+/ucs-git/

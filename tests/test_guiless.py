@@ -42,7 +42,9 @@ def test_exact_size_applies_in_insertion_order(fake_project, monkeypatch):
 
 def test_surplus_palette_needs_confirmation(fake_project, monkeypatch):
     """3 distinct roles needed, 4 palette colors given -- the 4th goes
-    unused. Soft warning, skippable with force."""
+    unused. Soft warning, skippable with yolo (NOT force: force is only for
+    real conflicts, so accepting "extra colors" mustn't also wave conflicts
+    through)."""
     config, detected, store, fp = _setup(fake_project, monkeypatch)
     palette_json = [{"hex": "#aaaaaa"}, {"hex": "#bbbbbb"}, {"hex": "#cccccc"}, {"hex": "#dddddd"}]
 
@@ -50,11 +52,40 @@ def test_surplus_palette_needs_confirmation(fake_project, monkeypatch):
     assert result["status"] == "needs_confirmation"
     assert result["surplus_palette_count"] == 1
 
-    forced = guiless.apply_palette(
+    # force alone does NOT bypass a surplus anymore -- that's yolo's job.
+    still_blocked = guiless.apply_palette(
         palette_json, store.path, config.backup_dir, dry_run=True, force=True
     )
-    assert forced["status"] == "applied"
-    assert len(forced["results"]) == 3
+    assert still_blocked["status"] == "needs_confirmation"
+
+    yolo = guiless.apply_palette(
+        palette_json, store.path, config.backup_dir, dry_run=True, yolo=True
+    )
+    assert yolo["status"] == "applied"
+    assert len(yolo["results"]) == 3
+
+
+def test_yolo_does_not_bypass_conflicts(fake_project, monkeypatch):
+    """yolo waves through surplus colors but must NOT wave through a real
+    case-1/convergence conflict -- that still requires force. Guards the whole
+    point of splitting the two flags."""
+    config, detected, store, fp = _setup(fake_project, monkeypatch)
+
+    order = [e["old_id"] for e in store.entries]
+    detected_by_id = {c["id"]: c for c in detected}
+    hexes_in_order = [detected_by_id[oid]["color"] for oid in order]
+    rotated = hexes_in_order[1:] + hexes_in_order[:1]  # each target equals a DIFFERENT entry's current color
+    palette_json = [{"hex": f"#{h}"} for h in rotated]
+
+    with_yolo = guiless.apply_palette(
+        palette_json, store.path, config.backup_dir, dry_run=True, yolo=True
+    )
+    assert with_yolo["status"] == "conflicts"  # yolo didn't help -- needs force
+
+    with_force = guiless.apply_palette(
+        palette_json, store.path, config.backup_dir, dry_run=True, force=True
+    )
+    assert with_force["status"] == "applied"
 
 
 def test_insufficient_palette_blocks_even_with_force(fake_project, monkeypatch):

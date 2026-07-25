@@ -14,9 +14,12 @@ still only needs a 2-color palette.
 
 If the palette has fewer colors than distinct roles needed, nothing is
 applied — there is no color to assign to the missing role(s), and this is
-never overridden by force (regenerate a palette with enough colors instead).
-If the palette has MORE colors than needed, the extra ones are simply
-unused; the caller must pass force=True after confirming with the user.
+never overridden (regenerate a palette with enough colors instead). If the
+palette has MORE colors than needed, the extra ones are simply unused; the
+caller must pass yolo=True after confirming with the user. Real mapping
+conflicts (case 1 / convergence) are a separate gate, waved through only by
+force=True — so "extra colors are fine" (yolo) never silently accepts a
+conflict.
 """
 
 import json
@@ -44,6 +47,7 @@ def apply_palette(
     backup_dir: str,
     dry_run: bool = False,
     force: bool = False,
+    yolo: bool = False,
     project_dir: str = None,
 ) -> dict:
     """
@@ -55,10 +59,14 @@ def apply_palette(
             against).
         backup_dir: where color_replacer.backup_files should mirror originals.
         dry_run: simulate without touching files or creating a backup.
-        force: skip the surplus-palette confirmation and the case-1/
-            convergence conflict check (only pass this after the caller has
-            confirmed with the user). Does NOT bypass an insufficient
-            palette — see module docstring.
+        force: skip the case-1/convergence conflict check only (pass after the
+            caller has confirmed with the user). Does NOT bypass an
+            insufficient palette (see module docstring) nor the surplus-color
+            confirmation (that's `yolo`).
+        yolo: skip the surplus-palette confirmation only -- i.e. apply even
+            though the palette has more colors than the mapping needs. Kept
+            separate from `force` so accepting "extra colors, that's fine"
+            doesn't also silently wave through real mapping conflicts.
         project_dir: passed through to mapping_store.read_mapping_csv so a
             project-relative #old_palette= header resolves correctly.
 
@@ -83,7 +91,7 @@ def apply_palette(
         return {"status": "insufficient_palette", "needed": n_needed, "available": n_palette}
 
     surplus_palette_count = n_palette - n_needed
-    if surplus_palette_count and not force:
+    if surplus_palette_count and not yolo:
         return {"status": "needs_confirmation", "surplus_palette_count": surplus_palette_count}
 
     # Compact the mapping's distinct roles (whatever numbers they happened
