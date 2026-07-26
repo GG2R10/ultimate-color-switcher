@@ -615,12 +615,25 @@ def _scoring_list_factory() -> Gtk.SignalListItemFactory:
     return factory
 
 
-def build_palette_generation_group(config) -> Adw.PreferencesGroup:
+def build_palette_generation_group(config, settings=None) -> tuple:
     """An Adw.PreferencesGroup configuring "Generar paleta desde imagen…"
     (mode + saturation boost / --my-eyes), persisted immediately to
     config.json via palette_generator.read/write_generation_settings —
-    same real-time-save philosophy as the restart-actions group."""
-    settings = pg.read_generation_settings(config)
+    same real-time-save philosophy as the restart-actions group.
+
+    `settings`: pass the SAME dict this dialog's other groups use (see
+    show_palette_generation_settings) rather than each group reading its own
+    independent copy -- otherwise, editing a setting in one group and then a
+    DIFFERENT setting in another group in the same dialog session would have
+    the second write silently revert the first (each group's own snapshot,
+    taken when the dialog opened, doesn't know about the other's edit).
+    Defaults to a fresh independent read when not given (a standalone call).
+
+    Returns (group, mode_row): mode_row is exposed so
+    build_advanced_generation_group's "Shading" mini-section (a separate
+    Adw.PreferencesGroup) can show/hide itself in sync, without either group
+    needing to own the other's state."""
+    settings = settings if settings is not None else pg.read_generation_settings(config)
 
     group = Adw.PreferencesGroup(
         title="Generación de paleta desde imagen",
@@ -726,14 +739,18 @@ def build_palette_generation_group(config) -> Adw.PreferencesGroup:
 
     scoring_row.connect("notify::selected", on_scoring_changed)
 
-    return group
+    return group, mode_row
 
 
-def build_contrast_comparison_group(config) -> Adw.PreferencesGroup:
+def build_contrast_comparison_group(config, settings=None) -> Adw.PreferencesGroup:
     """Whether score_cluster's contrast_term (see palette_generator) is
     computed against every cluster (weighted by coverage) or just the
     single highest-coverage one -- palette_generation.weighted_contrast,
     same real-time-save group as build_palette_generation_group.
+
+    `settings`: see build_palette_generation_group's docstring -- pass the
+    SAME dict the dialog's other groups use, to avoid one group's write
+    reverting another's.
 
     Two mutually exclusive, fully-clickable Adw.ActionRows with a small
     checkmark suffix on whichever is active, rather than Gtk.CheckButton
@@ -741,7 +758,7 @@ def build_contrast_comparison_group(config) -> Adw.PreferencesGroup:
     CSS shrink -- min-width/-gtk-icon-size/font-size overrides all measured
     as no-ops) or a Adw.ComboRow like the other two settings here, matching
     the always-visible two-option layout it was speced with."""
-    settings = pg.read_generation_settings(config)
+    settings = settings if settings is not None else pg.read_generation_settings(config)
 
     group = Adw.PreferencesGroup(
         title="Comparación de contraste",
@@ -788,14 +805,27 @@ def build_contrast_comparison_group(config) -> Adw.PreferencesGroup:
     return group
 
 
-def build_advanced_generation_group(config) -> Adw.PreferencesGroup:
-    """Overfetch + shuffle -- palette_generation.{overfetch, shuffle_enabled,
-    shuffle_mode, shuffle_value}, same real-time-save group as the others
-    here. Tucked into a collapsed Adw.ExpanderRow ("Opciones avanzadas")
-    since these are power-user/scripting knobs most people never touch --
-    see resolve_shuffle_index/select_primary in palette_generator for what
-    they actually do."""
-    settings = pg.read_generation_settings(config)
+_SHADING_DIRECTIONS_GUI = ["dark", "light"]
+_SHADING_DIRECTION_LABELS = {"dark": "Oscuro (dark)", "light": "Claro (light)"}
+
+
+def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw.PreferencesGroup:
+    """Overfetch + shuffle + shading direction/luminance -- palette_generation.
+    {overfetch, shuffle_enabled, shuffle_mode, shuffle_value, shading_direction,
+    shading_min_luminance, shading_max_luminance}, same real-time-save group as
+    the others here. Tucked into collapsed Adw.ExpanderRows ("Opciones
+    avanzadas" / "Shading") since these are power-user/scripting knobs most
+    people never touch -- see resolve_shuffle_index/select_primary/
+    generate_shading_series in palette_generator for what they actually do.
+
+    mode_row (from build_palette_generation_group): the Shading section only
+    makes sense when mode="shading", so it shows/hides itself in sync with
+    that combo row rather than needing its own copy of `mode`.
+
+    `settings`: see build_palette_generation_group's docstring -- pass the
+    SAME dict the dialog's other groups use, to avoid one group's write
+    reverting another's."""
+    settings = settings if settings is not None else pg.read_generation_settings(config)
 
     group = Adw.PreferencesGroup()
     expander = Adw.ExpanderRow(
@@ -866,15 +896,140 @@ def build_advanced_generation_group(config) -> Adw.PreferencesGroup:
 
     _sync_shuffle_visibility()
 
+    shading_expander = Adw.ExpanderRow(
+        title="Shading",
+        subtitle="Dirección y límites de luminancia del ramp -- solo aplica con modo 'shading'.",
+    )
+    group.add(shading_expander)
+
+    direction_string_list = Gtk.StringList.new(
+        [_SHADING_DIRECTION_LABELS[d] for d in _SHADING_DIRECTIONS_GUI]
+    )
+    direction_row = Adw.ComboRow(title="Dirección", model=direction_string_list)
+    direction_row.set_selected(_SHADING_DIRECTIONS_GUI.index(settings.get("shading_direction", "dark")))
+    shading_expander.add_row(direction_row)
+
+    min_lum_adjustment = Gtk.Adjustment(
+        value=settings.get("shading_min_luminance", 8.0), lower=0, upper=100, step_increment=1, page_increment=5,
+    )
+    min_lum_row = Adw.SpinRow(
+        title="Luminancia mínima", subtitle="Solo con dirección 'dark'.",
+        adjustment=min_lum_adjustment, digits=0,
+    )
+    shading_expander.add_row(min_lum_row)
+
+    max_lum_adjustment = Gtk.Adjustment(
+        value=settings.get("shading_max_luminance", 92.0), lower=0, upper=100, step_increment=1, page_increment=5,
+    )
+    max_lum_row = Adw.SpinRow(
+        title="Luminancia máxima", subtitle="Solo con dirección 'light'.",
+        adjustment=max_lum_adjustment, digits=0,
+    )
+    shading_expander.add_row(max_lum_row)
+
+    def on_direction_changed(row, _pspec):
+        settings["shading_direction"] = _SHADING_DIRECTIONS_GUI[row.get_selected()]
+        pg.write_generation_settings(config, settings)
+
+    def on_min_lum_changed(row, _pspec=None):
+        settings["shading_min_luminance"] = row.get_value()
+        pg.write_generation_settings(config, settings)
+
+    def on_max_lum_changed(row, _pspec=None):
+        settings["shading_max_luminance"] = row.get_value()
+        pg.write_generation_settings(config, settings)
+
+    direction_row.connect("notify::selected", on_direction_changed)
+    min_lum_row.connect("notify::value", on_min_lum_changed)
+    max_lum_row.connect("notify::value", on_max_lum_changed)
+
+    def _sync_shading_visibility(*_args):
+        is_shading = mode_row is not None and _GENERATION_MODES[mode_row.get_selected()] == "shading"
+        shading_expander.set_visible(is_shading)
+
+    if mode_row is not None:
+        mode_row.connect("notify::selected", _sync_shading_visibility)
+    _sync_shading_visibility()
+
     return group
 
 
-def show_palette_generation_settings(parent: Gtk.Widget, config):
-    """Reachable any time from the header menu."""
+def build_other_settings_group(config) -> Adw.PreferencesGroup:
+    """Rarely-touched fine-tuning knobs that don't fit neatly into the main
+    generation settings -- currently just --my-eyes' chroma-boost factor/cap
+    (palette_generation.{my_eyes_factor, my_eyes_max_chroma}), same
+    real-time-save group as the others. See
+    palette_generator._boost_saturation for what these mean: --my-eyes
+    multiplies a color's CIELAB chroma by `factor`, capped at `max_chroma`."""
+    settings = pg.read_generation_settings(config)
+
+    group = Adw.PreferencesGroup(
+        title="Saturar colores (--my-eyes)",
+        description="Ajuste fino del boost de croma CIELAB (C*) usado por 'Saturar colores'.",
+    )
+
+    factor_adjustment = Gtk.Adjustment(
+        value=settings.get("my_eyes_factor", 1.5), lower=1.0, upper=10.0,
+        step_increment=0.1, page_increment=0.5,
+    )
+    factor_row = Adw.SpinRow(
+        title="Multiplicador de croma",
+        subtitle="Cuánto se multiplica el croma CIELAB (C*) de cada color elegido.",
+        adjustment=factor_adjustment, digits=2,
+    )
+
+    def on_factor_changed(row, _pspec=None):
+        settings["my_eyes_factor"] = row.get_value()
+        pg.write_generation_settings(config, settings)
+
+    factor_row.connect("notify::value", on_factor_changed)
+    group.add(factor_row)
+
+    max_chroma_adjustment = Gtk.Adjustment(
+        value=settings.get("my_eyes_max_chroma", 132.0), lower=10.0, upper=200.0,
+        step_increment=1, page_increment=10,
+    )
+    max_chroma_row = Adw.SpinRow(
+        title="Croma máximo",
+        subtitle="Tope del croma CIELAB resultante -- evita distorsión de tono en colores extremos.",
+        adjustment=max_chroma_adjustment, digits=0,
+    )
+
+    def on_max_chroma_changed(row, _pspec=None):
+        settings["my_eyes_max_chroma"] = row.get_value()
+        pg.write_generation_settings(config, settings)
+
+    max_chroma_row.connect("notify::value", on_max_chroma_changed)
+    group.add(max_chroma_row)
+
+    return group
+
+
+def show_other_settings(parent: Gtk.Widget, config):
+    """"Otros…": rarely-touched fine-tuning knobs, reachable from the header
+    menu. Currently just the --my-eyes chroma-boost group; a placeholder
+    name/section for whatever else ends up not fitting elsewhere."""
     page = Adw.PreferencesPage()
-    page.add(build_palette_generation_group(config))
-    page.add(build_contrast_comparison_group(config))
-    page.add(build_advanced_generation_group(config))
+    page.add(build_other_settings_group(config))
+    prefs = Adw.PreferencesDialog()
+    prefs.set_title("Otros")
+    prefs.add(page)
+    prefs.present(parent)
+
+
+def show_palette_generation_settings(parent: Gtk.Widget, config):
+    """Reachable any time from the header menu.
+
+    All three groups here share ONE settings dict (read once), so editing a
+    setting in one group and then a different one in another group during
+    the same dialog session doesn't have the second write silently revert
+    the first -- see build_palette_generation_group's docstring."""
+    settings = pg.read_generation_settings(config)
+    page = Adw.PreferencesPage()
+    generation_group, mode_row = build_palette_generation_group(config, settings=settings)
+    page.add(generation_group)
+    page.add(build_contrast_comparison_group(config, settings=settings))
+    page.add(build_advanced_generation_group(config, mode_row=mode_row, settings=settings))
     prefs = Adw.PreferencesDialog()
     prefs.set_title("Generación de paleta")
     prefs.add(page)

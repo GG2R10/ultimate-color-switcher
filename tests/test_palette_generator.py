@@ -157,16 +157,76 @@ def test_generate_shading_series_is_monotonic_not_alternating():
     assert ls == sorted(ls) or ls == sorted(ls, reverse=True)
 
 
-def test_generate_shading_series_prefers_darker_when_room_is_similar():
-    primary = _entry(50, 40, -10)  # roughly centered -- similar room either way
+def test_generate_shading_series_defaults_to_dark():
+    """direction defaults to "dark" -- a "shade" mixes toward black by
+    definition (standard color-theory terminology); a lighter variant is a
+    "tint", a different, unrelated concept this mode doesn't produce unless
+    direction="light" is explicitly requested."""
+    primary = _entry(50, 40, -10)
     shades = pg.generate_shading_series(primary, 2)
-    assert shades[0]["lab"][0] < 50  # goes darker, not lighter
+    assert shades[0]["lab"][0] < 50 and shades[1]["lab"][0] < 50
 
 
-def test_generate_shading_series_prefers_lighter_when_primary_is_already_dark():
-    dark_primary = _entry(12, 30, -5)  # little room left to go darker
+def test_generate_shading_series_light_direction_is_explicit():
+    primary = _entry(50, 40, -10)
+    shades = pg.generate_shading_series(primary, 2, direction="light")
+    assert shades[0]["lab"][0] > 50 and shades[1]["lab"][0] > 50
+
+
+def test_generate_shading_series_rejects_invalid_direction():
+    primary = _entry(50, 40, -10)
+    with pytest.raises(ValueError):
+        pg.generate_shading_series(primary, 2, direction="sideways")
+
+
+def test_generate_shading_series_matches_the_fractional_formula():
+    """Each shade i (1-indexed) lands at i/n_colors of the way from primary
+    to the target extreme, where n_colors = n_needed+1 (primary included) --
+    e.g. primary L=60, max_luminance=85, 3 total colors (2 shades): shade1 at
+    1/3 of the way (60 + 1/3*25 = 68.33), shade2 at 2/3 (60 + 2/3*25 = 76.67).
+    Deliberately never reaches the full extreme with few colors -- that's
+    what keeps a short ramp from jumping straight to it."""
+    primary = _entry(60, 20, 5)
+    shades = pg.generate_shading_series(primary, 2, direction="light", max_luminance=85.0)
+    assert shades[0]["lab"][0] == pytest.approx(68.333, abs=0.01)
+    assert shades[1]["lab"][0] == pytest.approx(76.667, abs=0.01)
+    assert shades[1]["lab"][0] < 85.0  # never fully reaches the extreme
+
+
+def test_generate_shading_series_fewer_colors_means_gentler_step():
+    """Regression: with plenty of available room but few colors requested,
+    the ramp used to always place the single/last shade exactly at
+    min_luminance/max_luminance regardless of how extreme a jump that was
+    from primary -- e.g. primary at L=33 (min_luminance=8, 59-Lab-point room)
+    would leap all the way there in one step. Scaling each shade by
+    i/n_colors makes fewer requested colors use a smaller fraction of that
+    room automatically, no separate cap needed: 1 shade only reaches 1/2 of
+    the room, while 5 shades reach up to 5/6 of it."""
+    primary = _entry(33, 40, -10)
+    one_shade = pg.generate_shading_series(primary, 1)
+    five_shades = pg.generate_shading_series(primary, 5)
+    delta_one = 33 - one_shade[0]["lab"][0]
+    delta_five_last = 33 - five_shades[-1]["lab"][0]
+    assert delta_one == pytest.approx((33 - 8) * (1 / 2), abs=0.01)
+    assert delta_five_last == pytest.approx((33 - 8) * (5 / 6), abs=0.01)
+    assert delta_one < delta_five_last  # fewer colors -> gentler step
+
+
+def test_generate_shading_series_degrades_gracefully_near_the_extreme():
+    """Primary already close to min_luminance still darkens (never flips to
+    lighter, never overshoots past min_luminance) -- just a small step,
+    since there's only a small fraction of room to scale from."""
+    dark_primary = _entry(12, 30, -5)  # min_luminance=8 default -- only 4 Lab-L points of room
     shades = pg.generate_shading_series(dark_primary, 2)
-    assert shades[0]["lab"][0] > 12  # goes lighter instead
+    assert shades[0]["lab"][0] < 12 and shades[1]["lab"][0] < 12  # still darker, never flips
+    assert shades[1]["lab"][0] > 8.0  # never overshoots past min_luminance
+    assert shades[1]["lab"][0] == pytest.approx(12 - (12 - 8) * (2 / 3), abs=0.01)
+
+
+def test_generate_shading_series_custom_luminance_bounds():
+    primary = _entry(50, 40, -10)
+    shades = pg.generate_shading_series(primary, 1, min_luminance=40.0)
+    assert shades[0]["lab"][0] == pytest.approx(50 - (50 - 40) * 0.5, abs=0.01)
 
 
 def test_select_auxiliaries_avoids_reusing_already_chosen():
@@ -351,27 +411,32 @@ def test_generate_palette_rejects_invalid_mode(tmp_path):
         pg.generate_palette(str(image_path), n_colors=2, mode="nonsense")
 
 
-def test_boost_saturation_raises_saturation_keeps_hue_and_lightness():
-    from color_switcher.backend import color_math as cm
+def test_boost_saturation_multiplies_chroma_keeps_hue_and_lightness():
+    color = pg._make_color_entry(np.array([50.0, 20.0, -10.0]))  # moderate chroma
+    chroma_before = float(np.hypot(color["lab"][1], color["lab"][2]))
+    hue_before = float(np.arctan2(color["lab"][2], color["lab"][1]))
 
-    color = pg._make_color_entry(cm.rgb_to_lab(np.array([120.0, 100.0, 90.0])))  # mildly saturated
-    hue_before, sat_before, light_before = cm.rgb_to_hsl(color["rgb"])
+    boosted = pg._boost_saturation(color, factor=2.0, max_chroma=132.0)
+    chroma_after = float(np.hypot(boosted["lab"][1], boosted["lab"][2]))
+    hue_after = float(np.arctan2(boosted["lab"][2], boosted["lab"][1]))
 
-    boosted = pg._boost_saturation(color, amount=30.0)
-    hue_after, sat_after, light_after = cm.rgb_to_hsl(boosted["rgb"])
-
-    assert sat_after == pytest.approx(min(sat_before + 30.0, 100.0), abs=1.0)
-    assert hue_after == pytest.approx(hue_before, abs=1.0)
-    assert light_after == pytest.approx(light_before, abs=1.0)
+    assert chroma_after == pytest.approx(chroma_before * 2.0, abs=0.01)
+    assert hue_after == pytest.approx(hue_before, abs=0.01)
+    assert boosted["lab"][0] == pytest.approx(color["lab"][0], abs=0.01)  # lightness untouched
 
 
-def test_boost_saturation_clamps_at_100():
-    from color_switcher.backend import color_math as cm
+def test_boost_saturation_caps_at_max_chroma():
+    color = pg._make_color_entry(np.array([50.0, 60.0, 40.0]))  # already high chroma
+    boosted = pg._boost_saturation(color, factor=3.0, max_chroma=100.0)
+    chroma_after = float(np.hypot(boosted["lab"][1], boosted["lab"][2]))
+    assert chroma_after == pytest.approx(100.0, abs=0.01)  # capped, not chroma_before*3
 
-    color = pg._make_color_entry(cm.rgb_to_lab(np.array([255.0, 0.0, 0.0])))  # already fully saturated
-    boosted = pg._boost_saturation(color, amount=30.0)
-    _hue, sat, _light = cm.rgb_to_hsl(boosted["rgb"])
-    assert sat <= 100.0 + 1e-6
+
+def test_boost_saturation_default_factor_and_cap():
+    color = pg._make_color_entry(np.array([50.0, 20.0, 0.0]))  # C*=20
+    boosted = pg._boost_saturation(color)  # defaults: factor=1.5, max_chroma=132
+    chroma_after = float(np.hypot(boosted["lab"][1], boosted["lab"][2]))
+    assert chroma_after == pytest.approx(30.0, abs=0.01)  # 20*1.5, well under the 132 cap
 
 
 def test_generate_palette_my_eyes_boosts_every_chosen_color(tmp_path):
@@ -774,6 +839,11 @@ def test_write_then_read_generation_settings_roundtrip(fake_project):
         "shuffle_value": 0,
         "overfetch": 0,
         "last_shuffle": -1,
+        "shading_direction": "dark",
+        "shading_min_luminance": 8.0,
+        "shading_max_luminance": 92.0,
+        "my_eyes_factor": 1.5,
+        "my_eyes_max_chroma": 132.0,
     }
 
 

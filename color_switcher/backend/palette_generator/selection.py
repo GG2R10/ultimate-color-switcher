@@ -177,24 +177,51 @@ def select_secondary(clusters: list, primary: dict, min_delta_e: float = 25.0,
     return synthesize_shade(primary)
 
 
-def generate_shading_series(primary: dict, n_needed: int, min_l: float = 8.0, max_l: float = 92.0) -> list:
+_SHADING_DIRECTIONS = ("dark", "light")
+
+
+def generate_shading_series(primary: dict, n_needed: int, direction: str = "dark",
+                            min_luminance: float = 8.0, max_luminance: float = 92.0) -> list:
     """"shading" mode: n_needed monochromatic variants of `primary` -- same
     hue/chroma (Lab a, b), only lightness changes -- as a single, monotonic
-    ramp toward one end (NOT alternating lighter/darker: that reads as a
-    jarring zigzag, and lighter shades of a saturated color look
-    washed-out/pastel regardless of chroma, since the sRGB gamut narrows
-    sharply near white -- an inherent property of RGB, not a bug). Defaults
-    to going darker (stays visually "rich"), unless primary is already dark
-    enough that there's meaningfully more room going lighter instead."""
+    ramp toward min_luminance ("dark", the default: a "shade" mixes toward
+    black, standard color-theory terminology) or max_luminance ("light" --
+    technically a "tint", but exposed as a shading direction rather than a
+    separate mode, since it's the same mechanism mirrored). Direction is
+    always explicit, never auto-picked: an earlier version tried to guess
+    "whichever direction has more room", which both read as arbitrary and
+    directly contradicted what "shade" is supposed to mean once it picked
+    lighter.
+
+    Each shade i (1-indexed, i=1..n_needed) lands at a FRACTION of the way
+    from primary to the target extreme, scaled by i/n_colors where n_colors
+    = n_needed+1 (the total palette size, primary included) -- e.g. i=1 of
+    3 total colors reaches 1/3 of the way, i=2 reaches 2/3. This is what
+    keeps the ramp graceful instead of an earlier version's problem: with
+    only 1-2 colors requested, a naive "always land exactly on the extreme"
+    ramp had nowhere gentler to put its one shade, jumping straight to
+    min_luminance/max_luminance however far that was from primary (e.g. 57+
+    Lab-L points in one step). Scaling by i/n_colors means fewer requested
+    colors -> a smaller fraction used -> a proportionally gentler step,
+    self-limiting with no separate cap needed. It also degrades gracefully
+    when primary is already close to the target extreme: the fraction of a
+    small remaining room is still just a small step, never a jump past it
+    or a flip to the opposite direction."""
+    if direction not in _SHADING_DIRECTIONS:
+        raise ValueError(f"direction must be one of {_SHADING_DIRECTIONS}, got {direction!r}")
     lab = np.asarray(primary["lab"], dtype=np.float64)
     a, b = float(lab[1]), float(lab[2])
     base_l = float(lab[0])
+    n_colors = n_needed + 1
 
-    room_dark = base_l - min_l
-    room_light = max_l - base_l
-    target_end = max_l if room_light > room_dark * 1.5 else min_l
-
-    ls = np.linspace(base_l, target_end, n_needed + 1)[1:]
+    ls = []
+    for i in range(1, n_needed + 1):
+        fraction = i / n_colors
+        if direction == "dark":
+            l = base_l - fraction * (base_l - min_luminance)
+        else:
+            l = base_l + fraction * (max_luminance - base_l)
+        ls.append(l)
     return [_make_color_entry(np.array([float(l), a, b]), label="shade") for l in ls]
 
 

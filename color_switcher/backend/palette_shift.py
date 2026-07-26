@@ -57,6 +57,20 @@ def _resolve_bool(current, override) -> bool:
     raise ShiftError(f"valor inválido para un modificador booleano: {override!r} (esperado on|off|toggle)")
 
 
+def _resolve_shading_direction(current, override) -> str:
+    """Apply a dark|light|toggle|None override to the stored shading
+    direction (defaults to "dark" if nothing was stored yet -- e.g. a
+    palette generated before this option existed). None keeps it."""
+    current = current or "dark"
+    if override is None:
+        return current
+    if override in ("dark", "light"):
+        return override
+    if override == "toggle":
+        return "light" if current == "dark" else "dark"
+    raise ShiftError(f"valor inválido para la dirección de shading: {override!r} (esperado dark|light|toggle)")
+
+
 # --------------------------------------------------------------------------- #
 # base <-> effective
 # --------------------------------------------------------------------------- #
@@ -101,6 +115,8 @@ def derive_effective(base, post):
     modded = palette_generator.apply_post_modifiers(
         [{"hex": b["hex"], "label": b.get("label", "")} for b in base],
         my_eyes=bool(post.get("my_eyes")), ying_yang=bool(post.get("ying_yang")),
+        my_eyes_factor=post.get("my_eyes_factor", palette_generator._MY_EYES_CHROMA_FACTOR),
+        my_eyes_max_chroma=post.get("my_eyes_max_chroma", palette_generator._MY_EYES_CHROMA_MAX),
     )
     rows = []
     for i, (b, m) in enumerate(zip(base, modded)):
@@ -112,7 +128,9 @@ def derive_effective(base, post):
 
 
 def _post_of(meta):
-    post = dict({"my_eyes": False, "ying_yang": False})
+    post = dict({"my_eyes": False, "ying_yang": False,
+                 "my_eyes_factor": palette_generator._MY_EYES_CHROMA_FACTOR,
+                 "my_eyes_max_chroma": palette_generator._MY_EYES_CHROMA_MAX})
     post.update(meta.get("post") or {})
     return post
 
@@ -211,17 +229,26 @@ def delete_color(path, target):
 # --------------------------------------------------------------------------- #
 
 _SELECTION_KEYS = ("mode", "scoring", "custom_scoring_values", "weighted_contrast",
-                   "shuffle", "overfetch", "colors")
+                   "shuffle", "overfetch", "colors", "shading_direction",
+                   "shading_min_luminance", "shading_max_luminance")
 
 
 def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
+                  my_eyes_factor=None, my_eyes_max_chroma=None,
                   mode=None, scoring=None, custom_scoring_values=None,
                   weighted_contrast=None, shuffle=None, overfetch=None, colors=None,
+                  shading_direction=None, shading_min_luminance=None, shading_max_luminance=None,
                   write=True) -> dict:
     """Compute (and, unless write=False, persist) the shifted palette.
 
     Boolean modifiers (my_eyes, ying_yang) take on|off|toggle|None.
-    Selection modifiers take a concrete value or None ("keep stored").
+    shading_direction takes dark|light|toggle|None (like a boolean modifier,
+    but a 2-way choice instead -- see _resolve_shading_direction).
+    my_eyes_factor/my_eyes_max_chroma are POST modifiers too (no
+    regeneration needed, just a different multiplier/cap applied to the same
+    stored base) -- a concrete value or None ("keep stored"). Everything else
+    (selection modifiers, including the luminance bounds) also takes a
+    concrete value or None ("keep stored"), but DOES trigger a regenerate.
 
     Returns {"entries", "meta", "regenerated": bool, "warnings": [str]}.
     Raises ShiftError for the clean user-facing failures."""
@@ -233,10 +260,16 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
     new_post = {
         "my_eyes": _resolve_bool(post.get("my_eyes"), my_eyes),
         "ying_yang": _resolve_bool(post.get("ying_yang"), ying_yang),
+        "my_eyes_factor": my_eyes_factor if my_eyes_factor is not None else post.get("my_eyes_factor"),
+        "my_eyes_max_chroma": (my_eyes_max_chroma if my_eyes_max_chroma is not None
+                               else post.get("my_eyes_max_chroma")),
     }
     selection = {"mode": mode, "scoring": scoring, "custom_scoring_values": custom_scoring_values,
                  "weighted_contrast": weighted_contrast, "shuffle": shuffle,
-                 "overfetch": overfetch, "colors": colors}
+                 "overfetch": overfetch, "colors": colors,
+                 "shading_direction": shading_direction,
+                 "shading_min_luminance": shading_min_luminance,
+                 "shading_max_luminance": shading_max_luminance}
     wants_regen = any(selection[k] is not None for k in _SELECTION_KEYS)
     warnings = []
 
@@ -277,7 +310,16 @@ def _regenerate(meta, entries, new_post, selection, config, warnings):
         "weighted_contrast": (selection["weighted_contrast"] if selection["weighted_contrast"] is not None
                               else gen.get("weighted_contrast", True)),
         "overfetch": selection["overfetch"] if selection["overfetch"] is not None else gen.get("overfetch", 0),
+        "shading_min_luminance": (selection["shading_min_luminance"]
+                                  if selection["shading_min_luminance"] is not None
+                                  else gen.get("shading_min_luminance", 8.0)),
+        "shading_max_luminance": (selection["shading_max_luminance"]
+                                  if selection["shading_max_luminance"] is not None
+                                  else gen.get("shading_max_luminance", 92.0)),
     }
+    resolved["shading_direction"] = _resolve_shading_direction(
+        gen.get("shading_direction"), selection["shading_direction"],
+    )
     weights = palette_generator.resolve_scoring_weights(
         resolved["scoring"], custom_percentages=resolved["custom_percentages"], config=config,
     )
@@ -302,7 +344,10 @@ def _regenerate(meta, entries, new_post, selection, config, warnings):
         expand_path(image), n_colors=n_colors, sample_size=resolved["sample_size"],
         mode=resolved["mode"], saturate=new_post["my_eyes"], weights=weights,
         weighted_contrast=resolved["weighted_contrast"], shuffle=resolved_shuffle,
-        overfetch=resolved["overfetch"], ying_yang=new_post["ying_yang"], with_base=True,
+        overfetch=resolved["overfetch"], ying_yang=new_post["ying_yang"],
+        saturate_factor=new_post["my_eyes_factor"], saturate_max_chroma=new_post["my_eyes_max_chroma"],
+        shading_direction=resolved["shading_direction"], shading_min_l=resolved["shading_min_luminance"],
+        shading_max_l=resolved["shading_max_luminance"], with_base=True,
     )
     new_entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"], "origin": "gen"}
                    for i, c in enumerate(effective)]
@@ -312,7 +357,9 @@ def _regenerate(meta, entries, new_post, selection, config, warnings):
         "colors": n_colors, "sample_size": resolved["sample_size"], "mode": resolved["mode"],
         "scoring": resolved["scoring"], "custom_percentages": resolved["custom_percentages"],
         "weighted_contrast": resolved["weighted_contrast"], "shuffle": resolved_shuffle,
-        "overfetch": resolved["overfetch"],
+        "overfetch": resolved["overfetch"], "shading_direction": resolved["shading_direction"],
+        "shading_min_luminance": resolved["shading_min_luminance"],
+        "shading_max_luminance": resolved["shading_max_luminance"],
     }
     new_meta["post"] = new_post
     new_meta["base"] = [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base]

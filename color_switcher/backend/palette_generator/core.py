@@ -22,7 +22,14 @@ from .selection import (
     select_secondary,
     synthesize_accent_color,
 )
-from .transforms import _boost_saturation, _complement_hue, _normalize_extreme_lightness, improve_contrast
+from .transforms import (
+    _MY_EYES_CHROMA_FACTOR,
+    _MY_EYES_CHROMA_MAX,
+    _boost_saturation,
+    _complement_hue,
+    _normalize_extreme_lightness,
+    improve_contrast,
+)
 
 _MODES = ("balanced", "contrast", "shading")
 
@@ -39,6 +46,11 @@ def generate_palette(
     shuffle: int = 0,
     overfetch: int = 0,
     ying_yang: bool = False,
+    saturate_factor: float = _MY_EYES_CHROMA_FACTOR,
+    saturate_max_chroma: float = _MY_EYES_CHROMA_MAX,
+    shading_direction: str = "dark",
+    shading_min_l: float = 8.0,
+    shading_max_l: float = 92.0,
     with_base: bool = False,
 ) -> list:
     """
@@ -56,8 +68,10 @@ def generate_palette(
         other slot is a monochromatic lightness variant of primary (same
         hue/chroma) instead of a different cluster.
 
-    saturate (--my-eyes): boost every FINAL chosen color's saturation right
-    before returning, after all selection/contrast logic has already run.
+    saturate (--my-eyes): boost every FINAL chosen color's CIELAB chroma
+    right before returning, after all selection/contrast logic has already
+    run. saturate_factor/saturate_max_chroma control how much (see
+    _boost_saturation) -- multiplicative, capped, not the old flat HSL bump.
 
     weights: the coverage/saturation/midtone/contrast fractions score_cluster
     uses to rank clusters -- see resolve_scoring_weights to build this from
@@ -86,6 +100,10 @@ def generate_palette(
     +180°) right before returning, turning the palette into its complementary
     scheme (see _complement_hue). Applied after all selection/contrast logic,
     so it preserves the palette's internal contrast relationships.
+
+    shading_direction/shading_min_l/shading_max_l: only used when
+    mode="shading" -- see generate_shading_series. Direction is explicit
+    ("dark", the default, or "light"), never auto-picked.
 
     Returns [{"hex": "rrggbb", "label": "primary"|"secondary"|"auxN"|"shadeN"}, ...]
     — ready for guiless.apply_palette or palette_store.write_palette_csv.
@@ -137,14 +155,12 @@ def generate_palette(
         # Unlike the other modes, primary itself is NOT contrast-adjusted
         # here: improve_contrast() can push lightness all the way to its
         # 3/97 clamp when the natural cluster color sits close to the
-        # background, and generate_shading_series then has to build the
-        # entire ramp from that already-extreme base -- with few colors
-        # requested, the one remaining shade has nowhere to go but the
-        # opposite extreme (primary near-black, shade1 near-white). The
-        # wide, evenly-spread ramp already gives some shades strong contrast
-        # against most backgrounds without needing per-shade correction (see
-        # generate_shading_series' call below) -- same reasoning applies to
-        # primary, so it's left as the natural cluster color too.
+        # background, and generate_shading_series computes every shade as a
+        # FRACTION of the room between primary and the target extreme -- an
+        # already-extreme primary would leave that room artificially tiny
+        # (or lopsided), making the whole ramp degenerate. Left as the
+        # natural cluster color, primary's own lightness is what the ramp's
+        # room is measured from.
         primary = primary_raw
     else:
         primary = improve_contrast(primary_raw, background) if background is not None else primary_raw
@@ -153,7 +169,10 @@ def generate_palette(
 
     if mode == "shading":
         if n_colors > 1:
-            chosen.extend(generate_shading_series(primary, n_colors - 1))
+            chosen.extend(generate_shading_series(
+                primary, n_colors - 1, direction=shading_direction,
+                min_luminance=shading_min_l, max_luminance=shading_max_l,
+            ))
     else:
         selection_refs = [primary_raw]
 
@@ -189,7 +208,8 @@ def generate_palette(
 
     effective = list(chosen)
     if saturate:
-        effective = [_boost_saturation(c) for c in effective]
+        effective = [_boost_saturation(c, factor=saturate_factor, max_chroma=saturate_max_chroma)
+                     for c in effective]
     if ying_yang:
         effective = [_complement_hue(c) for c in effective]
     effective_out = _finalize(effective)

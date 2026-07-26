@@ -61,6 +61,37 @@ def test_post_mod_toggle_is_reversible(gen_palette):
     assert [e["hex"] for e in result["entries"]] == [b["hex"] for b in base]
 
 
+def test_my_eyes_factor_and_max_chroma_are_post_mods_no_regen(gen_palette):
+    """Changing the chroma-boost factor/cap is a POST modifier (recomputed
+    from the stored base), NOT a selection modifier -- must not regenerate."""
+    path, base, config = gen_palette
+    result = palette_shift.shift_palette(str(path), config, my_eyes="on", my_eyes_factor=3.0)
+    assert result["regenerated"] is False
+    assert result["meta"]["post"]["my_eyes_factor"] == 3.0
+
+
+def test_my_eyes_factor_change_alone_recomputes_effective_colors(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.shift_palette(str(path), config, my_eyes="on", my_eyes_factor=1.2)
+    weak = palette_store.read_palette_csv(str(path))
+    result = palette_shift.shift_palette(str(path), config, my_eyes_factor=4.0)  # my_eyes stays on
+    strong = result["entries"]
+    # a bigger factor pushes chroma further -- at least one color must differ
+    assert [e["hex"] for e in strong] != [e["hex"] for e in weak]
+
+
+def test_my_eyes_max_chroma_shift_caps_the_result(gen_palette):
+    from color_switcher.backend import color_math as cm
+
+    path, base, config = gen_palette
+    result = palette_shift.shift_palette(str(path), config, my_eyes="on", my_eyes_factor=10.0,
+                                         my_eyes_max_chroma=15.0)
+    for e in result["entries"]:
+        lab = cm.rgb_to_lab(np.array(cm.hex_to_rgb(e["hex"])))
+        chroma = float(np.hypot(lab[1], lab[2]))
+        assert chroma <= 15.0 + 0.5  # capped (small tolerance for rounding/gamut clipping)
+
+
 def test_post_only_shift_transforms_and_keeps_hand_added_color(gen_palette):
     path, base, config = gen_palette
     palette_shift.add_color(str(path), "abcdef", "mine")   # origin=custom on a generated palette
@@ -177,4 +208,66 @@ def test_resolve_bool_semantics():
     assert palette_shift._resolve_bool(False, "on") is True
     assert palette_shift._resolve_bool(True, "off") is False
     assert palette_shift._resolve_bool(True, "toggle") is False
+
+
+def test_resolve_shading_direction_semantics():
+    assert palette_shift._resolve_shading_direction("dark", None) == "dark"     # keep
+    assert palette_shift._resolve_shading_direction(None, None) == "dark"       # no stored value -> defaults dark
+    assert palette_shift._resolve_shading_direction("dark", "light") == "light"
+    assert palette_shift._resolve_shading_direction("light", "dark") == "dark"
+    assert palette_shift._resolve_shading_direction("dark", "toggle") == "light"
+    assert palette_shift._resolve_shading_direction("light", "toggle") == "dark"
+    assert palette_shift._resolve_shading_direction(None, "toggle") == "light"   # no stored -> dark -> toggled=light
+    with pytest.raises(palette_shift.ShiftError):
+        palette_shift._resolve_shading_direction("dark", "sideways")
+
+
+@pytest.fixture
+def shading_palette(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    path = tmp_path / "shading.csv"
+    eff, base = pg.generate_palette(str(img), n_colors=2, sample_size=3000, mode="shading", with_base=True)
+    meta = palette_store.default_meta()
+    meta.update({
+        "generated": True, "image": str(img),
+        "gen": {"colors": 2, "sample_size": 3000, "mode": "shading", "scoring": "default",
+                "custom_percentages": None, "weighted_contrast": True, "shuffle": 0, "overfetch": 0},
+        # deliberately NO shading_direction/min/max keys -- a palette generated
+        # before this option existed, must default to dark/8/92.
+        "post": {"my_eyes": False, "ying_yang": False},
+        "base": [{"hex": c["hex"], "label": c["label"]} for c in base],
+    })
+    entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"], "origin": "gen"} for i, c in enumerate(eff)]
+    palette_store.write_palette_csv(str(path), entries, meta=meta)
+    return path, fake_project.load_config()
+
+
+def test_shift_shading_direction_toggle_regenerates_lighter(shading_palette):
+    path, config = shading_palette
+    before = palette_store.read_palette_csv(str(path))
+    result = palette_shift.shift_palette(str(path), config, shading_direction="toggle")
+    assert result["regenerated"] is True
+    after = palette_store.read_palette_csv(str(path))
+    assert after[0]["hex"] == before[0]["hex"]  # primary unaffected, only the shade ramp direction changes
+    assert after[1]["hex"] != before[1]["hex"]
+    _, meta = palette_store.read_palette(str(path))
+    assert meta["gen"]["shading_direction"] == "light"  # legacy (no stored direction) -> defaulted dark -> toggled
+
+
+def test_shift_shading_direction_toggle_twice_is_reversible(shading_palette):
+    path, config = shading_palette
+    before = palette_store.read_palette_csv(str(path))
+    palette_shift.shift_palette(str(path), config, shading_direction="toggle")
+    palette_shift.shift_palette(str(path), config, shading_direction="toggle")
+    after = palette_store.read_palette_csv(str(path))
+    assert after == before
+
+
+def test_shift_shading_min_luminance_alone_triggers_regeneration(shading_palette):
+    path, config = shading_palette
+    result = palette_shift.shift_palette(str(path), config, shading_min_luminance=30.0)
+    assert result["regenerated"] is True
+    assert result["meta"]["gen"]["shading_min_luminance"] == 30.0
+    assert result["meta"]["gen"]["shading_direction"] == "dark"  # untouched override still defaults
     assert palette_shift._resolve_bool(False, "toggle") is True

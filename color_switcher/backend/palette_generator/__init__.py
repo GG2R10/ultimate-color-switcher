@@ -42,6 +42,7 @@ from .selection import (
     _ACCENT_HUE_STEP,
     _MONOCHROME_SATURATION_THRESHOLD,
     _MONOCHROME_TRUSTWORTHY_L,
+    _SHADING_DIRECTIONS,
     _dedupe,
     _is_monochrome,
     filter_clusters,
@@ -56,7 +57,8 @@ from .selection import (
 from .transforms import (
     _EXTREME_L_MAX,
     _EXTREME_L_MIN,
-    _MY_EYES_SATURATION_BOOST,
+    _MY_EYES_CHROMA_FACTOR,
+    _MY_EYES_CHROMA_MAX,
     _boost_saturation,
     _complement_hue,
     _normalize_extreme_lightness,

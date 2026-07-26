@@ -314,7 +314,11 @@ def _parse_on_off(raw: str) -> bool:
 
 def _generate_and_save_palette(config, image, n_colors, sample_size, mode, saturate,
                                 out_path=None, scoring="default", custom_scoring_values=None,
-                                weighted_contrast=True, shuffle=None, overfetch=0, ying_yang=False):
+                                weighted_contrast=True, shuffle=None, overfetch=0, ying_yang=False,
+                                my_eyes_factor=palette_generator._MY_EYES_CHROMA_FACTOR,
+                                my_eyes_max_chroma=palette_generator._MY_EYES_CHROMA_MAX,
+                                shading_direction="dark", shading_min_luminance=8.0,
+                                shading_max_luminance=92.0):
     """Shared by `palette generate` and `automatic --from-image`. Returns
     (entries, saved_path) — entries is the id/hex/label list ready to hand
     to guiless.apply_palette directly (no need to re-read the file back).
@@ -322,7 +326,13 @@ def _generate_and_save_palette(config, image, n_colors, sample_size, mode, satur
     shuffle=None means "--shuffle wasn't passed at all" -- distinct from an
     explicit 0, since resolving it (and persisting it as the new
     "last_shuffle" anchor for a future --shuffle next) only happens when
-    the flag was actually used."""
+    the flag was actually used.
+
+    my_eyes_factor/my_eyes_max_chroma: only used when saturate=True -- see
+    palette_generator._boost_saturation.
+
+    shading_direction/shading_min_luminance/shading_max_luminance: only used
+    when mode="shading" -- see palette_generator.generate_shading_series."""
     weights = palette_generator.resolve_scoring_weights(
         scoring, custom_percentages=custom_scoring_values, config=config,
     )
@@ -333,7 +343,10 @@ def _generate_and_save_palette(config, image, n_colors, sample_size, mode, satur
     colors, base_colors = palette_generator.generate_palette(
         image, n_colors=n_colors, sample_size=sample_size, mode=mode,
         saturate=saturate, weights=weights, weighted_contrast=weighted_contrast,
-        shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=ying_yang, with_base=True,
+        shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=ying_yang,
+        saturate_factor=my_eyes_factor, saturate_max_chroma=my_eyes_max_chroma,
+        shading_direction=shading_direction, shading_min_l=shading_min_luminance,
+        shading_max_l=shading_max_luminance, with_base=True,
     )
 
     if not out_path:
@@ -361,8 +374,12 @@ def _generate_and_save_palette(config, image, n_colors, sample_size, mode, satur
             "weighted_contrast": weighted_contrast,
             "shuffle": resolved_shuffle,
             "overfetch": overfetch,
+            "shading_direction": shading_direction,
+            "shading_min_luminance": shading_min_luminance,
+            "shading_max_luminance": shading_max_luminance,
         },
-        "post": {"my_eyes": bool(saturate), "ying_yang": bool(ying_yang)},
+        "post": {"my_eyes": bool(saturate), "ying_yang": bool(ying_yang),
+                 "my_eyes_factor": my_eyes_factor, "my_eyes_max_chroma": my_eyes_max_chroma},
         "base": [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base_colors],
     })
     palette_store.write_palette_csv(out_path, entries, meta=meta)
@@ -383,7 +400,9 @@ def cmd_palette_generate(args, config):
         config, args.image, n_colors, args.sample_size, args.mode, args.my_eyes, args.out,
         scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
         weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
-        ying_yang=args.ying_yang,
+        ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
+        shading_direction=args.shading_direction,
+        shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
     )
 
     print(f"Paleta generada desde {args.image} ({n_colors} color(es)):")
@@ -626,7 +645,9 @@ def cmd_automatic(args, config):
             config, args.from_image, n_colors, args.sample_size, args.mode, args.my_eyes,
             scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
             weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
-            ying_yang=args.ying_yang,
+            ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
+            shading_direction=args.shading_direction,
+            shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
         )
         print(f"Paleta generada desde {args.from_image} ({n_colors} color(es)) — guardada en: {saved_path}")
         _print_palette(palette_source)
@@ -712,9 +733,12 @@ def cmd_palette_shift(args, config):
     result = palette_shift.shift_palette(
         palette_path, config,
         my_eyes=args.my_eyes, ying_yang=args.ying_yang,
+        my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
         mode=args.mode, scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
         weighted_contrast=weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
-        colors=args.colors, write=not args.test,
+        colors=args.colors, shading_direction=args.shading_direction,
+        shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
+        write=not args.test,
     )
     for w in result["warnings"]:
         print(f"⚠ {w}")
@@ -831,6 +855,12 @@ def _add_shift_args(parser):
     parser.add_argument("--my-eyes", choices=onofftoggle, default=None, metavar="on|off|toggle",
                          help="Saturación extra. 'on'/'off' fija el valor, 'toggle' lo invierte. "
                               "Se aplica sin regenerar, aun en paletas creadas (default: mantener).")
+    parser.add_argument("--my-eyes-factor", type=float, default=None,
+                         help="Con --my-eyes: multiplicador de croma CIELAB (default: mantener). "
+                              "Se aplica sin regenerar, aun en paletas creadas.")
+    parser.add_argument("--my-eyes-max-chroma", type=float, default=None,
+                         help="Con --my-eyes: tope de croma CIELAB resultante (default: mantener). "
+                              "Se aplica sin regenerar, aun en paletas creadas.")
     parser.add_argument("--ying-yang", choices=onofftoggle, default=None, metavar="on|off|toggle",
                          help="Paleta complementaria (tonos +180°). 'on'/'off'/'toggle' (default: mantener). "
                               "Se aplica sin regenerar, aun en paletas creadas.")
@@ -849,6 +879,47 @@ def _add_shift_args(parser):
                          help="Solo paletas generadas: candidatos extra más allá de --colors. Regenera.")
     parser.add_argument("--colors", type=int, default=None,
                          help="Solo paletas generadas: regenera con esta cantidad de colores (default: mantener).")
+    parser.add_argument("--shading-direction", choices=["dark", "light", "toggle"], default=None,
+                         help="Solo paletas generadas en modo shading: 'dark'/'light' fija la dirección "
+                              "del ramp, 'toggle' la invierte (default: mantener). Regenera.")
+    parser.add_argument("--shading-min-luminance", type=float, default=None,
+                         help="Solo con --shading-direction dark: luminancia mínima del ramp "
+                              "(default: mantener). Regenera.")
+    parser.add_argument("--shading-max-luminance", type=float, default=None,
+                         help="Solo con --shading-direction light: luminancia máxima del ramp "
+                              "(default: mantener). Regenera.")
+
+
+def _add_my_eyes_generation_args(parser):
+    """--my-eyes' chroma-boost knobs, for a FRESH generation (palette
+    generate / automatic --from-image) -- fixed defaults matching
+    palette_generator._MY_EYES_CHROMA_FACTOR/_MY_EYES_CHROMA_MAX. Shared so
+    the two entry points can't drift apart; see
+    palette_generator._boost_saturation for what these mean."""
+    parser.add_argument("--my-eyes-factor", type=float, default=palette_generator._MY_EYES_CHROMA_FACTOR,
+                         help=f"Con --my-eyes: multiplicador de croma CIELAB "
+                              f"(default: {palette_generator._MY_EYES_CHROMA_FACTOR}).")
+    parser.add_argument("--my-eyes-max-chroma", type=float, default=palette_generator._MY_EYES_CHROMA_MAX,
+                         help=f"Con --my-eyes: tope de croma CIELAB resultante "
+                              f"(default: {palette_generator._MY_EYES_CHROMA_MAX}).")
+
+
+def _add_shading_generation_args(parser):
+    """--mode shading's direction/luminance-bounds knobs, for a FRESH
+    generation (palette generate / automatic --from-image) -- fixed
+    defaults (dark, 8, 92), no "toggle" (there's no stored prior state to
+    invert yet). Shared so the two entry points can't drift apart; see
+    palette_generator.generate_shading_series for what these mean."""
+    parser.add_argument("--shading-direction", choices=["dark", "light"], default="dark",
+                         help="Solo con --mode shading: hacia dónde generar los shades. 'dark' "
+                              "(default): oscurece hacia el negro (una 'shade' de verdad). 'light': "
+                              "aclara hacia el blanco (técnicamente un 'tint').")
+    parser.add_argument("--shading-min-luminance", type=float, default=8.0,
+                         help="Solo con --mode shading --shading-direction dark: luminancia mínima "
+                              "del ramp (default: 8).")
+    parser.add_argument("--shading-max-luminance", type=float, default=92.0,
+                         help="Solo con --mode shading --shading-direction light: luminancia máxima "
+                              "del ramp (default: 92).")
 
 
 def build_parser():
@@ -940,6 +1011,7 @@ def build_parser():
                           "monocromáticas (mismo tono) de primary")
     pg.add_argument("--my-eyes", action="store_true",
                      help="Saturar los colores elegidos justo antes de guardarlos")
+    _add_my_eyes_generation_args(pg)
     pg.add_argument("--ying-yang", type=_parse_on_off, default=False, metavar="on|off",
                      help="Ying Yang: usar la paleta complementaria (todos los colores rotados 180° en el "
                           "tono). 'on' u 'off' (default: off)")
@@ -951,6 +1023,7 @@ def build_parser():
              "imágenes con un background de un solo color claro).",
     )
     _add_shuffle_args(pg)
+    _add_shading_generation_args(pg)
     pg.add_argument("--out", help="Ruta de salida (default: palettes/created/generated.csv, se reemplaza en cada corrida)")
     _add_apply_args(pg)
     pg.set_defaults(func=cmd_palette_generate)
@@ -1015,6 +1088,7 @@ def build_parser():
                     help="Cómo elegir secondary/auxN con --from-image (default: contrast, ver 'palette generate --help')")
     ap.add_argument("--my-eyes", action="store_true",
                     help="Saturar los colores generados con --from-image justo antes de aplicarlos")
+    _add_my_eyes_generation_args(ap)
     ap.add_argument("--ying-yang", type=_parse_on_off, default=False, metavar="on|off",
                     help="Ying Yang: usar la paleta complementaria con --from-image (tonos rotados 180°). "
                          "'on' u 'off' (default: off)")
@@ -1025,6 +1099,7 @@ def build_parser():
              "en vez del sistema ponderado contra todos los clusters (default: ponderado, recomendado).",
     )
     _add_shuffle_args(ap, from_image_note=" con --from-image")
+    _add_shading_generation_args(ap)
     ap.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
     ap.add_argument("--test", action="store_true", help="Simular, no modificar archivos")
     ap.add_argument("--force", action="store_true",

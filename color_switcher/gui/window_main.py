@@ -90,6 +90,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("generate-palette", self._action_generate_palette),
             ("modifiers", self._action_modifiers),
             ("palette-generation-settings", self._action_palette_generation_settings),
+            ("other-settings", self._action_other_settings),
             ("snapshot-detect", self._action_snapshot_detect),
             ("restart-actions", self._action_restart_actions),
             ("scanned-files-settings", self._action_scanned_files_settings),
@@ -239,6 +240,11 @@ class MainWindow(Adw.ApplicationWindow):
                 image_path, n_colors=n_colors, mode=settings["mode"], saturate=settings["saturate"],
                 weights=weights, weighted_contrast=settings.get("weighted_contrast", True),
                 shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=settings.get("ying_yang", False),
+                saturate_factor=settings.get("my_eyes_factor", 1.5),
+                saturate_max_chroma=settings.get("my_eyes_max_chroma", 132.0),
+                shading_direction=settings.get("shading_direction", "dark"),
+                shading_min_l=settings.get("shading_min_luminance", 8.0),
+                shading_max_l=settings.get("shading_max_luminance", 92.0),
                 with_base=True,
             )
         except Exception as e:
@@ -260,8 +266,13 @@ class MainWindow(Adw.ApplicationWindow):
                 "scoring": settings["scoring"], "custom_percentages": settings.get("custom_percentages"),
                 "weighted_contrast": settings.get("weighted_contrast", True),
                 "shuffle": resolved_shuffle, "overfetch": overfetch,
+                "shading_direction": settings.get("shading_direction", "dark"),
+                "shading_min_luminance": settings.get("shading_min_luminance", 8.0),
+                "shading_max_luminance": settings.get("shading_max_luminance", 92.0),
             },
-            "post": {"my_eyes": bool(settings["saturate"]), "ying_yang": bool(settings.get("ying_yang", False))},
+            "post": {"my_eyes": bool(settings["saturate"]), "ying_yang": bool(settings.get("ying_yang", False)),
+                     "my_eyes_factor": settings.get("my_eyes_factor", 1.5),
+                     "my_eyes_max_chroma": settings.get("my_eyes_max_chroma", 132.0)},
             "base": [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base_colors],
         })
         palette_store.write_palette_csv(path, entries, meta=meta)
@@ -302,6 +313,9 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _action_palette_generation_settings(self, _action, _param):
         dialogs.show_palette_generation_settings(self, self.config)
+
+    def _action_other_settings(self, _action, _param):
+        dialogs.show_other_settings(self, self.config)
 
     def _action_scanned_files_settings(self, _action, _param):
         dialogs.show_scanned_files_settings(self, self.config, on_change=self._on_scanned_files_changed)

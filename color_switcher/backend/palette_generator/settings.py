@@ -20,6 +20,11 @@ DEFAULT_GENERATION_SETTINGS = {
     "shuffle_value": 0,
     "overfetch": 0,
     "last_shuffle": -1,  # anchor for shuffle_mode "next" -- see resolve_shuffle_index
+    "shading_direction": "dark",  # only used when mode="shading" -- see generate_shading_series
+    "shading_min_luminance": 8.0,
+    "shading_max_luminance": 92.0,
+    "my_eyes_factor": 1.5,  # only used when saturate=True -- see _boost_saturation
+    "my_eyes_max_chroma": 132.0,
 }
 
 
