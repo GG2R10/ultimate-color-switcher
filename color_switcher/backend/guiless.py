@@ -6,11 +6,16 @@ Given a fresh palette (in the order the caller wants it applied) and an
 existing, persistent mapping (built previously in the GUI or `mapping new`),
 assigns each DISTINCT target slot the mapping actually uses (its stored
 new_id — 1=primary, 2=secondary, ... by the same convention
-palette_generator/palette_store use) to the next color of the palette, in
-ascending slot order. What matters is how many distinct roles the mapping
-needs, not the highest new_id number it happens to reference — a mapping
-that only ever touched "primary" (1) and "aux1" (3), skipping "secondary",
-still only needs a 2-color palette.
+palette_generator/palette_store use) to the next color of the palette, IN
+THE ORDER THOSE ROLES WERE FIRST ADDED TO THE MAPPING (insertion order —
+this is the original spec, see ROADMAP.md's "GUIless mode" decision #4; it
+is NOT the numeric order of the new_id values themselves, which may not
+match the order the roles were actually assigned in). What matters is how
+many distinct roles the mapping needs, and in what order they first
+appeared, not the highest new_id number it happens to reference or its
+numeric value relative to the others — a mapping that only ever touched
+"primary" (1) and "aux1" (3), skipping "secondary", still only needs a
+2-color palette, applied in whichever of those two the user assigned first.
 
 If the palette has fewer colors than distinct roles needed, nothing is
 applied — there is no color to assign to the missing role(s), and this is
@@ -89,7 +94,16 @@ def apply_palette(
     palette = _load_palette(palette_source)
 
     n_palette = len(palette)
-    distinct_slots = sorted({e["new_id"] for e in entries})
+    # Distinct roles, in the order they were FIRST added to the mapping --
+    # NOT sorted by new_id value. The mapping's own file order already IS the
+    # priority order (see module docstring); a role's new_id is an opaque
+    # label, not a claim about its position.
+    distinct_slots = []
+    _seen_slots = set()
+    for e in entries:
+        if e["new_id"] not in _seen_slots:
+            _seen_slots.add(e["new_id"])
+            distinct_slots.append(e["new_id"])
     n_needed = len(distinct_slots)
 
     if n_needed > n_palette:
@@ -100,8 +114,8 @@ def apply_palette(
         return {"status": "needs_confirmation", "surplus_palette_count": surplus_palette_count}
 
     # Compact the mapping's distinct roles (whatever numbers they happened
-    # to be saved under) onto 1..n_needed, in ascending role order, then pair
-    # each with the palette color at that position.
+    # to be saved under) onto 1..n_needed, in that first-added order, then
+    # pair each with the palette color at that position.
     slot_remap = {old_slot: i + 1 for i, old_slot in enumerate(distinct_slots)}
     assigned_palette = [
         {"id": i + 1, "hex": c["hex"].lstrip("#").lower(), "label": c.get("label", "")}

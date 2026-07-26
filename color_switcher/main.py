@@ -512,6 +512,21 @@ def _apply_or_test(args, config, mode):
     detected_colors = color_detector.read_detected_csv(detected_path)
     new_palette = palette_store.read_palette_csv(new_p) if new_p else []
 
+    # A new_id the mapping references but the palette doesn't have (stale
+    # after the palette was edited/regenerated with fewer/renumbered colors,
+    # a missing #new_palette= file, or plain hand-edited corruption) must be
+    # a hard error here -- unlike guiless.apply_palette's positional
+    # compaction, this path matches new_id directly against the palette's own
+    # ids, so silently ignoring the mismatch would either drop that
+    # replacement outright or (if the palette file is simply missing) report
+    # a misleadingly "successful" 0-replacements run.
+    missing_new_ids = sorted({e["new_id"] for e in entries} - {p["id"] for p in new_palette})
+    if missing_new_ids:
+        print(f"⚠ El mapping referencia color(es) de paleta que no existen: id(s) {missing_new_ids}. "
+              f"La paleta {new_p or '(no definida)'} tiene {len(new_palette)} color(es). "
+              "Revisá el mapping ('ucs mapping show <mapping>') o regenerá/reimportá la paleta.")
+        sys.exit(1)
+
     siblings = conflicts.find_case2_siblings(detected_colors)
     collisions = conflicts.find_case1_collisions(detected_colors, new_palette, entries)
     convergence = conflicts.find_target_convergence(detected_colors, new_palette, entries, sibling_groups=siblings)
