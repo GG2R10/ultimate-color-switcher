@@ -276,18 +276,23 @@ ucs automatic --from-image "$WALLPAPER_FOLDER/actual_wallpaper.jpg" &
 | `detect [--dry-run]` | Escanea y actualiza `detected_palette.csv` |
 | `config files list\|add\|remove` | Gestiona `files_to_replace` |
 | `config files scan-config [--dry-run] [--yes]` | Busca en `~/.config` archivos con colores y los agrega |
-| `palette create <ruta> --add HEX LABEL ...` | Crea una paleta a mano |
-| `palette generate <imagen> [--colors N] [--mode ...] [--my-eyes] [--ying-yang on\|off] [--scoring ...] [--shuffle N\|next] [--overfetch N] [--no-weighted-contrast]` | Genera una paleta desde un wallpaper |
-| `palette show [paleta]` | Muestra una paleta con sus colores en la terminal (sin paleta: la que aplica el mapping actual) |
+| `palette create <ruta> --add HEX LABEL ... [--apply]` | Crea una paleta a mano |
+| `palette generate <imagen> [--colors N] [--mode ...] [--my-eyes] [--ying-yang on\|off] [--scoring ...] [--shuffle N\|next] [--overfetch N] [--no-weighted-contrast] [--apply]` | Genera una paleta desde un wallpaper (sin `--colors`: la cantidad de roles que usa el mapping) |
+| `palette show [paleta\|-] [--apply]` | Muestra una paleta (CSV, JSON, o `-` para JSON por stdin) con sus colores en la terminal |
 | `palette list` | Lista las paletas creadas |
-| `palette add-color [paleta] <hex> [--label LABEL]` | Agrega un color a una paleta existente (sin paleta: la que aplica el mapping actual) |
+| `palette add-color [paleta] <hex> [--label LABEL] [--apply]` | Agrega un color a una paleta existente |
+| `palette edit [paleta] <id\|hex> <hex-nuevo> [--apply]` | Cambia un color de una paleta por otro (conserva su posición) |
+| `palette remove [paleta] <id\|hex> [--apply]` | Borra un color de una paleta (renumera y ajusta el mapping si corresponde) |
+| `palette shift [paleta] [--my-eyes on\|off\|toggle] [--ying-yang on\|off\|toggle] [--mode ...] [--scoring ...] [--shuffle N\|next] [--overfetch N] [--colors N] [--apply]` | Cambia los modificadores de una paleta ya generada/creada y, con `--apply`, reaplica — sin repetir la imagen ni los flags originales |
 | `mapping new <paleta>` | Sesión interactiva para armar el mapping |
 | `mapping show <mapping>` | Muestra un mapping y sus conflictos |
 | `test [--mapping <mapping>]` | Simula un apply |
 | `apply [--mapping <mapping>]` | Aplica de verdad (con backup) |
 | `restore [--restart\|--no-restart]` | Deshace desde el backup |
-| `automatic <paleta>\|--from-image <img> [--mapping <mapping>] [--force] [--yolo]` | Aplica una paleta (existente o generada) contra un mapping ya armado |
+| `automatic <paleta>\|--from-image <img> [--mapping <mapping>] [--force] [--yolo]` | Alias de compatibilidad: `--from-image` equivale a `palette generate --apply`; una paleta ya existente equivale a `palette show --apply`. `automatic shift` equivale a `palette shift --apply` |
 | `gui` | Lanza la interfaz gráfica (también: `ucs` sin argumentos) |
+
+`palette create/generate/edit/remove/add-color/show/shift` sin `[paleta]` explícita usan la que el mapping actual aplica (su `#new_palette=`). Cualquiera de ellos con `--apply` acepta también `--mapping <mapping>` `--test` `--force` `--yolo`, iguales a los del comando `apply`.
 
 Corré `ucs <comando> --help` para ver todas las opciones de cada uno.
 

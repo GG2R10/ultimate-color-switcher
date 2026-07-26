@@ -27,11 +27,13 @@ import json
 from . import color_detector, color_replacer, conflicts, mapping_store, palette_store
 
 
-def _load_palette(source):
+def load_palette(source):
     """Accepts a path to a palette CSV (id,#hex,label — same format
     everywhere else in this app, e.g. one produced by
     palette_generator.generate_palette), a path to a JSON [{hex,label}, ...]
-    file, or an already-loaded list of dicts."""
+    file, or an already-loaded list of dicts. Public: also used by `palette
+    show --apply` to display/apply CSV, JSON, or (via the caller reading
+    stdin first) an ad hoc palette without caring which it is."""
     if isinstance(source, str):
         if source.lower().endswith(".csv"):
             entries = palette_store.read_palette_csv(source)
@@ -39,6 +41,9 @@ def _load_palette(source):
         with open(source, "r", encoding="utf-8") as f:
             return json.load(f)
     return source
+
+
+_load_palette = load_palette  # internal alias, kept for readability at the call site below
 
 
 def apply_palette(
