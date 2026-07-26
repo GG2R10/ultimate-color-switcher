@@ -404,6 +404,76 @@ def test_generate_palette_shuffle_beyond_pool_clamps_instead_of_crashing(tmp_pat
     int(palette[0]["hex"], 16)  # still a valid color, not a crash
 
 
+def _make_many_patches_image(path):
+    """More distinct hued patches than _make_test_image, so there's real
+    headroom left over for auxiliaries once primary+secondary are picked --
+    otherwise overfetch has nothing extra to rank between."""
+    img = Image.new("RGB", (80, 80), (10, 10, 10))
+    pixels = img.load()
+    patches = [
+        (220, 40, 40), (40, 200, 60), (50, 60, 230), (240, 230, 40),
+        (200, 40, 200), (40, 200, 200), (255, 140, 0), (100, 20, 150),
+    ]
+    for i, color in enumerate(patches):
+        x0 = i * 10
+        for x in range(x0, x0 + 10):
+            for y in range(0, 80):
+                pixels[x, y] = color
+    img.save(path)
+
+
+def test_overfetch_reranks_auxiliaries_by_score_instead_of_pick_order(tmp_path):
+    # select_auxiliaries' own greedy farthest-point order is a stable prefix
+    # (asking for more never changes the earlier picks), so overfetch must
+    # rerank the wider candidate set by score to have any effect at all --
+    # this is what actually distinguishes it from just trimming the tail.
+    image_path = tmp_path / "wallpaper.png"
+    _make_many_patches_image(image_path)
+
+    baseline = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000, mode="contrast", overfetch=0)
+    overfetched = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000, mode="contrast", overfetch=3)
+
+    assert len(overfetched) == 4
+    aux_baseline = [c["hex"] for c in baseline[2:]]
+    aux_overfetched = [c["hex"] for c in overfetched[2:]]
+    assert aux_baseline != aux_overfetched
+    # primary/secondary are untouched by this -- only auxiliary selection changes.
+    assert [c["hex"] for c in baseline[:2]] == [c["hex"] for c in overfetched[:2]]
+
+
+def test_overfetch_zero_leaves_auxiliaries_unchanged(tmp_path):
+    image_path = tmp_path / "wallpaper.png"
+    _make_many_patches_image(image_path)
+
+    implicit = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000, mode="contrast")
+    explicit_zero = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000, mode="contrast", overfetch=0)
+
+    assert [c["hex"] for c in implicit] == [c["hex"] for c in explicit_zero]
+
+
+def test_overfetch_produces_a_denser_shading_ramp_closer_to_primary(tmp_path):
+    # Unlike auxiliaries, the shading ramp genuinely is ordered best (closest
+    # to primary) to worst (most extreme) -- generating it as if
+    # n_colors+overfetch shades were needed, then keeping only the first
+    # n_needed, should land closer to primary than the un-overfetched ramp.
+    image_path = tmp_path / "wallpaper.png"
+    _make_test_image(image_path)
+
+    baseline = pg.generate_palette(str(image_path), n_colors=3, sample_size=5000, mode="shading", overfetch=0)
+    overfetched = pg.generate_palette(str(image_path), n_colors=3, sample_size=5000, mode="shading", overfetch=5)
+
+    assert len(overfetched) == 3
+    primary_l = cm.rgb_to_lab(np.array(cm.hex_to_rgb(baseline[0]["hex"])))[0]
+
+    def shade_l(entry):
+        return cm.rgb_to_lab(np.array(cm.hex_to_rgb(entry["hex"])))[0]
+
+    for base_shade, over_shade in zip(baseline[1:], overfetched[1:]):
+        base_dist = abs(shade_l(base_shade) - primary_l)
+        over_dist = abs(shade_l(over_shade) - primary_l)
+        assert over_dist < base_dist
+
+
 def test_generate_palette_rejects_invalid_mode(tmp_path):
     image_path = tmp_path / "wallpaper.png"
     _make_test_image(image_path)

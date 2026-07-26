@@ -20,13 +20,18 @@ from gi.repository import Adw, Gio, GLib, Gtk
 
 from ..backend import color_detector, color_replacer, conflicts, detect_diff, mapping_store, palette_store
 from ..backend import palette_generator, palette_shift, restart_actions
-from ..backend.config import load_config, to_home_relative
+from ..backend.config import load_config
 
 from . import dialogs
-from .color_chip import ColorChip, ensure_base_styles
+from .chip_builders import TYPE_DISPLAY as _TYPE_DISPLAY
+from .chip_builders import (
+    build_empty_target_chip as _build_empty_target_chip,
+    build_group_chip as _build_group_chip,
+    build_palette_chip as _build_palette_chip,
+    build_warning_row as _build_warning_row,
+)
+from .color_chip import ensure_base_styles
 from .template_loader import compiled_ui_path  # noqa: E402
-
-_TYPE_DISPLAY = {"hex": "hex", "hex_from_rgb": "rgb"}
 
 
 @Gtk.Template(filename=compiled_ui_path("window_main.blp"))
@@ -224,58 +229,29 @@ class MainWindow(Adw.ApplicationWindow):
             n_colors = 6
 
         settings = palette_generator.read_generation_settings(self.config)
+        shuffle_arg = None
+        if settings.get("shuffle_enabled", False):
+            shuffle_arg = "next" if settings.get("shuffle_mode") == "next" else int(settings.get("shuffle_value", 0))
+
         try:
-            weights = palette_generator.resolve_scoring_weights(
-                settings["scoring"], custom_percentages=settings.get("custom_percentages"), config=self.config,
-            )
-            overfetch = int(settings.get("overfetch", 0))
-            shuffle_arg = None
-            if settings.get("shuffle_enabled", False):
-                shuffle_arg = "next" if settings.get("shuffle_mode") == "next" else int(settings.get("shuffle_value", 0))
-            resolved_shuffle = (
-                palette_generator.resolve_shuffle_index(shuffle_arg, n_colors, overfetch=overfetch, config=self.config)
-                if shuffle_arg is not None else 0
-            )
-            colors, base_colors = palette_generator.generate_palette(
-                image_path, n_colors=n_colors, mode=settings["mode"], saturate=settings["saturate"],
-                weights=weights, weighted_contrast=settings.get("weighted_contrast", True),
-                shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=settings.get("ying_yang", False),
-                saturate_factor=settings.get("my_eyes_factor", 1.5),
-                saturate_max_chroma=settings.get("my_eyes_max_chroma", 132.0),
+            # Same shared save-a-generated-palette-to-disk path the CLI's
+            # `palette generate` / `automatic --from-image` use, so the two
+            # never drift out of sync on what a "generated palette" looks like.
+            entries, path = palette_shift.generate_and_save_palette(
+                self.config, image_path, n_colors, 40000, settings["mode"], settings["saturate"],
+                scoring=settings["scoring"], custom_scoring_values=settings.get("custom_percentages"),
+                weighted_contrast=settings.get("weighted_contrast", True),
+                shuffle=shuffle_arg, overfetch=int(settings.get("overfetch", 0)),
+                ying_yang=settings.get("ying_yang", False),
+                my_eyes_factor=settings.get("my_eyes_factor", 1.5),
+                my_eyes_max_chroma=settings.get("my_eyes_max_chroma", 132.0),
                 shading_direction=settings.get("shading_direction", "dark"),
-                shading_min_l=settings.get("shading_min_luminance", 8.0),
-                shading_max_l=settings.get("shading_max_luminance", 92.0),
-                with_base=True,
+                shading_min_luminance=settings.get("shading_min_luminance", 8.0),
+                shading_max_luminance=settings.get("shading_max_luminance", 92.0),
             )
         except Exception as e:
             dialogs.toast(self.toast_overlay, f"No se pudo generar la paleta: {e}")
             return
-
-        path = self.config.generated_palette_csv
-        # Rows = effective colors; #ucs-meta carries the base + params so
-        # "Modificadores…" (and CLI `automatic shift`) can re-tweak this palette
-        # later without re-picking the image. Same shape main._generate_and_save_palette writes.
-        entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"], "origin": "gen"}
-                   for i, c in enumerate(colors)]
-        meta = palette_store.default_meta()
-        meta.update({
-            "generated": True,
-            "image": to_home_relative(image_path),
-            "gen": {
-                "colors": n_colors, "sample_size": 40000, "mode": settings["mode"],
-                "scoring": settings["scoring"], "custom_percentages": settings.get("custom_percentages"),
-                "weighted_contrast": settings.get("weighted_contrast", True),
-                "shuffle": resolved_shuffle, "overfetch": overfetch,
-                "shading_direction": settings.get("shading_direction", "dark"),
-                "shading_min_luminance": settings.get("shading_min_luminance", 8.0),
-                "shading_max_luminance": settings.get("shading_max_luminance", 92.0),
-            },
-            "post": {"my_eyes": bool(settings["saturate"]), "ying_yang": bool(settings.get("ying_yang", False)),
-                     "my_eyes_factor": settings.get("my_eyes_factor", 1.5),
-                     "my_eyes_max_chroma": settings.get("my_eyes_max_chroma", 132.0)},
-            "base": [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base_colors],
-        })
-        palette_store.write_palette_csv(path, entries, meta=meta)
 
         self._set_new_palette(path, entries)
         base = os.path.splitext(os.path.basename(image_path))[0]
@@ -452,51 +428,6 @@ class MainWindow(Adw.ApplicationWindow):
 
     # ------------------------------------------------------------ row builders
 
-    def _build_group_chip(self, group, number=None, warning=None, removable_cb=None):
-        chip = ColorChip()
-        representative = group[0]
-        chip.set_color(representative["color"])
-        r, g, b = color_detector.hex_to_rgb(representative["color"])
-        chip.set_hex_text(f"#{representative['color']}  ·  rgb({r}, {g}, {b})")
-
-        by_type = {c["type"]: c for c in group}
-        parts = []
-        file_groups = {}
-        for type_key in ("hex", "hex_from_rgb"):
-            c = by_type.get(type_key)
-            if c is None:
-                continue
-            parts.append(f"{_TYPE_DISPLAY[type_key]}: x{c['count']}")
-            file_groups[_TYPE_DISPLAY[type_key]] = c["files"]
-        chip.set_meta_text(" · ".join(parts))
-        chip.set_file_groups(file_groups)
-
-        chip.set_number(number)
-        chip.set_warning(warning)
-        chip.set_removable(removable_cb)
-        return chip
-
-    def _build_palette_chip(self, entry, number=None, warning=None, usage_count=0):
-        chip = ColorChip()
-        chip.set_color(entry["hex"])
-        chip.set_hex_text(f"#{entry['hex']}")
-        label = entry.get("label", "")
-        if usage_count:
-            label = f"{label + ' · ' if label else ''}usado {usage_count}x"
-        chip.set_meta_text(label)
-        chip.set_number(number)
-        chip.set_warning(warning)
-        return chip
-
-    def _build_empty_target_chip(self, number, warning=None):
-        chip = ColorChip()
-        chip.swatch.add_css_class("swatch-empty")
-        chip.set_hex_text("Sin asignar")
-        chip.set_meta_text("Elegí un color de la paleta →")
-        chip.set_number(number)
-        chip.set_warning(warning)
-        return chip
-
     @staticmethod
     def _clear_listbox(listbox):
         child = listbox.get_first_child()
@@ -521,7 +452,7 @@ class MainWindow(Adw.ApplicationWindow):
             member_ids = {c["id"] for c in group}
             if member_ids & present_ids:
                 continue  # already (at least partially) in the mapping
-            chip = self._build_group_chip(group)
+            chip = _build_group_chip(group)
             chip.set_addable(lambda g=group: self._add_group_to_mapping(g))
             row = Gtk.ListBoxRow(child=chip)
             row.group = group
@@ -544,7 +475,7 @@ class MainWindow(Adw.ApplicationWindow):
                 usage_counts[e["new_id"]] = usage_counts.get(e["new_id"], 0) + 1
 
         for entry in self.new_palette:
-            chip = self._build_palette_chip(entry, usage_count=usage_counts.get(entry["id"], 0))
+            chip = _build_palette_chip(entry, usage_count=usage_counts.get(entry["id"], 0))
             chip.set_editable(lambda e=entry: self._on_palette_edit(e))
             chip.set_deletable(lambda e=entry: self._on_palette_delete(e))
             row = Gtk.ListBoxRow(child=chip)
@@ -591,7 +522,7 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 warning = None
 
-            old_chip = self._build_group_chip(
+            old_chip = _build_group_chip(
                 group_members, number=idx, warning=warning,
                 removable_cb=(lambda ids=tuple(group_old_ids): self._remove_group(ids)),
             )
@@ -609,9 +540,9 @@ class MainWindow(Adw.ApplicationWindow):
                     break
 
             if new_id is not None and new_id in palette_by_id:
-                new_chip = self._build_palette_chip(palette_by_id[new_id], number=idx, warning=warning)
+                new_chip = _build_palette_chip(palette_by_id[new_id], number=idx, warning=warning)
             else:
-                new_chip = self._build_empty_target_chip(idx, warning=warning)
+                new_chip = _build_empty_target_chip(idx, warning=warning)
             new_row = Gtk.ListBoxRow(child=new_chip)
             new_row.group_ids = tuple(group_old_ids)
             self.mapping_new_listbox.append(new_row)
@@ -629,7 +560,7 @@ class MainWindow(Adw.ApplicationWindow):
                     f"El color #{c['new_hex']} elegido para el id {c['old_id']} ya existe en la paleta "
                     f"detectada (id {c['conflict_with_ids']}). Puede romper el reemplazo de ese otro color."
                 )
-                self.warnings_box.append(self._build_warning_row(text))
+                self.warnings_box.append(_build_warning_row(text))
                 added_any = True
 
             convergence = conflicts.find_target_convergence(
@@ -640,7 +571,7 @@ class MainWindow(Adw.ApplicationWindow):
                     f"Los colores con id {c['old_ids']} van a terminar todos en #{c['target_hex']}. "
                     "Si no era intencional, vas a perder la distinción entre ellos en un futuro re-escaneo."
                 )
-                self.warnings_box.append(self._build_warning_row(text))
+                self.warnings_box.append(_build_warning_row(text))
                 added_any = True
 
             if not self.auto_link_siblings:
@@ -665,7 +596,7 @@ class MainWindow(Adw.ApplicationWindow):
                                 f"({_TYPE_DISPLAY.get(sib['type'], sib['type'])}) y no está en el mapping."
                             )
                             self.warnings_box.append(
-                                self._build_warning_row(
+                                _build_warning_row(
                                     text, "Agregar también",
                                     lambda o=old_id, s=sib["id"]: self._quick_link(s, o),
                                 )
@@ -673,18 +604,6 @@ class MainWindow(Adw.ApplicationWindow):
                             added_any = True
 
         self.warnings_revealer.set_reveal_child(added_any)
-
-    def _build_warning_row(self, text, action_label=None, action_cb=None):
-        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, css_classes=["warning-row"])
-        icon = Gtk.Image(icon_name="dialog-warning-symbolic")
-        label = Gtk.Label(label=text, xalign=0, hexpand=True, wrap=True)
-        box.append(icon)
-        box.append(label)
-        if action_label and action_cb:
-            btn = Gtk.Button(label=action_label, css_classes=["flat"])
-            btn.connect("clicked", lambda _b: action_cb())
-            box.append(btn)
-        return box
 
     @staticmethod
     def _clear_listbox_box(box):

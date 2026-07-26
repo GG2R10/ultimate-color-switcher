@@ -15,7 +15,7 @@ def _make_image(path):
 
 def _write_generated_palette(path, image_path, n_colors=4, my_eyes=False, ying_yang=False):
     """Write a generated palette CSV (rows=effective, #ucs-meta with base+params),
-    exactly as main._generate_and_save_palette would."""
+    exactly as palette_shift.generate_and_save_palette would."""
     eff, base = pg.generate_palette(str(image_path), n_colors=n_colors, sample_size=3000,
                                     mode="contrast", saturate=my_eyes, ying_yang=ying_yang, with_base=True)
     meta = palette_store.default_meta()

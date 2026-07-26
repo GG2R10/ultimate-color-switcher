@@ -312,80 +312,6 @@ def _parse_on_off(raw: str) -> bool:
     raise argparse.ArgumentTypeError(f"valor debe ser 'on' u 'off', se recibió {raw!r}")
 
 
-def _generate_and_save_palette(config, image, n_colors, sample_size, mode, saturate,
-                                out_path=None, scoring="default", custom_scoring_values=None,
-                                weighted_contrast=True, shuffle=None, overfetch=0, ying_yang=False,
-                                my_eyes_factor=palette_generator._MY_EYES_CHROMA_FACTOR,
-                                my_eyes_max_chroma=palette_generator._MY_EYES_CHROMA_MAX,
-                                shading_direction="dark", shading_min_luminance=8.0,
-                                shading_max_luminance=92.0):
-    """Shared by `palette generate` and `automatic --from-image`. Returns
-    (entries, saved_path) — entries is the id/hex/label list ready to hand
-    to guiless.apply_palette directly (no need to re-read the file back).
-
-    shuffle=None means "--shuffle wasn't passed at all" -- distinct from an
-    explicit 0, since resolving it (and persisting it as the new
-    "last_shuffle" anchor for a future --shuffle next) only happens when
-    the flag was actually used.
-
-    my_eyes_factor/my_eyes_max_chroma: only used when saturate=True -- see
-    palette_generator._boost_saturation.
-
-    shading_direction/shading_min_luminance/shading_max_luminance: only used
-    when mode="shading" -- see palette_generator.generate_shading_series."""
-    weights = palette_generator.resolve_scoring_weights(
-        scoring, custom_percentages=custom_scoring_values, config=config,
-    )
-    resolved_shuffle = (
-        palette_generator.resolve_shuffle_index(shuffle, n_colors, overfetch=overfetch, config=config)
-        if shuffle is not None else 0
-    )
-    colors, base_colors = palette_generator.generate_palette(
-        image, n_colors=n_colors, sample_size=sample_size, mode=mode,
-        saturate=saturate, weights=weights, weighted_contrast=weighted_contrast,
-        shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=ying_yang,
-        saturate_factor=my_eyes_factor, saturate_max_chroma=my_eyes_max_chroma,
-        shading_direction=shading_direction, shading_min_l=shading_min_luminance,
-        shading_max_l=shading_max_luminance, with_base=True,
-    )
-
-    if not out_path:
-        out_path = config.generated_palette_csv
-    if not out_path.endswith(".csv"):
-        out_path += ".csv"
-    if not os.path.isabs(out_path):
-        out_path = os.path.join(config.palettes_created_dir, out_path)
-
-    # Rows are the EFFECTIVE (applied) colors; the pre-post-mod base + the
-    # generation params ride along in #ucs-meta so `shift` can re-tweak & re-apply
-    # this palette without re-passing the image or the whole flag set.
-    entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"], "origin": "gen"}
-               for i, c in enumerate(colors)]
-    meta = palette_store.default_meta()
-    meta.update({
-        "generated": True,
-        "image": to_home_relative(image),
-        "gen": {
-            "colors": n_colors,
-            "sample_size": sample_size,
-            "mode": mode,
-            "scoring": scoring,
-            "custom_percentages": custom_scoring_values,
-            "weighted_contrast": weighted_contrast,
-            "shuffle": resolved_shuffle,
-            "overfetch": overfetch,
-            "shading_direction": shading_direction,
-            "shading_min_luminance": shading_min_luminance,
-            "shading_max_luminance": shading_max_luminance,
-        },
-        "post": {"my_eyes": bool(saturate), "ying_yang": bool(ying_yang),
-                 "my_eyes_factor": my_eyes_factor, "my_eyes_max_chroma": my_eyes_max_chroma},
-        "base": [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base_colors],
-    })
-    palette_store.write_palette_csv(out_path, entries, meta=meta)
-    return entries, out_path
-
-
 def cmd_palette_generate(args, config):
     mapping_path = args.mapping or config.mapping_csv
     n_colors = args.colors
@@ -396,7 +322,7 @@ def cmd_palette_generate(args, config):
         _old_p, _new_p, mapping_entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
         n_colors = len({e["new_id"] for e in mapping_entries}) if mapping_entries else 6
 
-    entries, out_path = _generate_and_save_palette(
+    entries, out_path = palette_shift.generate_and_save_palette(
         config, args.image, n_colors, args.sample_size, args.mode, args.my_eyes, args.out,
         scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
         weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
@@ -641,7 +567,7 @@ def cmd_automatic(args, config):
             print(f"Mapping vacío o no encontrado: {mapping_path}")
             sys.exit(1)
         n_colors = args.colors or len({e["new_id"] for e in entries})
-        palette_source, saved_path = _generate_and_save_palette(
+        palette_source, saved_path = palette_shift.generate_and_save_palette(
             config, args.from_image, n_colors, args.sample_size, args.mode, args.my_eyes,
             scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
             weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
@@ -810,7 +736,10 @@ def _add_shuffle_args(parser, from_image_note=""):
     parser.add_argument(
         "--overfetch", type=_parse_overfetch, default=0,
         help=f"Candidatos extra a considerar más allá de --colors{from_image_note} (default: 0). "
-             "Le da a --shuffle más margen para saltear sin quedarse sin candidatos.",
+             "auxN: se eligen entre n_needed+overfetch candidatos y sobreviven los de mejor score. "
+             "shading: el ramp se genera como si hicieran falta n_needed+overfetch shades y se "
+             "conservan los más cercanos a primary (más densos). También le da a --shuffle más "
+             "margen para saltear sin quedarse sin candidatos.",
     )
 
 

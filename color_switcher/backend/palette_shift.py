@@ -28,9 +28,88 @@ post-mods, immune only to regeneration); delete renumbers, and the caller
 adjusts the mapping (see mapping_store.drop_and_shift_new_id).
 """
 
+import os
+
 from . import palette_generator
 from . import palette_store
 from .color_detector import expand_path
+from .config import to_home_relative
+
+
+def generate_and_save_palette(config, image, n_colors, sample_size, mode, saturate,
+                                out_path=None, scoring="default", custom_scoring_values=None,
+                                weighted_contrast=True, shuffle=None, overfetch=0, ying_yang=False,
+                                my_eyes_factor=palette_generator._MY_EYES_CHROMA_FACTOR,
+                                my_eyes_max_chroma=palette_generator._MY_EYES_CHROMA_MAX,
+                                shading_direction="dark", shading_min_luminance=8.0,
+                                shading_max_luminance=92.0):
+    """Shared by the CLI (`palette generate` / `automatic --from-image`) and
+    the GUI ("Generar paleta desde imagen…") -- the one place that turns an
+    image + generation params into a saved palette CSV with full #ucs-meta.
+    Returns (entries, saved_path) — entries is the id/hex/label list ready to
+    hand to guiless.apply_palette directly (no need to re-read the file back).
+
+    shuffle=None means "no shuffle override was requested" -- distinct from
+    an explicit 0, since resolving it (and persisting it as the new
+    "last_shuffle" anchor for a future --shuffle next) only happens when
+    shuffling was actually requested.
+
+    my_eyes_factor/my_eyes_max_chroma: only used when saturate=True -- see
+    palette_generator._boost_saturation.
+
+    shading_direction/shading_min_luminance/shading_max_luminance: only used
+    when mode="shading" -- see palette_generator.generate_shading_series."""
+    weights = palette_generator.resolve_scoring_weights(
+        scoring, custom_percentages=custom_scoring_values, config=config,
+    )
+    resolved_shuffle = (
+        palette_generator.resolve_shuffle_index(shuffle, n_colors, overfetch=overfetch, config=config)
+        if shuffle is not None else 0
+    )
+    colors, base_colors = palette_generator.generate_palette(
+        image, n_colors=n_colors, sample_size=sample_size, mode=mode,
+        saturate=saturate, weights=weights, weighted_contrast=weighted_contrast,
+        shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=ying_yang,
+        saturate_factor=my_eyes_factor, saturate_max_chroma=my_eyes_max_chroma,
+        shading_direction=shading_direction, shading_min_l=shading_min_luminance,
+        shading_max_l=shading_max_luminance, with_base=True,
+    )
+
+    if not out_path:
+        out_path = config.generated_palette_csv
+    if not out_path.endswith(".csv"):
+        out_path += ".csv"
+    if not os.path.isabs(out_path):
+        out_path = os.path.join(config.palettes_created_dir, out_path)
+
+    # Rows are the EFFECTIVE (applied) colors; the pre-post-mod base + the
+    # generation params ride along in #ucs-meta so `shift` can re-tweak & re-apply
+    # this palette without re-passing the image or the whole flag set.
+    entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"], "origin": "gen"}
+               for i, c in enumerate(colors)]
+    meta = palette_store.default_meta()
+    meta.update({
+        "generated": True,
+        "image": to_home_relative(image),
+        "gen": {
+            "colors": n_colors,
+            "sample_size": sample_size,
+            "mode": mode,
+            "scoring": scoring,
+            "custom_percentages": custom_scoring_values,
+            "weighted_contrast": weighted_contrast,
+            "shuffle": resolved_shuffle,
+            "overfetch": overfetch,
+            "shading_direction": shading_direction,
+            "shading_min_luminance": shading_min_luminance,
+            "shading_max_luminance": shading_max_luminance,
+        },
+        "post": {"my_eyes": bool(saturate), "ying_yang": bool(ying_yang),
+                 "my_eyes_factor": my_eyes_factor, "my_eyes_max_chroma": my_eyes_max_chroma},
+        "base": [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base_colors],
+    })
+    palette_store.write_palette_csv(out_path, entries, meta=meta)
+    return entries, out_path
 
 
 class ShiftError(Exception):

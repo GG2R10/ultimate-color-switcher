@@ -31,6 +31,8 @@ _BASE_CSS = """
 .color-pill { border-radius: 999px; padding: 2px 10px; font-size: 11px; }
 .pill-text-dark { color: rgba(0, 0, 0, 0.85); }
 .pill-text-light { color: rgba(255, 255, 255, 0.95); }
+.ucs-section-title { font-size: 1.3em; font-weight: 700; }
+.ucs-section-description { font-size: 0.85em; }
 """
 
 _css_provider = None

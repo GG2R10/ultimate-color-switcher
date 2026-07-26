@@ -94,7 +94,24 @@ def generate_palette(
     overfetch (--overfetch): keep this many extra candidates around past
     n_colors when filtering clusters, so `shuffle` has more room to skip
     through -- otherwise filter_clusters only guarantees n_colors survivors,
-    which leaves shuffle nothing to work with beyond a few positions.
+    which leaves shuffle nothing to work with beyond a few positions. Also
+    widens the actual color selection past primary/secondary:
+      - "contrast"/"balanced": auxiliaries are picked with
+        n_needed+overfetch slots instead of n_needed, then only the
+        best-SCORING n_needed of those survive -- select_auxiliaries' own
+        greedy farthest-point order is stable (its first n_needed picks
+        never change based on how many more you ask for), so trimming the
+        overfetch tail by pick order would be a no-op; ranking the wider
+        candidate set by score instead is what actually lets a bigger pool
+        change the outcome.
+      - "shading": the ramp is generated as if n_colors+overfetch shades
+        were needed (denser fractional steps -- see generate_shading_series),
+        then only the first n_needed (closest to primary) survive. Unlike
+        auxiliaries, this ramp genuinely is ordered best (closest to primary)
+        to worst (most extreme), so keeping the prefix and discarding the
+        tail is exactly the intended effect here.
+    overfetch=0 (the default) leaves every one of these paths byte-identical
+    to requesting exactly n_needed in the first place.
 
     ying_yang (--ying-yang): flip every final color to its complement (hue
     +180°) right before returning, turning the palette into its complementary
@@ -169,10 +186,12 @@ def generate_palette(
 
     if mode == "shading":
         if n_colors > 1:
-            chosen.extend(generate_shading_series(
-                primary, n_colors - 1, direction=shading_direction,
+            n_shades_needed = n_colors - 1
+            shades = generate_shading_series(
+                primary, n_shades_needed + overfetch, direction=shading_direction,
                 min_luminance=shading_min_l, max_luminance=shading_max_l,
-            ))
+            )
+            chosen.extend(shades[:n_shades_needed])
     else:
         selection_refs = [primary_raw]
 
@@ -185,9 +204,15 @@ def generate_palette(
             chosen.append(secondary)
 
         if n_colors > len(chosen):
-            chosen.extend(
-                select_auxiliaries(filtered, chosen, n_colors - len(chosen), exclude=selection_refs)
+            n_aux_needed = n_colors - len(chosen)
+            aux_candidates = select_auxiliaries(
+                filtered, chosen, n_aux_needed + overfetch, exclude=selection_refs
             )
+            if overfetch > 0:
+                aux_candidates = sorted(aux_candidates, key=lambda c: c["score"], reverse=True)[:n_aux_needed]
+            else:
+                aux_candidates = aux_candidates[:n_aux_needed]
+            chosen.extend(aux_candidates)
 
     chosen = chosen[:n_colors]
 
