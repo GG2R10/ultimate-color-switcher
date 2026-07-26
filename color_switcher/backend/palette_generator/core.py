@@ -39,6 +39,7 @@ def generate_palette(
     shuffle: int = 0,
     overfetch: int = 0,
     ying_yang: bool = False,
+    with_base: bool = False,
 ) -> list:
     """
     Full pipeline entrypoint.
@@ -171,22 +172,35 @@ def generate_palette(
 
     chosen = chosen[:n_colors]
 
-    if saturate:
-        chosen = [_boost_saturation(c) for c in chosen]
-
-    if ying_yang:
-        chosen = [_complement_hue(c) for c in chosen]
-
-    # Final safety pass: never emit a pure black/white -- normalize the
-    # near-extremes into a usable band (see _normalize_extreme_lightness).
-    chosen = [_normalize_extreme_lightness(c) for c in chosen]
-
+    n = len(chosen)
     if mode == "shading":
-        labels = ["primary"] + [f"shade{i}" for i in range(1, len(chosen))]
+        labels = ["primary"] + [f"shade{i}" for i in range(1, n)]
     else:
         labels = ["primary"]
-        if len(chosen) >= 2:
+        if n >= 2:
             labels.append("secondary")
-        labels.extend(f"aux{i}" for i in range(1, len(chosen) - len(labels) + 1))
+        labels.extend(f"aux{i}" for i in range(1, n - len(labels) + 1))
 
-    return [{"hex": c["hex"], "label": labels[i]} for i, c in enumerate(chosen)]
+    def _finalize(entries):
+        # Final safety pass: never emit a pure black/white -- normalize the
+        # near-extremes into a usable band (see _normalize_extreme_lightness).
+        normed = [_normalize_extreme_lightness(c) for c in entries]
+        return [{"hex": c["hex"], "label": labels[i]} for i, c in enumerate(normed)]
+
+    effective = list(chosen)
+    if saturate:
+        effective = [_boost_saturation(c) for c in effective]
+    if ying_yang:
+        effective = [_complement_hue(c) for c in effective]
+    effective_out = _finalize(effective)
+
+    if not with_base:
+        return effective_out
+    # with_base: also return the palette WITHOUT the post-modifiers (my-eyes,
+    # ying-yang) applied -- the "base" a stored palette keeps so `shift` can
+    # toggle those on/off later without regenerating (and reversibly, since
+    # they're recomputed from this base rather than mutated in place). saturate
+    # and ying-yang both preserve HSL lightness and normalize only touches
+    # lightness, so base and effective share the exact same _finalize outcome
+    # per color except for the deliberate post-mod difference.
+    return effective_out, _finalize(chosen)

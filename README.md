@@ -278,9 +278,9 @@ ucs automatic --from-image "$WALLPAPER_FOLDER/actual_wallpaper.jpg" &
 | `config files scan-config [--dry-run] [--yes]` | Busca en `~/.config` archivos con colores y los agrega |
 | `palette create <ruta> --add HEX LABEL ...` | Crea una paleta a mano |
 | `palette generate <imagen> [--colors N] [--mode ...] [--my-eyes] [--ying-yang on\|off] [--scoring ...] [--shuffle N\|next] [--overfetch N] [--no-weighted-contrast]` | Genera una paleta desde un wallpaper |
-| `palette show <paleta>` | Muestra una paleta con sus colores en la terminal |
+| `palette show [paleta]` | Muestra una paleta con sus colores en la terminal (sin paleta: la que aplica el mapping actual) |
 | `palette list` | Lista las paletas creadas |
-| `palette add-color <paleta> <hex> [label]` | Agrega un color a una paleta existente |
+| `palette add-color [paleta] <hex> [--label LABEL]` | Agrega un color a una paleta existente (sin paleta: la que aplica el mapping actual) |
 | `mapping new <paleta>` | Sesión interactiva para armar el mapping |
 | `mapping show <mapping>` | Muestra un mapping y sus conflictos |
 | `test [--mapping <mapping>]` | Simula un apply |

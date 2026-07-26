@@ -75,6 +75,22 @@ template $ColorChip: Gtk.Box {
       tooltip-text: _("Agregar al mapping");
     }
 
+    Gtk.Button edit_button {
+      icon-name: "document-edit-symbolic";
+      valign: center;
+      visible: false;
+      css-classes: ["flat"];
+      tooltip-text: _("Editar este color");
+    }
+
+    Gtk.Button delete_button {
+      icon-name: "user-trash-symbolic";
+      valign: center;
+      visible: false;
+      css-classes: ["flat"];
+      tooltip-text: _("Borrar este color de la paleta");
+    }
+
     Gtk.Button remove_button {
       icon-name: "list-remove-symbolic";
       valign: center;

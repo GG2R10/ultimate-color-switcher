@@ -12,10 +12,6 @@ menu palette_menu {
       action: "win.import-palette";
     }
     item {
-      label: _("Agregar color a la paleta…");
-      action: "win.add-color";
-    }
-    item {
       label: _("Generar paleta desde imagen…");
       action: "win.generate-palette";
     }
@@ -75,6 +71,16 @@ template $MainWindow: Adw.ApplicationWindow {
         child: Adw.ButtonContent {
           icon-name: "view-refresh-symbolic";
           label: _("Escanear");
+        };
+      }
+
+      [end]
+      Gtk.Button modifiers_button {
+        sensitive: false;
+        tooltip-text: _("Cambiar modificadores de la paleta (saturación, complementarios, regeneración) y previsualizar");
+        child: Adw.ButtonContent {
+          icon-name: "applications-graphics-symbolic";
+          label: _("Modificadores");
         };
       }
     }
@@ -165,13 +171,43 @@ template $MainWindow: Adw.ApplicationWindow {
                 margin-start: 6;
                 margin-end: 10;
 
-                Gtk.Label palette_empty_label {
-                  label: _("Sin paleta todavía.\nUsá el menú (⋮) para crear o importar una.");
-                  wrap: true;
-                  justify: center;
-                  css-classes: ["dim-label"];
+                Gtk.Box palette_empty_box {
+                  orientation: vertical;
+                  spacing: 10;
                   vexpand: true;
                   valign: center;
+                  halign: center;
+
+                  Gtk.Label {
+                    label: _("Todavía no hay paleta nueva.");
+                    css-classes: ["dim-label"];
+                  }
+
+                  Gtk.Button {
+                    action-name: "win.generate-palette";
+                    halign: center;
+                    css-classes: ["suggested-action", "pill"];
+                    child: Adw.ButtonContent {
+                      icon-name: "image-x-generic-symbolic";
+                      label: _("Generar desde imagen…");
+                    };
+                  }
+
+                  Gtk.Box {
+                    orientation: horizontal;
+                    spacing: 8;
+                    halign: center;
+
+                    Gtk.Button {
+                      action-name: "win.import-palette";
+                      label: _("Importar…");
+                    }
+
+                    Gtk.Button {
+                      action-name: "win.new-palette";
+                      label: _("Nueva…");
+                    }
+                  }
                 }
 
                 Gtk.ListBox available_palette_listbox {
@@ -180,6 +216,18 @@ template $MainWindow: Adw.ApplicationWindow {
                   visible: false;
                 }
               }
+            }
+
+            Gtk.Button add_color_button {
+              visible: false;
+              halign: start;
+              margin-start: 12;
+              margin-top: 6;
+              action-name: "win.add-color";
+              child: Adw.ButtonContent {
+                icon-name: "list-add-symbolic";
+                label: _("Agregar color");
+              };
             }
 
             Gtk.Separator {

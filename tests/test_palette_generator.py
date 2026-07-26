@@ -229,6 +229,53 @@ def test_generate_palette_end_to_end(tmp_path):
         int(entry["hex"], 16)  # valid hex
 
 
+_CREATED_PALETTE = [
+    {"hex": "ff00aa", "label": "primary"},
+    {"hex": "00ccff", "label": "secondary"},
+    {"hex": "123456", "label": "aux1"},
+    {"hex": "ffffff", "label": "aux2"},
+    {"hex": "000000", "label": "aux3"},
+    {"hex": "2ec16b", "label": "aux4"},
+]
+
+
+def test_apply_post_modifiers_identity_is_exact():
+    # No modifiers => the exact same hexes back (so effective == base when a
+    # created palette has no active post-mods -- no silent round-trip drift).
+    out = pg.apply_post_modifiers(_CREATED_PALETTE)
+    assert [c["hex"] for c in out] == [c["hex"] for c in _CREATED_PALETTE]
+    assert [c["label"] for c in out] == [c["label"] for c in _CREATED_PALETTE]
+
+
+def test_apply_post_modifiers_ying_yang_is_involutive():
+    # Rotating hue 180 twice returns to the original, for every color including
+    # the pure greys (whose complement is themselves) -- this is what makes the
+    # GUI toggle reversible.
+    once = pg.apply_post_modifiers(_CREATED_PALETTE, ying_yang=True)
+    twice = pg.apply_post_modifiers(once, ying_yang=True)
+    assert [c["hex"] for c in twice] == [c["hex"] for c in _CREATED_PALETTE]
+    # and it actually changed something on the way (not a no-op short-circuit)
+    assert [c["hex"] for c in once] != [c["hex"] for c in _CREATED_PALETTE]
+
+
+def test_apply_post_modifiers_my_eyes_raises_saturation_and_leaves_greys_inert():
+    out = {c_in["hex"]: c_out["hex"]
+           for c_in, c_out in zip(_CREATED_PALETTE, pg.apply_post_modifiers(_CREATED_PALETTE, my_eyes=True))}
+    # pure white/black have no saturation to boost -> untouched
+    assert out["ffffff"] == "ffffff"
+    assert out["000000"] == "000000"
+    # a real, not-yet-maxed color gets more saturated
+    _, sat_before, _ = cm.rgb_to_hsl(cm.hex_to_rgb("2ec16b"))
+    _, sat_after, _ = cm.rgb_to_hsl(cm.hex_to_rgb(out["2ec16b"]))
+    assert sat_after > sat_before
+
+
+def test_apply_post_modifiers_preserves_label_and_order():
+    out = pg.apply_post_modifiers(_CREATED_PALETTE, my_eyes=True, ying_yang=True)
+    assert [c["label"] for c in out] == [c["label"] for c in _CREATED_PALETTE]
+    assert len(out) == len(_CREATED_PALETTE)
+
+
 def test_generate_palette_raises_clean_error_on_directory(tmp_path):
     with pytest.raises(pg.ImageLoadError):
         pg.generate_palette(str(tmp_path), n_colors=4)

@@ -103,6 +103,22 @@ def write_mapping_csv(path: str, old_palette: str, new_palette: str, entries: li
             f.write(f"{e['old_id']},{e['new_id']}\n")
 
 
+def drop_and_shift_new_id(entries: list, deleted_new_id: int) -> list:
+    """Adjust a mapping after the palette color at `deleted_new_id` (1-based,
+    contiguous) was removed: entries pointing at it are unassigned (new_id
+    None), and higher new_ids shift down by one to follow the palette's
+    renumbering. Returns a NEW entries list (input untouched)."""
+    out = []
+    for e in entries:
+        nid = e.get("new_id")
+        if nid == deleted_new_id:
+            nid = None
+        elif nid is not None and nid > deleted_new_id:
+            nid -= 1
+        out.append({"old_id": e["old_id"], "new_id": nid})
+    return out
+
+
 def new_mapping_path(mappings_dir: str) -> str:
     """A timestamped mapping-<timestamp>.csv path, for callers that want a
     one-off file instead of the canonical mapping.csv (see Config.mapping_csv)."""
@@ -169,6 +185,16 @@ class MappingStore:
         self.entries = [e for e in self.entries if e["old_id"] != old_id]
         if persist:
             self.save()
+
+    def drop_and_shift_new_id(self, deleted_new_id: int, persist: bool = True) -> int:
+        """React to a palette color being deleted: unassign entries that
+        targeted it and shift higher new_ids down (see the module-level
+        function). Returns how many entries were left unassigned."""
+        before = sum(1 for e in self.entries if e["new_id"] == deleted_new_id)
+        self.entries = drop_and_shift_new_id(self.entries, deleted_new_id)
+        if persist:
+            self.save()
+        return before
 
     def resolved_entries(self) -> list:
         """Entries ready to apply, in insertion order."""

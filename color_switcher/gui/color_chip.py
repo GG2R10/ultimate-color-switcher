@@ -97,6 +97,8 @@ class ColorChip(Gtk.Box):
     meta_label = Gtk.Template.Child()
     expand_button = Gtk.Template.Child()
     add_button = Gtk.Template.Child()
+    edit_button = Gtk.Template.Child()
+    delete_button = Gtk.Template.Child()
     remove_button = Gtk.Template.Child()
     files_revealer = Gtk.Template.Child()
     files_box = Gtk.Template.Child()
@@ -188,3 +190,13 @@ class ColorChip(Gtk.Box):
         self.add_button.set_visible(callback is not None)
         if callback is not None:
             self.add_button.connect("clicked", lambda _b: callback())
+
+    def set_editable(self, callback=None):
+        self.edit_button.set_visible(callback is not None)
+        if callback is not None:
+            self.edit_button.connect("clicked", lambda _b: callback())
+
+    def set_deletable(self, callback=None):
+        self.delete_button.set_visible(callback is not None)
+        if callback is not None:
+            self.delete_button.connect("clicked", lambda _b: callback())

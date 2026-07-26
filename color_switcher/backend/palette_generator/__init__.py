@@ -21,6 +21,7 @@ from .settings import (
     write_generation_settings,
 )
 from .color_entry import (
+    ImageLoadError,
     _make_color_entry,
     build_clusters,
     load_image_samples,
@@ -59,6 +60,7 @@ from .transforms import (
     _boost_saturation,
     _complement_hue,
     _normalize_extreme_lightness,
+    apply_post_modifiers,
     improve_contrast,
 )
 from .core import _MODES, generate_palette

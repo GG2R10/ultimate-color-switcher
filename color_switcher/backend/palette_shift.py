@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""
+palette_shift.py — Re-tweak an existing palette (its modifiers, or individual
+colors) and hand back the new colors, WITHOUT the caller re-passing the image
+or the whole flag set that first produced it. Powers `ucs automatic shift` and
+`ucs palette edit|remove`, plus the GUI's Modificadores / edit / delete.
+
+Model (see [[palette-shift-design]]): a palette's #ucs-meta stores an ordered
+`base` list — every color, each tagged origin gen|custom — plus the active
+`post` modifiers. The CSV rows are the EFFECTIVE colors, always
+`apply_post_modifiers(base, post)` (so the applied file is unchanged in shape).
+
+Two kinds of modifier, handled very differently:
+
+  * Post modifiers (my-eyes, ying-yang) are image-independent and apply to
+    EVERY base color, gen and custom alike. Recomputed from base (never
+    mutated), so they're instant and reversible, and hand-added colors survive
+    (transformed, not dropped).
+
+  * Selection modifiers (mode, scoring, weighted-contrast, shuffle, overfetch,
+    colors) need the image's cluster pool, so they REGENERATE the gen colors
+    from the stored image + params. A regeneration discards hand-added/edited
+    colors (v1: warn, don't preserve). Only valid on a generated palette.
+
+Per-color ops (add/edit/delete) keep the base coherent: an added or edited
+color becomes origin custom (a literal, user-chosen color — still subject to
+post-mods, immune only to regeneration); delete renumbers, and the caller
+adjusts the mapping (see mapping_store.drop_and_shift_new_id).
+"""
+
+from . import palette_generator
+from . import palette_store
+from .color_detector import expand_path
+
+
+class ShiftError(Exception):
+    """A clean, user-facing reason a shift can't proceed (created palette asked
+    for a selection modifier, missing provenance, ...). main() prints it and
+    exits 1, same as ImageLoadError -- never a traceback."""
+
+
+class PaletteEditError(Exception):
+    """User-facing reason a per-color edit can't proceed (duplicate color,
+    target not found, empty palette). Printed cleanly, no traceback."""
+
+
+def _resolve_bool(current, override) -> bool:
+    """Apply an on|off|toggle|None override to a stored boolean. None keeps it."""
+    if override is None:
+        return bool(current)
+    if override == "on":
+        return True
+    if override == "off":
+        return False
+    if override == "toggle":
+        return not bool(current)
+    raise ShiftError(f"valor inválido para un modificador booleano: {override!r} (esperado on|off|toggle)")
+
+
+# --------------------------------------------------------------------------- #
+# base <-> effective
+# --------------------------------------------------------------------------- #
+
+def _norm_hex(h):
+    return h.lstrip("#").lower()
+
+
+def reconstruct_base(entries, meta):
+    """The full ordered base (one entry per color, with origin), robust to the
+    formats a palette file can be in:
+      - new: meta['base'] covers every row (len matches) -> used directly.
+      - older: meta['base'] held only gen colors, customs were separate literal
+        rows -> gen bases come from meta['base'], custom bases from the row hex.
+      - legacy: no meta['base'] at all -> every row is its own base.
+    Always aligned 1:1 with `entries` by position."""
+    stored = list(meta.get("base") or [])
+    if stored and len(stored) == len(entries):
+        return [
+            {"hex": _norm_hex(b["hex"]), "label": b.get("label", ""),
+             "origin": b.get("origin") or (entries[i].get("origin") or "gen")}
+            for i, b in enumerate(stored)
+        ]
+    base = []
+    gi = 0
+    for e in entries:
+        if e.get("origin") == "custom":
+            base.append({"hex": _norm_hex(e["hex"]), "label": e.get("label", ""), "origin": "custom"})
+        elif gi < len(stored):
+            base.append({"hex": _norm_hex(stored[gi]["hex"]),
+                         "label": stored[gi].get("label", e.get("label", "")), "origin": "gen"})
+            gi += 1
+        else:
+            base.append({"hex": _norm_hex(e["hex"]), "label": e.get("label", ""), "origin": "gen"})
+    return base
+
+
+def derive_effective(base, post):
+    """The effective (to-apply) rows for a base under the active post-mods:
+    apply_post_modifiers to EVERY color (gen and custom), order preserved, ids
+    renumbered 1..N, origin carried through."""
+    modded = palette_generator.apply_post_modifiers(
+        [{"hex": b["hex"], "label": b.get("label", "")} for b in base],
+        my_eyes=bool(post.get("my_eyes")), ying_yang=bool(post.get("ying_yang")),
+    )
+    rows = []
+    for i, (b, m) in enumerate(zip(base, modded)):
+        row = {"id": i + 1, "hex": m["hex"], "label": b.get("label", "")}
+        if b.get("origin") in ("gen", "custom"):
+            row["origin"] = b["origin"]
+        rows.append(row)
+    return rows
+
+
+def _post_of(meta):
+    post = dict({"my_eyes": False, "ying_yang": False})
+    post.update(meta.get("post") or {})
+    return post
+
+
+def _write_derived(path, base, meta):
+    """Persist a mutated base: rows = derive_effective(base, post), meta.base
+    updated to the full base. Returns the new rows."""
+    post = _post_of(meta)
+    rows = derive_effective(base, post)
+    new_meta = dict(meta)
+    new_meta["base"] = base
+    new_meta["post"] = post
+    palette_store.write_palette_csv(path, rows, meta=new_meta)
+    return rows
+
+
+# --------------------------------------------------------------------------- #
+# per-color ops (add / edit / delete)
+# --------------------------------------------------------------------------- #
+
+def _load(path):
+    entries, meta = palette_store.read_palette(path)
+    return entries, meta, reconstruct_base(entries, meta)
+
+
+def _has_dup(base, new_hex, exclude_index=None):
+    h = _norm_hex(new_hex)
+    return any(i != exclude_index and b["hex"] == h for i, b in enumerate(base))
+
+
+def _find_index(base, entries, target):
+    """Locate a color by id (a digit) or by hex (effective row hex or base
+    hex). Returns its position, or None."""
+    t = _norm_hex(str(target).strip())
+    if t.isdigit():
+        tid = int(t)
+        for i, e in enumerate(entries):
+            if e["id"] == tid:
+                return i
+        return None
+    for i, e in enumerate(entries):
+        if _norm_hex(e["hex"]) == t:
+            return i
+    for i, b in enumerate(base):
+        if b["hex"] == t:
+            return i
+    return None
+
+
+def add_color(path, hex_value, label=""):
+    """Append a user-chosen color (origin custom) to a palette, rejecting a
+    duplicate. Returns the new effective row entry."""
+    entries, meta, base = _load(path)
+    if _has_dup(base, hex_value):
+        raise PaletteEditError(f"El color #{_norm_hex(hex_value)} ya existe en la paleta.")
+    base.append({"hex": _norm_hex(hex_value), "label": label, "origin": "custom"})
+    rows = _write_derived(path, base, meta)
+    return rows[-1]
+
+
+def edit_color(path, target, new_hex):
+    """Change a color (by id or hex) to new_hex, marking it custom. Rejects a
+    duplicate. Returns the 1-based id of the edited slot (unchanged: an edit
+    keeps its position, so any mapping to it stays valid)."""
+    entries, meta, base = _load(path)
+    if not base:
+        raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
+    idx = _find_index(base, entries, target)
+    if idx is None:
+        raise PaletteEditError(f"No se encontró el color {target!r} en la paleta.")
+    if _has_dup(base, new_hex, exclude_index=idx):
+        raise PaletteEditError(f"El color #{_norm_hex(new_hex)} ya existe en la paleta.")
+    base[idx] = {"hex": _norm_hex(new_hex), "label": base[idx].get("label", ""), "origin": "custom"}
+    _write_derived(path, base, meta)
+    return idx + 1
+
+
+def delete_color(path, target):
+    """Remove a color (by id or hex). Returns the 1-based id it had, so the
+    caller can adjust a mapping (unassign that new_id, shift higher ones down --
+    see mapping_store.drop_and_shift_new_id). Renumbers the palette to stay
+    contiguous, which guiless's positional matching relies on."""
+    entries, meta, base = _load(path)
+    if not base:
+        raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
+    idx = _find_index(base, entries, target)
+    if idx is None:
+        raise PaletteEditError(f"No se encontró el color {target!r} en la paleta.")
+    del base[idx]
+    _write_derived(path, base, meta)
+    return idx + 1
+
+
+# --------------------------------------------------------------------------- #
+# shift (modifiers)
+# --------------------------------------------------------------------------- #
+
+_SELECTION_KEYS = ("mode", "scoring", "custom_scoring_values", "weighted_contrast",
+                   "shuffle", "overfetch", "colors")
+
+
+def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
+                  mode=None, scoring=None, custom_scoring_values=None,
+                  weighted_contrast=None, shuffle=None, overfetch=None, colors=None,
+                  write=True) -> dict:
+    """Compute (and, unless write=False, persist) the shifted palette.
+
+    Boolean modifiers (my_eyes, ying_yang) take on|off|toggle|None.
+    Selection modifiers take a concrete value or None ("keep stored").
+
+    Returns {"entries", "meta", "regenerated": bool, "warnings": [str]}.
+    Raises ShiftError for the clean user-facing failures."""
+    entries, meta = palette_store.read_palette(palette_path)
+    if not entries:
+        raise ShiftError(f"Paleta vacía o no encontrada: {palette_path}")
+
+    post = _post_of(meta)
+    new_post = {
+        "my_eyes": _resolve_bool(post.get("my_eyes"), my_eyes),
+        "ying_yang": _resolve_bool(post.get("ying_yang"), ying_yang),
+    }
+    selection = {"mode": mode, "scoring": scoring, "custom_scoring_values": custom_scoring_values,
+                 "weighted_contrast": weighted_contrast, "shuffle": shuffle,
+                 "overfetch": overfetch, "colors": colors}
+    wants_regen = any(selection[k] is not None for k in _SELECTION_KEYS)
+    warnings = []
+
+    if wants_regen:
+        new_entries, new_meta = _regenerate(meta, entries, new_post, selection, config, warnings)
+    else:
+        base = reconstruct_base(entries, meta)
+        new_entries = derive_effective(base, new_post)
+        new_meta = dict(meta)
+        new_meta["post"] = new_post
+        new_meta["base"] = base
+
+    if write:
+        palette_store.write_palette_csv(palette_path, new_entries, meta=new_meta)
+    return {"entries": new_entries, "meta": new_meta, "regenerated": wants_regen, "warnings": warnings}
+
+
+def _regenerate(meta, entries, new_post, selection, config, warnings):
+    if not meta.get("generated"):
+        raise ShiftError(
+            "Esta paleta es creada (no tiene imagen): no admite modificadores de selección "
+            "(--mode/--scoring/--shuffle/--overfetch/--colors). Solo --my-eyes/--ying-yang."
+        )
+    image = meta.get("image")
+    if not image:
+        raise ShiftError(
+            "Esta paleta no tiene información de generación guardada. Regenerá una vez con "
+            "'automatic --from-image <img>' para grabarla, y después usá shift."
+        )
+    gen = meta.get("gen") or {}
+    n_colors = selection["colors"] if selection["colors"] is not None else gen.get("colors", 6)
+    resolved = {
+        "sample_size": gen.get("sample_size", 40000),
+        "mode": selection["mode"] if selection["mode"] is not None else gen.get("mode", "contrast"),
+        "scoring": selection["scoring"] if selection["scoring"] is not None else gen.get("scoring", "default"),
+        "custom_percentages": (selection["custom_scoring_values"] if selection["custom_scoring_values"] is not None
+                               else gen.get("custom_percentages")),
+        "weighted_contrast": (selection["weighted_contrast"] if selection["weighted_contrast"] is not None
+                              else gen.get("weighted_contrast", True)),
+        "overfetch": selection["overfetch"] if selection["overfetch"] is not None else gen.get("overfetch", 0),
+    }
+    weights = palette_generator.resolve_scoring_weights(
+        resolved["scoring"], custom_percentages=resolved["custom_percentages"], config=config,
+    )
+    # Only resolve/persist a new shuffle anchor when the user actually passed
+    # --shuffle; otherwise reuse the stored resolved index verbatim (no "next"
+    # bookkeeping side effects on an unrelated shift).
+    if selection["shuffle"] is not None:
+        resolved_shuffle = palette_generator.resolve_shuffle_index(
+            selection["shuffle"], n_colors, overfetch=resolved["overfetch"], config=config,
+        )
+    else:
+        resolved_shuffle = int(gen.get("shuffle", 0))
+
+    n_custom = sum(1 for e in entries if e.get("origin") == "custom")
+    if n_custom:
+        warnings.append(
+            f"Se descartan {n_custom} color(es) agregados/editados a mano: una regeneración "
+            "reemplaza los colores. Los modificadores simples (--my-eyes/--ying-yang) no los borran."
+        )
+
+    effective, base = palette_generator.generate_palette(
+        expand_path(image), n_colors=n_colors, sample_size=resolved["sample_size"],
+        mode=resolved["mode"], saturate=new_post["my_eyes"], weights=weights,
+        weighted_contrast=resolved["weighted_contrast"], shuffle=resolved_shuffle,
+        overfetch=resolved["overfetch"], ying_yang=new_post["ying_yang"], with_base=True,
+    )
+    new_entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"], "origin": "gen"}
+                   for i, c in enumerate(effective)]
+    new_meta = dict(meta)
+    new_meta["generated"] = True
+    new_meta["gen"] = {
+        "colors": n_colors, "sample_size": resolved["sample_size"], "mode": resolved["mode"],
+        "scoring": resolved["scoring"], "custom_percentages": resolved["custom_percentages"],
+        "weighted_contrast": resolved["weighted_contrast"], "shuffle": resolved_shuffle,
+        "overfetch": resolved["overfetch"],
+    }
+    new_meta["post"] = new_post
+    new_meta["base"] = [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base]
+    return new_entries, new_meta

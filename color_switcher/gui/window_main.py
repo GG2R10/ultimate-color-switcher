@@ -19,8 +19,8 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk
 
 from ..backend import color_detector, color_replacer, conflicts, detect_diff, mapping_store, palette_store
-from ..backend import palette_generator, restart_actions
-from ..backend.config import load_config
+from ..backend import palette_generator, palette_shift, restart_actions
+from ..backend.config import load_config, to_home_relative
 
 from . import dialogs
 from .color_chip import ColorChip, ensure_base_styles
@@ -35,11 +35,13 @@ class MainWindow(Adw.ApplicationWindow):
 
     toast_overlay = Gtk.Template.Child()
     rescan_button = Gtk.Template.Child()
+    modifiers_button = Gtk.Template.Child()
     available_detected_listbox = Gtk.Template.Child()
     mapping_old_listbox = Gtk.Template.Child()
     palette_left_area = Gtk.Template.Child()
-    palette_empty_label = Gtk.Template.Child()
+    palette_empty_box = Gtk.Template.Child()
     available_palette_listbox = Gtk.Template.Child()
+    add_color_button = Gtk.Template.Child()
     mapping_new_listbox = Gtk.Template.Child()
     warnings_revealer = Gtk.Template.Child()
     warnings_box = Gtk.Template.Child()
@@ -64,6 +66,10 @@ class MainWindow(Adw.ApplicationWindow):
 
         self._setup_actions()
         self.rescan_button.connect("clicked", lambda _b: self._start_detection())
+        self.modifiers_button.connect("clicked", lambda _b: self._action_modifiers(None, None))
+        # Refresh from disk when the window regains focus, so external CLI
+        # changes (automatic/shift/generate) don't leave the GUI stale.
+        self.connect("notify::is-active", self._on_window_active_changed)
         self.restore_button.connect("clicked", self._on_restore_clicked)
         self.test_button.connect("clicked", lambda _b: self._on_apply_clicked(dry_run=True))
         self.apply_button.connect("clicked", lambda _b: self._on_apply_clicked(dry_run=False))
@@ -82,6 +88,7 @@ class MainWindow(Adw.ApplicationWindow):
             ("import-palette", self._action_import_palette),
             ("add-color", self._action_add_color),
             ("generate-palette", self._action_generate_palette),
+            ("modifiers", self._action_modifiers),
             ("palette-generation-settings", self._action_palette_generation_settings),
             ("snapshot-detect", self._action_snapshot_detect),
             ("restart-actions", self._action_restart_actions),
@@ -153,9 +160,52 @@ class MainWindow(Adw.ApplicationWindow):
         dialogs.prompt_add_color(self, self._on_add_color)
 
     def _on_add_color(self, hex_value, label):
-        entry = palette_store.add_color(self.new_palette_path, hex_value, label)
-        self.new_palette.append(entry)
+        try:
+            palette_shift.add_color(self.new_palette_path, hex_value, label)
+        except palette_shift.PaletteEditError as e:
+            dialogs.toast(self.toast_overlay, str(e))
+            return
+        self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
         self._refresh_all()
+
+    def _on_palette_edit(self, entry):
+        dialogs.prompt_pick_color(
+            self, lambda hexv: self._do_palette_edit(entry, hexv), initial_hex=entry["hex"],
+        )
+
+    def _do_palette_edit(self, entry, new_hex):
+        try:
+            palette_shift.edit_color(self.new_palette_path, entry["id"], new_hex)
+        except palette_shift.PaletteEditError as e:
+            dialogs.toast(self.toast_overlay, str(e))
+            return
+        self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
+        self._refresh_all()
+        dialogs.toast(self.toast_overlay, f"Color editado a #{new_hex}.")
+
+    def _on_palette_delete(self, entry):
+        dialogs.ask_confirm(
+            self, "Borrar color", f"¿Borrar el color #{entry['hex']} de la paleta?", "Borrar",
+            lambda: self._do_palette_delete(entry), destructive=True,
+        )
+
+    def _do_palette_delete(self, entry):
+        try:
+            deleted_id = palette_shift.delete_color(self.new_palette_path, entry["id"])
+        except palette_shift.PaletteEditError as e:
+            dialogs.toast(self.toast_overlay, str(e))
+            return
+        # This palette is the mapping's target -> keep it aligned: unassign any
+        # detected colors that pointed at the deleted color, shift the rest.
+        dropped = 0
+        if self.mapping is not None:
+            dropped = self.mapping.drop_and_shift_new_id(deleted_id)
+        self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
+        self._refresh_all()
+        msg = "Color borrado."
+        if dropped:
+            msg += f" {dropped} asignación(es) quedaron sin color."
+        dialogs.toast(self.toast_overlay, msg)
 
     def _action_generate_palette(self, _action, _param):
         dialogs.pick_image_file(self, self._on_generate_palette_image_picked)
@@ -185,22 +235,55 @@ class MainWindow(Adw.ApplicationWindow):
                 palette_generator.resolve_shuffle_index(shuffle_arg, n_colors, overfetch=overfetch, config=self.config)
                 if shuffle_arg is not None else 0
             )
-            colors = palette_generator.generate_palette(
+            colors, base_colors = palette_generator.generate_palette(
                 image_path, n_colors=n_colors, mode=settings["mode"], saturate=settings["saturate"],
                 weights=weights, weighted_contrast=settings.get("weighted_contrast", True),
                 shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=settings.get("ying_yang", False),
+                with_base=True,
             )
         except Exception as e:
             dialogs.toast(self.toast_overlay, f"No se pudo generar la paleta: {e}")
             return
 
         path = self.config.generated_palette_csv
-        entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"]} for i, c in enumerate(colors)]
-        palette_store.write_palette_csv(path, entries)
+        # Rows = effective colors; #ucs-meta carries the base + params so
+        # "Modificadores…" (and CLI `automatic shift`) can re-tweak this palette
+        # later without re-picking the image. Same shape main._generate_and_save_palette writes.
+        entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"], "origin": "gen"}
+                   for i, c in enumerate(colors)]
+        meta = palette_store.default_meta()
+        meta.update({
+            "generated": True,
+            "image": to_home_relative(image_path),
+            "gen": {
+                "colors": n_colors, "sample_size": 40000, "mode": settings["mode"],
+                "scoring": settings["scoring"], "custom_percentages": settings.get("custom_percentages"),
+                "weighted_contrast": settings.get("weighted_contrast", True),
+                "shuffle": resolved_shuffle, "overfetch": overfetch,
+            },
+            "post": {"my_eyes": bool(settings["saturate"]), "ying_yang": bool(settings.get("ying_yang", False))},
+            "base": [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base_colors],
+        })
+        palette_store.write_palette_csv(path, entries, meta=meta)
 
         self._set_new_palette(path, entries)
         base = os.path.splitext(os.path.basename(image_path))[0]
         dialogs.toast(self.toast_overlay, f"Paleta generada: {len(entries)} color(es) desde {base}")
+
+    def _action_modifiers(self, _action, _param):
+        if not self.new_palette_path or not self.new_palette:
+            dialogs.toast(self.toast_overlay, "Primero generá o importá una paleta con colores.")
+            return
+        dialogs.show_palette_modifiers(
+            self, self.config, self.new_palette_path, on_applied=self._on_modifiers_applied,
+        )
+
+    def _on_modifiers_applied(self, path):
+        # The shifted palette was written to disk (same path) -- reload it so
+        # the main window shows the new colors and re-runs the conflict checks.
+        entries = palette_store.read_palette_csv(path)
+        self._set_new_palette(path, entries)
+        dialogs.toast(self.toast_overlay, "Modificadores aplicados a la paleta.")
 
     def _action_snapshot_detect(self, _action, _param):
         dialogs.prompt_text(
@@ -432,8 +515,10 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _refresh_palette_list(self):
         has_palette = self.new_palette_path is not None
-        self.palette_empty_label.set_visible(not has_palette)
+        self.palette_empty_box.set_visible(not has_palette)
         self.available_palette_listbox.set_visible(has_palette)
+        self.add_color_button.set_visible(has_palette)
+        self.modifiers_button.set_sensitive(has_palette and bool(self.new_palette))
 
         self._clear_listbox(self.available_palette_listbox)
         if not has_palette:
@@ -446,6 +531,8 @@ class MainWindow(Adw.ApplicationWindow):
 
         for entry in self.new_palette:
             chip = self._build_palette_chip(entry, usage_count=usage_counts.get(entry["id"], 0))
+            chip.set_editable(lambda e=entry: self._on_palette_edit(e))
+            chip.set_deletable(lambda e=entry: self._on_palette_delete(e))
             row = Gtk.ListBoxRow(child=chip)
             row.item_id = entry["id"]
             self.available_palette_listbox.append(row)
@@ -620,7 +707,60 @@ class MainWindow(Adw.ApplicationWindow):
 
     # --------------------------------------------------------- apply/restore
 
+    def _on_window_active_changed(self, _window, _pspec):
+        # Only when GAINING focus, and only once real detection has populated
+        # the window (avoids firing mid-startup / before the first scan).
+        if self.is_active() and self.detected_colors:
+            self._reload_from_disk_if_changed()
+
+    @staticmethod
+    def _detected_signature(colors):
+        return [(c["id"], c.get("type"), c.get("color")) for c in colors]
+
+    @staticmethod
+    def _palette_signature(entries):
+        return [e["hex"] for e in entries]
+
+    def _reload_from_disk_if_changed(self):
+        """Reload detected/palette state if a CLI run (automatic, shift,
+        generate…) changed the files under us. Returns True if anything was
+        reloaded, so a caller about to apply can abort and let the user review
+        the refreshed state first (comparing content, not mtime, so the GUI's
+        own writes never trip it)."""
+        disk_palette = (palette_store.read_palette_csv(self.new_palette_path)
+                        if self.new_palette_path else [])
+        palette_changed = (self._palette_signature(disk_palette)
+                           != self._palette_signature(self.new_palette))
+
+        disk_detected = color_detector.read_detected_csv(self.config.detected_palette_csv)
+        detected_changed = (bool(disk_detected)
+                            and self._detected_signature(disk_detected)
+                            != self._detected_signature(self.detected_colors))
+
+        if not palette_changed and not detected_changed:
+            return False
+
+        changed = []
+        if palette_changed:
+            self.new_palette = disk_palette
+            changed.append("la paleta")
+        if detected_changed:
+            # Files changed under us -> re-detect so the mapping lines up with
+            # the colors actually in the files now (rebuilds it from mapping.csv).
+            self._finish_detection(detect_diff.run_detect(self.config), persist=True)
+            changed.append("los colores detectados")
+        else:
+            self._refresh_all()
+
+        dialogs.toast(
+            self.toast_overlay,
+            f"Cambios externos detectados ({' y '.join(changed)}). Recargué — revisá y volvé a aplicar.",
+        )
+        return True
+
     def _on_apply_clicked(self, dry_run):
+        if self._reload_from_disk_if_changed():
+            return  # state was stale; let the user review the refreshed palette/mapping first
         if not self.mapping or not self.mapping.resolved_entries():
             dialogs.toast(self.toast_overlay, "No hay ningún color mapeado todavía.")
             return

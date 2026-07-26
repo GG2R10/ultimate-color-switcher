@@ -51,6 +51,64 @@ def test_add_color_to_empty_or_missing_palette_starts_at_one(tmp_path):
     assert entry["id"] == 1
 
 
+def test_meta_roundtrip(tmp_path):
+    path = tmp_path / "gen.csv"
+    meta = ps.default_meta()
+    meta.update({"generated": True, "image": "$HOME/w.jpg",
+                 "gen": {"colors": 4, "mode": "shading"}, "post": {"my_eyes": True, "ying_yang": False}})
+    entries = [{"id": 1, "hex": "cbff29", "label": "primary", "origin": "gen"}]
+    ps.write_palette_csv(str(path), entries, meta=meta)
+
+    lines = path.read_text().splitlines()
+    assert lines[0].startswith(ps.META_PREFIX)
+    assert lines[1] == "1,#cbff29,primary,gen"  # origin field written
+
+    got_entries, got_meta = ps.read_palette(str(path))
+    assert got_meta == meta
+    assert got_entries == entries
+
+
+def test_read_palette_meta_defaults_when_no_header(tmp_path):
+    path = tmp_path / "plain.csv"
+    path.write_text("1,#111111,a\n")
+    assert ps.read_palette_meta(str(path)) == ps.default_meta()
+    # and a header-less palette's entries carry NO origin key (backward-compat shape)
+    assert ps.read_palette_csv(str(path)) == [{"id": 1, "hex": "111111", "label": "a"}]
+
+
+def test_read_palette_tolerates_malformed_meta(tmp_path):
+    path = tmp_path / "bad.csv"
+    path.write_text(ps.META_PREFIX + "{not valid json\n1,#111111,a\n")
+    entries, meta = ps.read_palette(str(path))
+    assert meta == ps.default_meta()
+    assert entries == [{"id": 1, "hex": "111111", "label": "a"}]
+
+
+def test_add_color_preserves_header_and_marks_custom_on_generated(tmp_path):
+    path = tmp_path / "gen.csv"
+    meta = ps.default_meta()
+    meta.update({"generated": True, "image": "$HOME/w.jpg", "gen": {"colors": 1}})
+    ps.write_palette_csv(str(path), [{"id": 1, "hex": "cbff29", "label": "primary", "origin": "gen"}], meta=meta)
+
+    entry = ps.add_color(str(path), "#123456", "mine")
+    assert entry["origin"] == "custom"
+
+    entries, got_meta = ps.read_palette(str(path))
+    assert got_meta == meta                       # header preserved verbatim
+    assert ps.has_custom_edits(entries)           # the warn-before-regenerate signal
+    assert entries[-1] == {"id": 2, "hex": "123456", "label": "mine", "origin": "custom"}
+
+
+def test_add_color_keeps_headerless_palette_headerless(tmp_path):
+    path = tmp_path / "plain.csv"
+    ps.write_palette_csv(str(path), [{"id": 1, "hex": "111111", "label": "a"}])
+    ps.add_color(str(path), "222222", "b")
+
+    text = path.read_text()
+    assert ps.META_PREFIX not in text             # stays header-less
+    assert not text.splitlines()[0].endswith(",custom")  # no origin field either
+
+
 def test_list_palettes(tmp_path):
     (tmp_path / "one.csv").write_text("1,#111111,a\n")
     (tmp_path / "two.csv").write_text("1,#222222,b\n")

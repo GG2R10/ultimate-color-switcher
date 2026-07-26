@@ -17,7 +17,11 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 from ..backend import color_detector as cd
 from ..backend import config as cfg
 from ..backend import palette_generator as pg
+from ..backend import palette_shift
+from ..backend import palette_store as ps
 from ..backend import restart_actions as ra
+
+from .color_chip import ensure_base_styles, register_swatch_color
 
 
 def toast(toast_overlay: Adw.ToastOverlay, message: str, timeout: int = 3):
@@ -303,6 +307,26 @@ def prompt_add_color(parent: Gtk.Widget, on_add):
         )
 
     color_dialog.choose_rgba(parent, None, None, _on_color_chosen)
+
+
+def prompt_pick_color(parent: Gtk.Widget, on_pick, initial_hex=None):
+    """Native color picker (no label step), pre-set to initial_hex if given.
+    Calls on_pick(hex_no_hash). For editing an existing palette color."""
+    color_dialog = Gtk.ColorDialog(with_alpha=False)
+    initial = None
+    if initial_hex:
+        rgba = Gdk.RGBA()
+        if rgba.parse("#" + initial_hex.lstrip("#")):
+            initial = rgba
+
+    def _on_chosen(dialog, result):
+        try:
+            rgba = dialog.choose_rgba_finish(result)
+        except Exception:
+            return  # user cancelled
+        on_pick(_rgba_to_hex(rgba))
+
+    color_dialog.choose_rgba(parent, initial, None, _on_chosen)
 
 
 def pick_import_palette_file(parent: Gtk.Widget, on_selected):
@@ -855,6 +879,245 @@ def show_palette_generation_settings(parent: Gtk.Widget, config):
     prefs.set_title("Generación de paleta")
     prefs.add(page)
     prefs.present(parent)
+
+
+def _preview_swatch(hex_value: str) -> Gtk.Widget:
+    css_class = register_swatch_color(hex_value)
+    return Gtk.Box(width_request=34, height_request=34, tooltip_text=f"#{hex_value}",
+                   css_classes=["color-swatch", css_class])
+
+
+def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied):
+    """"Modificadores…": tweak a palette's modifiers with a live preview and
+    re-apply, mirroring `automatic shift`. Post modifiers (my-eyes, ying-yang)
+    are always available; the regeneration controls (mode/scoring/colors/…)
+    only show for a generated palette, since a hand-created one has no image.
+
+    On "Aplicar cambios" the shifted palette is written to disk (same path) and
+    on_applied(path) fires, so the main window reloads it and its usual conflict
+    checks / Aplicar flow take over -- this dialog never touches files itself."""
+    ensure_base_styles()
+    entries, meta = ps.read_palette(palette_path)
+    generated = bool(meta.get("generated"))
+    orig_gen = meta.get("gen") or {}
+    post = meta.get("post") or {}
+
+    state = {
+        "my_eyes": bool(post.get("my_eyes")),
+        "ying_yang": bool(post.get("ying_yang")),
+        "mode": orig_gen.get("mode", "contrast"),
+        "scoring": orig_gen.get("scoring", "default"),
+        "colors": int(orig_gen.get("colors", len(entries))),
+        "overfetch": int(orig_gen.get("overfetch", 0)),
+        "shuffle": int(orig_gen.get("shuffle", 0)),
+    }
+
+    def overrides():
+        ov = {"my_eyes": "on" if state["my_eyes"] else "off",
+              "ying_yang": "on" if state["ying_yang"] else "off"}
+        # Pass a selection override ONLY when it differs from what's stored, so
+        # merely toggling my-eyes stays on the fast post-only path (no regen).
+        if generated:
+            if state["mode"] != orig_gen.get("mode", "contrast"):
+                ov["mode"] = state["mode"]
+            if state["scoring"] != orig_gen.get("scoring", "default"):
+                ov["scoring"] = state["scoring"]
+            if state["colors"] != int(orig_gen.get("colors", len(entries))):
+                ov["colors"] = state["colors"]
+            if state["overfetch"] != int(orig_gen.get("overfetch", 0)):
+                ov["overfetch"] = state["overfetch"]
+            if state["shuffle"] != int(orig_gen.get("shuffle", 0)):
+                ov["shuffle"] = state["shuffle"]
+        return ov
+
+    preview_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+    warn_label = Gtk.Label(wrap=True, xalign=0, visible=False,
+                           css_classes=["dim-label"], margin_start=12, margin_end=12)
+
+    def refresh_preview():
+        child = preview_box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            preview_box.remove(child)
+            child = nxt
+        try:
+            result = palette_shift.shift_palette(palette_path, config, write=False, **overrides())
+        except (palette_shift.ShiftError, pg.ImageLoadError) as e:
+            warn_label.set_text(str(e))
+            warn_label.set_visible(True)
+            apply_button.set_sensitive(False)
+            return
+        apply_button.set_sensitive(True)
+        for entry in result["entries"]:
+            preview_box.append(_preview_swatch(entry["hex"]))
+        warn_label.set_text("  ⚠ ".join(result["warnings"]))
+        warn_label.set_visible(bool(result["warnings"]))
+
+    page = Adw.PreferencesPage()
+
+    post_group = Adw.PreferencesGroup(
+        title="Modificadores simples",
+        description="Se aplican al instante, sin regenerar. Andan también en paletas creadas a mano.",
+    )
+    my_eyes_row = Adw.SwitchRow(title="Saturar colores (--my-eyes)")
+    my_eyes_row.set_active(state["my_eyes"])
+    ying_row = Adw.SwitchRow(title="Ying Yang (complementarios)",
+                             subtitle="Rota todos los tonos 180°.")
+    ying_row.set_active(state["ying_yang"])
+
+    def on_my_eyes(row, _p):
+        state["my_eyes"] = row.get_active()
+        refresh_preview()
+
+    def on_ying(row, _p):
+        state["ying_yang"] = row.get_active()
+        refresh_preview()
+
+    my_eyes_row.connect("notify::active", on_my_eyes)
+    ying_row.connect("notify::active", on_ying)
+    post_group.add(my_eyes_row)
+    post_group.add(ying_row)
+    page.add(post_group)
+
+    if generated:
+        sel_group = Adw.PreferencesGroup(
+            title="Regenerar desde la imagen",
+            description="Cambiar esto regenera la paleta (descarta colores agregados a mano).",
+        )
+
+        mode_list = Gtk.StringList.new([_GENERATION_MODE_LABELS[m] for m in _GENERATION_MODES])
+        mode_row = Adw.ComboRow(title="Modo de selección", model=mode_list, list_factory=_mode_list_factory())
+        mode_row.set_selected(_GENERATION_MODES.index(state["mode"]))
+
+        def on_mode(row, _p):
+            state["mode"] = _GENERATION_MODES[row.get_selected()]
+            refresh_preview()
+
+        mode_row.connect("notify::selected", on_mode)
+        sel_group.add(mode_row)
+
+        scoring_list = Gtk.StringList.new([_SCORING_MODE_LABELS[s] for s in _SCORING_MODES])
+        scoring_row = Adw.ComboRow(title="Ponderación de scoring", model=scoring_list,
+                                   list_factory=_scoring_list_factory())
+        scoring_row.set_selected(_SCORING_MODES.index(state["scoring"]))
+
+        def on_scoring(row, _p):
+            state["scoring"] = _SCORING_MODES[row.get_selected()]
+            refresh_preview()
+
+        scoring_row.connect("notify::selected", on_scoring)
+        sel_group.add(scoring_row)
+
+        colors_row = Adw.SpinRow(
+            title="Cantidad de colores",
+            adjustment=Gtk.Adjustment(value=state["colors"], lower=1, upper=32, step_increment=1),
+            digits=0,
+        )
+
+        def on_colors(row, _p):
+            state["colors"] = int(row.get_value())
+            refresh_preview()
+
+        colors_row.connect("notify::value", on_colors)
+        sel_group.add(colors_row)
+
+        shuffle_row = Adw.SpinRow(
+            title="Shuffle",
+            subtitle="Saltear N candidatos a primary (explora variantes).",
+            adjustment=Gtk.Adjustment(value=state["shuffle"], lower=0, upper=999, step_increment=1),
+            digits=0,
+        )
+
+        def on_shuffle(row, _p):
+            state["shuffle"] = int(row.get_value())
+            refresh_preview()
+
+        shuffle_row.connect("notify::value", on_shuffle)
+        sel_group.add(shuffle_row)
+
+        overfetch_row = Adw.SpinRow(
+            title="Overfetch",
+            subtitle="Candidatos extra para darle margen a Shuffle.",
+            adjustment=Gtk.Adjustment(value=state["overfetch"], lower=0, upper=999, step_increment=1),
+            digits=0,
+        )
+
+        def on_overfetch(row, _p):
+            state["overfetch"] = int(row.get_value())
+            refresh_preview()
+
+        overfetch_row.connect("notify::value", on_overfetch)
+        sel_group.add(overfetch_row)
+        page.add(sel_group)
+    else:
+        note = Adw.PreferencesGroup()
+        note.add(Adw.ActionRow(
+            title="Paleta creada a mano",
+            subtitle="Los modificadores de selección (modo, scoring, shuffle…) solo aplican a "
+                     "paletas generadas desde una imagen.",
+        ))
+        page.add(note)
+
+    content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+
+    image_path = cd.expand_path(meta.get("image") or "")
+    if generated and image_path and os.path.isfile(image_path):
+        picture = Gtk.Picture.new_for_filename(image_path)
+        picture.set_content_fit(Gtk.ContentFit.COVER)
+        picture.set_size_request(-1, 150)
+        frame = Gtk.Frame(css_classes=["card"], margin_start=12, margin_end=12,
+                          margin_top=12, overflow=Gtk.Overflow.HIDDEN)
+        frame.set_child(picture)
+        content_box.append(frame)
+
+    content_box.append(page)
+
+    preview_title = Gtk.Label(label="Vista previa", xalign=0, css_classes=["heading"],
+                              margin_start=12, margin_top=6)
+    content_box.append(preview_title)
+    preview_scroller = Gtk.ScrolledWindow(
+        hscrollbar_policy=Gtk.PolicyType.AUTOMATIC, vscrollbar_policy=Gtk.PolicyType.NEVER,
+        margin_start=12, margin_end=12, margin_bottom=6,
+    )
+    preview_scroller.set_child(preview_box)
+    content_box.append(preview_scroller)
+    content_box.append(warn_label)
+
+    toolbar_view = Adw.ToolbarView()
+    header = Adw.HeaderBar()
+    header.set_title_widget(Adw.WindowTitle(title="Modificadores"))
+    toolbar_view.add_top_bar(header)
+    toolbar_view.set_content(Gtk.ScrolledWindow(child=content_box, vexpand=True))
+
+    footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, halign=Gtk.Align.END, spacing=8,
+                     margin_top=8, margin_bottom=12, margin_end=12)
+    cancel_button = Gtk.Button(label="Cancelar")
+    apply_button = Gtk.Button(label="Aplicar cambios", css_classes=["suggested-action"])
+    footer.append(cancel_button)
+    footer.append(apply_button)
+    toolbar_view.add_bottom_bar(footer)
+
+    dialog = Adw.Dialog.new()
+    dialog.set_title("Modificadores")
+    dialog.set_content_width(500)
+    dialog.set_content_height(640)
+    dialog.set_child(toolbar_view)
+
+    def on_apply(_b):
+        try:
+            palette_shift.shift_palette(palette_path, config, write=True, **overrides())
+        except (palette_shift.ShiftError, pg.ImageLoadError) as e:
+            warn_label.set_text(str(e))
+            warn_label.set_visible(True)
+            return
+        dialog.close()
+        on_applied(palette_path)
+
+    cancel_button.connect("clicked", lambda _b: dialog.close())
+    apply_button.connect("clicked", on_apply)
+
+    refresh_preview()
+    dialog.present(parent)
 
 
 def show_restart_actions_onboarding(parent: Gtk.Widget, config, on_done):

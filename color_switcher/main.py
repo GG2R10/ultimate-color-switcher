@@ -30,6 +30,7 @@ from .backend import (
     guiless,
     mapping_store,
     palette_generator,
+    palette_shift,
     palette_store,
     restart_actions,
 )
@@ -209,9 +210,7 @@ def cmd_palette_list(args, config):
 
 
 def cmd_palette_show(args, config):
-    path = args.path
-    if not os.path.isabs(path):
-        path = _resolve_path(path, config.palettes_created_dir, config.project_dir)
+    path = _resolve_target_palette(args.path, config)
     entries = palette_store.read_palette_csv(path)
     if not entries:
         print(f"Paleta vacía o no encontrada: {path}")
@@ -221,12 +220,67 @@ def cmd_palette_show(args, config):
 
 
 def cmd_palette_add_color(args, config):
-    entry = palette_store.add_color(args.path, args.hex, args.label or "")
+    path = _resolve_target_palette(args.path, config)
+    entry = palette_shift.add_color(path, args.hex, args.label or "")
     swatch = _color_swatch(entry["hex"])
     cells = ["Agregado:", swatch, f"#{entry['hex']}", entry.get("label", "")]
     print(" ".join(c for c in cells if c))
     print("Paleta actual:")
-    _print_palette(palette_store.read_palette_csv(args.path))
+    _print_palette(palette_store.read_palette_csv(path))
+
+
+def _resolve_target_palette(palette_arg, config, mapping_path=None):
+    """The palette every optional-palette command operates on: the given path
+    if provided, otherwise whatever the mapping currently applies (its
+    #new_palette=). Shared by `automatic shift`, `palette edit/remove/show/
+    add-color` -- "which palette" is answered the same way everywhere:
+    explicit arg wins, otherwise deduce it from the mapping (default: the
+    canonical one, or an explicit --mapping when the caller has that flag)."""
+    if palette_arg:
+        return _resolve_path(palette_arg, config.palettes_created_dir, config.project_dir)
+    mapping_path = mapping_path or config.mapping_csv
+    _old, new_p, _entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
+    if not new_p:
+        raise palette_shift.PaletteEditError(
+            "No se indicó paleta y el mapping no referencia ninguna (#new_palette=). "
+            "Pasá la ruta de la paleta explícitamente."
+        )
+    return new_p
+
+
+def _adjust_mapping_after_palette_delete(config, palette_path, deleted_id):
+    """If the palette a color was just deleted from is the one the canonical
+    mapping applies, unassign entries that pointed at it and shift the rest, so
+    the mapping stays aligned (see mapping_store.drop_and_shift_new_id)."""
+    old_p, new_p, entries = mapping_store.read_mapping_csv(config.mapping_csv, project_dir=config.project_dir)
+    if not entries or not new_p:
+        return
+    same = (os.path.abspath(color_detector.expand_path(new_p))
+            == os.path.abspath(color_detector.expand_path(palette_path)))
+    if not same:
+        return
+    adjusted = mapping_store.drop_and_shift_new_id(entries, deleted_id)
+    dropped = sum(1 for e, a in zip(entries, adjusted)
+                  if e["new_id"] is not None and a["new_id"] is None)
+    mapping_store.write_mapping_csv(config.mapping_csv, old_p, new_p, adjusted,
+                                     project_dir=config.project_dir)
+    if dropped:
+        print(f"⚠ {dropped} asignación(es) del mapping apuntaban a ese color y quedaron sin asignar.")
+
+
+def cmd_palette_edit(args, config):
+    path = _resolve_target_palette(args.palette, config)
+    palette_shift.edit_color(path, args.target, args.new_hex)
+    print(f"Editado en {path}:")
+    _print_palette(palette_store.read_palette_csv(path))
+
+
+def cmd_palette_remove(args, config):
+    path = _resolve_target_palette(args.palette, config)
+    deleted_id = palette_shift.delete_color(path, args.target)
+    _adjust_mapping_after_palette_delete(config, path, deleted_id)
+    print(f"Borrado el color {deleted_id} de {path}:")
+    _print_palette(palette_store.read_palette_csv(path))
 
 
 def _parse_on_off(raw: str) -> bool:
@@ -258,10 +312,10 @@ def _generate_and_save_palette(config, image, n_colors, sample_size, mode, satur
         palette_generator.resolve_shuffle_index(shuffle, n_colors, overfetch=overfetch, config=config)
         if shuffle is not None else 0
     )
-    colors = palette_generator.generate_palette(
+    colors, base_colors = palette_generator.generate_palette(
         image, n_colors=n_colors, sample_size=sample_size, mode=mode,
         saturate=saturate, weights=weights, weighted_contrast=weighted_contrast,
-        shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=ying_yang,
+        shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=ying_yang, with_base=True,
     )
 
     if not out_path:
@@ -271,8 +325,29 @@ def _generate_and_save_palette(config, image, n_colors, sample_size, mode, satur
     if not os.path.isabs(out_path):
         out_path = os.path.join(config.palettes_created_dir, out_path)
 
-    entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"]} for i, c in enumerate(colors)]
-    palette_store.write_palette_csv(out_path, entries)
+    # Rows are the EFFECTIVE (applied) colors; the pre-post-mod base + the
+    # generation params ride along in #ucs-meta so `shift` can re-tweak & re-apply
+    # this palette without re-passing the image or the whole flag set.
+    entries = [{"id": i + 1, "hex": c["hex"], "label": c["label"], "origin": "gen"}
+               for i, c in enumerate(colors)]
+    meta = palette_store.default_meta()
+    meta.update({
+        "generated": True,
+        "image": to_home_relative(image),
+        "gen": {
+            "colors": n_colors,
+            "sample_size": sample_size,
+            "mode": mode,
+            "scoring": scoring,
+            "custom_percentages": custom_scoring_values,
+            "weighted_contrast": weighted_contrast,
+            "shuffle": resolved_shuffle,
+            "overfetch": overfetch,
+        },
+        "post": {"my_eyes": bool(saturate), "ying_yang": bool(ying_yang)},
+        "base": [{"hex": c["hex"], "label": c["label"], "origin": "gen"} for c in base_colors],
+    })
+    palette_store.write_palette_csv(out_path, entries, meta=meta)
     return entries, out_path
 
 
@@ -519,6 +594,13 @@ def cmd_automatic(args, config):
         yolo=args.yolo,
         project_dir=config.project_dir,
     )
+    _report_apply_result(result, args, config, mapping_path)
+
+
+def _report_apply_result(result, args, config, mapping_path):
+    """Shared by `automatic` and `automatic shift`: turn a guiless.apply_palette
+    result into CLI output (and the post-apply detect refresh / restarts on a
+    real apply). Exits 1 on any non-applied status."""
     status = result["status"]
     if status == "insufficient_palette":
         print(f"La paleta nueva tiene {result['available']} color(es), pero el mapping necesita "
@@ -553,6 +635,32 @@ def cmd_automatic(args, config):
             started = restart_actions.run_enabled(restart_actions.read_restart_actions(config))
             for a in started:
                 print(f"  Reiniciando: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
+
+
+def cmd_automatic_shift(args, config):
+    mapping_path = args.mapping or config.mapping_csv
+    palette_path = _resolve_target_palette(args.palette, config, mapping_path=mapping_path)
+
+    weighted_contrast = None if args.weighted_contrast is None else (args.weighted_contrast == "on")
+    result = palette_shift.shift_palette(
+        palette_path, config,
+        my_eyes=args.my_eyes, ying_yang=args.ying_yang,
+        mode=args.mode, scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
+        weighted_contrast=weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
+        colors=args.colors, write=not args.test,
+    )
+    for w in result["warnings"]:
+        print(f"⚠ {w}")
+    print(f"Paleta {'regenerada' if result['regenerated'] else 'ajustada'}"
+          f"{' (simulación, no se guardó)' if args.test else ''}: {palette_path}")
+    _print_palette(result["entries"])
+
+    palette_source = [{"hex": e["hex"], "label": e.get("label", "")} for e in result["entries"]]
+    apply_result = guiless.apply_palette(
+        palette_source, mapping_path, config.backup_dir,
+        dry_run=args.test, force=args.force, yolo=args.yolo, project_dir=config.project_dir,
+    )
+    _report_apply_result(apply_result, args, config, mapping_path)
 
 
 def _parse_custom_scoring_values(raw: str) -> dict:
@@ -679,14 +787,30 @@ def build_parser():
     pl.set_defaults(func=cmd_palette_list)
 
     ps = psub.add_parser("show", help="Mostrar una paleta con sus colores en la terminal")
-    ps.add_argument("path", help="Ruta a la paleta CSV (o su nombre en palettes/created/)")
+    ps.add_argument("path", nargs="?", default=None,
+                    help="Ruta a la paleta CSV, o su nombre en palettes/created/ "
+                         "(default: la que aplica el mapping actual, vía #new_palette=)")
     ps.set_defaults(func=cmd_palette_show)
 
     pa = psub.add_parser("add-color", help="Agregar un color a una paleta existente")
-    pa.add_argument("path")
+    pa.add_argument("path", nargs="?", default=None,
+                    help="Paleta (default: la que aplica el mapping actual, vía #new_palette=)")
     pa.add_argument("hex")
-    pa.add_argument("label", nargs="?", default="")
+    pa.add_argument("--label", default="", help="Etiqueta para el color (default: vacía)")
     pa.set_defaults(func=cmd_palette_add_color)
+
+    ped = psub.add_parser("edit", help="Cambiar un color de una paleta por otro")
+    ped.add_argument("palette", nargs="?", default=None,
+                     help="Paleta a editar (default: la que aplica el mapping actual, vía #new_palette=)")
+    ped.add_argument("target", help="Color a cambiar: su id o su hex")
+    ped.add_argument("new_hex", metavar="new-hex", help="Nuevo color (hex)")
+    ped.set_defaults(func=cmd_palette_edit)
+
+    prm = psub.add_parser("remove", help="Borrar un color de una paleta (ajusta el mapping si corresponde)")
+    prm.add_argument("palette", nargs="?", default=None,
+                     help="Paleta (default: la que aplica el mapping actual, vía #new_palette=)")
+    prm.add_argument("target", help="Color a borrar: su id o su hex")
+    prm.set_defaults(func=cmd_palette_remove)
 
     pg = psub.add_parser("generate", help="Generar una paleta a partir de una imagen (wallpaper)")
     pg.add_argument("image", help="Ruta a la imagen")
@@ -748,55 +872,112 @@ def build_parser():
     g.set_defaults(func=cmd_gui)
 
     au = sub.add_parser("automatic", help="Modo GUIless: aplicar una paleta usando un mapping existente")
-    au.add_argument("palette", nargs="?", default=None,
-                     help="Ruta a un CSV (id,#hex,label) o JSON [{hex,label}, ...], o '-' para JSON por stdin. "
-                          "Omitir si usás --from-image")
-    au.add_argument("--from-image", help="Generar la paleta desde esta imagen (wallpaper) en vez de pasar una ruta")
-    au.add_argument("--colors", type=int,
-                     help="Cantidad de colores a generar con --from-image "
-                          "(default: la cantidad de roles distintos que usa el mapping)")
-    au.add_argument("--sample-size", type=int, default=40000, help="Píxeles a samplear con --from-image (default: 40000)")
-    au.add_argument("--mode", choices=["balanced", "contrast", "shading"], default="contrast",
-                     help="Cómo elegir secondary/auxN con --from-image (default: contrast, ver 'palette generate --help')")
-    au.add_argument("--my-eyes", action="store_true",
-                     help="Saturar los colores generados con --from-image justo antes de aplicarlos")
-    au.add_argument("--ying-yang", type=_parse_on_off, default=False, metavar="on|off",
-                     help="Ying Yang: usar la paleta complementaria con --from-image (tonos rotados 180°). "
-                          "'on' u 'off' (default: off)")
-    _add_scoring_args(au, from_image_note=" con --from-image")
-    au.add_argument(
+    au_sub = au.add_subparsers(dest="auto_cmd")
+
+    # `automatic apply` — the original behavior. Bare `automatic <palette>` /
+    # `automatic --from-image ...` still work: main() injects "apply" when the
+    # first token after `automatic` isn't a known subcommand (see _inject_automatic_apply).
+    ap = au_sub.add_parser("apply", help="Aplicar una paleta (o generarla desde una imagen) contra el mapping")
+    ap.add_argument("palette", nargs="?", default=None,
+                    help="Ruta a un CSV (id,#hex,label) o JSON [{hex,label}, ...], o '-' para JSON por stdin. "
+                         "Omitir si usás --from-image")
+    ap.add_argument("--from-image", help="Generar la paleta desde esta imagen (wallpaper) en vez de pasar una ruta")
+    ap.add_argument("--colors", type=int,
+                    help="Cantidad de colores a generar con --from-image "
+                         "(default: la cantidad de roles distintos que usa el mapping)")
+    ap.add_argument("--sample-size", type=int, default=40000, help="Píxeles a samplear con --from-image (default: 40000)")
+    ap.add_argument("--mode", choices=["balanced", "contrast", "shading"], default="contrast",
+                    help="Cómo elegir secondary/auxN con --from-image (default: contrast, ver 'palette generate --help')")
+    ap.add_argument("--my-eyes", action="store_true",
+                    help="Saturar los colores generados con --from-image justo antes de aplicarlos")
+    ap.add_argument("--ying-yang", type=_parse_on_off, default=False, metavar="on|off",
+                    help="Ying Yang: usar la paleta complementaria con --from-image (tonos rotados 180°). "
+                         "'on' u 'off' (default: off)")
+    _add_scoring_args(ap, from_image_note=" con --from-image")
+    ap.add_argument(
         "--no-weighted-contrast", dest="weighted_contrast", action="store_false", default=True,
         help="Comparar contraste solo contra el cluster más dominante de la imagen con --from-image, "
              "en vez del sistema ponderado contra todos los clusters (default: ponderado, recomendado).",
     )
-    _add_shuffle_args(au, from_image_note=" con --from-image")
-    au.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
-    au.add_argument("--test", action="store_true", help="Simular, no modificar archivos")
-    au.add_argument("--force", action="store_true",
-                     help="Aplicar aunque haya conflictos de caso 1/convergencia "
-                          "(no salta el bloqueo por paleta insuficiente ni el de colores sobrantes)")
-    au.add_argument("--yolo", action="store_true",
-                     help="Aplicar aunque sobren colores en la paleta (los de más quedan sin usar). "
-                          "Separado de --force, que es solo para conflictos.")
-    au.set_defaults(func=cmd_automatic)
+    _add_shuffle_args(ap, from_image_note=" con --from-image")
+    ap.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
+    ap.add_argument("--test", action="store_true", help="Simular, no modificar archivos")
+    ap.add_argument("--force", action="store_true",
+                    help="Aplicar aunque haya conflictos de caso 1/convergencia "
+                         "(no salta el bloqueo por paleta insuficiente ni el de colores sobrantes)")
+    ap.add_argument("--yolo", action="store_true",
+                    help="Aplicar aunque sobren colores en la paleta (los de más quedan sin usar). "
+                         "Separado de --force, que es solo para conflictos.")
+    ap.set_defaults(func=cmd_automatic)
+
+    # `automatic shift` — re-tweak the currently-applied palette's modifiers and
+    # re-apply, without re-passing the image/flags. Reads provenance from the
+    # palette's #ucs-meta (see palette_shift).
+    sh = au_sub.add_parser("shift", help="Cambiar modificadores de la paleta actual y reaplicar (sin repetir la imagen)")
+    sh.add_argument("palette", nargs="?", default=None,
+                    help="Paleta a shiftear (default: la que aplica el mapping actual, vía #new_palette=)")
+    sh.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
+    _ONOFFTOGGLE = ["on", "off", "toggle"]
+    sh.add_argument("--my-eyes", choices=_ONOFFTOGGLE, default=None, metavar="on|off|toggle",
+                    help="Saturación extra. 'on'/'off' fija el valor, 'toggle' lo invierte. "
+                         "Se aplica sin regenerar, aun en paletas creadas (default: mantener).")
+    sh.add_argument("--ying-yang", choices=_ONOFFTOGGLE, default=None, metavar="on|off|toggle",
+                    help="Paleta complementaria (tonos +180°). 'on'/'off'/'toggle' (default: mantener). "
+                         "Se aplica sin regenerar, aun en paletas creadas.")
+    sh.add_argument("--mode", choices=["balanced", "contrast", "shading"], default=None,
+                    help="Solo paletas generadas: regenera con este modo (default: mantener).")
+    sh.add_argument("--scoring", choices=["default", "alternative", "custom"], default=None,
+                    help="Solo paletas generadas: regenera con esta ponderación (default: mantener).")
+    sh.add_argument("--custom-scoring-values", type=_parse_custom_scoring_values, default=None,
+                    help="Con --scoring custom: 'coverage=20,saturation=40,midtone=30,contrast=10' (suman 100).")
+    sh.add_argument("--weighted-contrast", choices=["on", "off"], default=None, metavar="on|off",
+                    help="Solo paletas generadas: contraste ponderado contra todos los clusters (default: mantener).")
+    sh.add_argument("--shuffle", type=_parse_shuffle, default=None,
+                    help="Solo paletas generadas: saltear N candidatos a primary, o 'next' (cíclico). Regenera.")
+    sh.add_argument("--overfetch", type=_parse_overfetch, default=None,
+                    help="Solo paletas generadas: candidatos extra más allá de --colors. Regenera.")
+    sh.add_argument("--colors", type=int, default=None,
+                    help="Solo paletas generadas: regenera con esta cantidad de colores (default: mantener).")
+    sh.add_argument("--test", action="store_true", help="Simular: no reescribe la paleta ni toca archivos")
+    sh.add_argument("--force", action="store_true", help="Aplicar aunque haya conflictos de caso 1/convergencia")
+    sh.add_argument("--yolo", action="store_true", help="Aplicar aunque sobren colores en la paleta")
+    sh.set_defaults(func=cmd_automatic_shift)
 
     return parser
 
 
+def _inject_automatic_apply(argv):
+    """Keep `automatic <palette>` / `automatic --from-image ...` working now that
+    `automatic` has subcommands: if the token after `automatic` isn't a known
+    subcommand, insert the implicit "apply". Leaves `automatic shift ...` and an
+    explicit `automatic apply ...` untouched."""
+    try:
+        i = argv.index("automatic")
+    except ValueError:
+        return argv
+    rest = argv[i + 1:]
+    # Let `automatic --help`/`-h` reach the automatic-level help (which lists the
+    # apply/shift subcommands) instead of jumping into `apply`.
+    if rest and rest[0] in ("apply", "shift", "-h", "--help"):
+        return argv
+    return argv[:i + 1] + ["apply"] + rest
+
+
 def main():
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(_inject_automatic_apply(sys.argv[1:]))
 
     if args.command is None:
         args.func = cmd_gui
 
-    if getattr(args, "command", None) == "automatic" and args.palette == "-":
+    if getattr(args, "auto_cmd", None) == "apply" and args.palette == "-":
         args.palette = json.load(sys.stdin)
 
     config = load_config()
     try:
         args.func(args, config)
-    except palette_generator.ImageLoadError as e:
+    except (palette_generator.ImageLoadError, palette_shift.ShiftError,
+            palette_shift.PaletteEditError) as e:
         print(e)
         sys.exit(1)
 

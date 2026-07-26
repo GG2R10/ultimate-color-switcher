@@ -71,3 +71,35 @@ def _normalize_extreme_lightness(color: dict, min_l: float = _EXTREME_L_MIN,
         return color
     rgb = cm.hsl_to_rgb(hue, sat, min(max(light, min_l), max_l))
     return _make_color_entry(cm.rgb_to_lab(rgb), label=color.get("label"))
+
+
+def apply_post_modifiers(entries: list, my_eyes: bool = False, ying_yang: bool = False) -> list:
+    """Apply the image-INDEPENDENT post modifiers (my-eyes, ying-yang) to
+    already-final palette entries ([{"hex", "label"}, ...]), returning the
+    same shape.
+
+    This is the primitive `shift` uses to toggle my-eyes/ying-yang on a
+    HAND-CREATED palette (which has no image to regenerate from). It is
+    reversible by construction: `shift` always re-derives the effective colors
+    from the stored *base* rather than mutating in place, so turning a modifier
+    back off recomputes the original exactly (short-circuit below) -- important
+    because _boost_saturation clamps at 100 and so isn't individually
+    invertible.
+
+    Deliberately does NOT run _normalize_extreme_lightness: that is a safety
+    pass for GENERATED output, not a user modifier -- a created palette's
+    hand-picked colors (including a deliberate #ffffff/#000000) must be left
+    exactly as chosen. Generated palettes don't go through here at all; `shift`
+    regenerates them via generate_palette (image + params on hand), which keeps
+    full float precision and applies its own normalize internally."""
+    if not my_eyes and not ying_yang:
+        return [{"hex": e["hex"].lstrip("#").lower(), "label": e.get("label", "")} for e in entries]
+    out = []
+    for e in entries:
+        color = _make_color_entry(cm.rgb_to_lab(cm.hex_to_rgb(e["hex"])), label=e.get("label"))
+        if my_eyes:
+            color = _boost_saturation(color)
+        if ying_yang:
+            color = _complement_hue(color)
+        out.append({"hex": color["hex"], "label": e.get("label", "")})
+    return out
