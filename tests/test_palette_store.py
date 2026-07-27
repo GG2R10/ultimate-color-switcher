@@ -121,3 +121,31 @@ def test_list_palettes(tmp_path):
 
 def test_list_palettes_missing_dir_returns_empty(tmp_path):
     assert ps.list_palettes(str(tmp_path / "nope")) == []
+
+
+def test_set_preview_image_persists_and_preserves_everything_else(tmp_path):
+    path = tmp_path / "mine.csv"
+    entries = [{"id": 1, "hex": "ff0000", "label": "primary"}]
+    ps.write_palette_csv(str(path), entries, meta=ps.default_meta())
+
+    ps.set_preview_image(str(path), "/home/someone/wallpapers/w.jpg")
+
+    got_entries, got_meta = ps.read_palette(str(path))
+    assert got_meta["preview_image"] == "/home/someone/wallpapers/w.jpg"
+    assert got_meta["generated"] is False  # untouched
+    assert got_meta["image"] is None       # untouched -- preview_image is separate
+    assert got_entries == entries
+
+
+def test_set_preview_image_none_clears_it(tmp_path):
+    path = tmp_path / "mine.csv"
+    ps.write_palette_csv(str(path), [{"id": 1, "hex": "ff0000", "label": "primary"}], meta=ps.default_meta())
+    ps.set_preview_image(str(path), "/some/image.png")
+
+    ps.set_preview_image(str(path), None)
+
+    assert ps.read_palette_meta(str(path))["preview_image"] is None
+
+
+def test_default_meta_includes_preview_image_key():
+    assert ps.default_meta()["preview_image"] is None

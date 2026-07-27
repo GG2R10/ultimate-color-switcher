@@ -82,3 +82,41 @@ def test_hsl_to_rgb_roundtrips_through_rgb_to_hsl():
 def test_hsl_to_rgb_gray_at_zero_saturation():
     rgb = cm.hsl_to_rgb(200, 0, 50)
     assert np.allclose(rgb, [127.5, 127.5, 127.5], atol=0.5)
+
+
+def test_fit_lab_to_gamut_leaves_in_gamut_colors_untouched():
+    lab = np.array([50.0, 20.0, 10.0])  # mild, safely in-gamut
+    assert cm._in_gamut(lab)
+    fitted = cm.fit_lab_to_gamut(lab)
+    assert np.allclose(fitted, lab)
+
+
+def test_fit_lab_to_gamut_reduces_chroma_of_out_of_gamut_colors():
+    # A very saturated, very dark red: real photos/boosts can ask for this,
+    # but it isn't representable in sRGB at all.
+    lab = np.array([15.0, 80.0, 65.0])
+    assert not cm._in_gamut(lab)
+    fitted = cm.fit_lab_to_gamut(lab)
+    assert cm._in_gamut(fitted)
+    assert fitted[0] == lab[0]  # L preserved exactly
+    fitted_hue = np.degrees(np.arctan2(fitted[2], fitted[1])) % 360
+    original_hue = np.degrees(np.arctan2(lab[2], lab[1])) % 360
+    assert fitted_hue == pytest.approx(original_hue, abs=0.01)  # hue preserved exactly
+    assert np.hypot(fitted[1], fitted[2]) < np.hypot(lab[1], lab[2])  # only chroma gave way
+
+
+def test_fit_lab_to_gamut_handles_achromatic_colors():
+    lab = np.array([50.0, 0.0, 0.0])
+    fitted = cm.fit_lab_to_gamut(lab)
+    assert np.allclose(fitted, lab)  # no hue to preserve, nothing to do
+
+
+def test_fit_lab_to_gamut_result_survives_the_render_round_trip():
+    # The whole point: after gamut-mapping, converting to RGB and back to Lab
+    # should land (almost) exactly where fit_lab_to_gamut said it would --
+    # unlike the naive per-channel clip this replaces, which silently
+    # produces a DIFFERENT Lab than the one it was asked for.
+    lab = np.array([15.0, 80.0, 65.0])
+    fitted = cm.fit_lab_to_gamut(lab)
+    rendered = cm.rgb_to_lab(np.clip(cm.lab_to_rgb(fitted), 0, 255))
+    assert np.allclose(fitted, rendered, atol=0.5)

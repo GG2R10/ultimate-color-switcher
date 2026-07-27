@@ -216,7 +216,7 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         )
         content_box.append(image_caption)
         picture = Gtk.Picture.new_for_filename(image_path)
-        picture.set_content_fit(Gtk.ContentFit.COVER)
+        picture.set_content_fit(Gtk.ContentFit.CONTAIN)
         picture.set_size_request(-1, 150)
         frame = Gtk.Frame(css_classes=["card"], margin_start=12, margin_end=12,
                           margin_top=12, overflow=Gtk.Overflow.HIDDEN)

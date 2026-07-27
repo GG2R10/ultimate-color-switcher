@@ -19,6 +19,7 @@ import os
 import re
 
 from .color_detector import expand_path
+from .config import to_home_relative
 
 _HEX_RE = re.compile(r"^[0-9a-f]{6}$")
 
@@ -34,6 +35,12 @@ def default_meta() -> dict:
         "v": META_VERSION,
         "generated": False,
         "image": None,
+        # Cosmetic-only override for the GUI's wallpaper panel -- independent
+        # of `image`/`generated`, which stay reserved for a truly generated
+        # palette's actual source of truth (shift/regeneration read those,
+        # never this). Lets a hand-created (or generated-but-image-missing)
+        # palette still show SOME preview picture.
+        "preview_image": None,
         "gen": None,   # generation params (colors, mode, scoring, ...) — only for generated palettes
         "post": {"my_eyes": False, "ying_yang": False},
     }
@@ -119,6 +126,15 @@ def read_palette_csv(path: str) -> list:
 def read_palette_meta(path: str) -> dict:
     """Load just a palette's #ucs-meta (or default_meta() if it has none)."""
     return read_palette(path)[1]
+
+
+def set_preview_image(path: str, image_path) -> None:
+    """Set (image_path given) or clear (None) a palette's cosmetic
+    `preview_image` -- see default_meta's docstring. Preserves every other
+    entry/meta field untouched."""
+    entries, meta = read_palette(path)
+    meta["preview_image"] = to_home_relative(image_path) if image_path else None
+    write_palette_csv(path, entries, meta=meta)
 
 
 def write_palette_csv(path: str, entries: list, meta: dict = None) -> None:

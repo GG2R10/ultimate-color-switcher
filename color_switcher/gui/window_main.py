@@ -27,6 +27,7 @@ from .chip_builders import TYPE_DISPLAY as _TYPE_DISPLAY
 from .chip_builders import (
     build_empty_target_chip as _build_empty_target_chip,
     build_group_chip as _build_group_chip,
+    build_mapping_preview_row as _build_mapping_preview_row,
     build_palette_chip as _build_palette_chip,
     build_warning_row as _build_warning_row,
 )
@@ -48,6 +49,10 @@ class MainWindow(Adw.ApplicationWindow):
     available_palette_listbox = Gtk.Template.Child()
     add_color_button = Gtk.Template.Child()
     mapping_new_listbox = Gtk.Template.Child()
+    palette_image_button = Gtk.Template.Child()
+    palette_image_picture = Gtk.Template.Child()
+    palette_image_placeholder = Gtk.Template.Child()
+    mapping_preview_listbox = Gtk.Template.Child()
     warnings_revealer = Gtk.Template.Child()
     warnings_box = Gtk.Template.Child()
     status_label = Gtk.Template.Child()
@@ -82,6 +87,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.mapping_old_listbox.connect("row-activated", self._on_mapping_old_activated)
         self.available_palette_listbox.connect("row-activated", self._on_available_palette_activated)
         self.mapping_new_listbox.connect("row-activated", self._on_mapping_new_activated)
+        self.palette_image_button.connect("clicked", self._on_palette_image_clicked)
 
         GLib.idle_add(self._start_detection)
 
@@ -272,6 +278,18 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_new_palette(path, entries)
         dialogs.toast(self.toast_overlay, "Modificadores aplicados a la paleta.")
 
+    def _on_palette_image_clicked(self, _button):
+        if not self.new_palette_path:
+            dialogs.toast(self.toast_overlay, "Primero creá o importá una paleta.")
+            return
+        dialogs.pick_image_file(self, self._on_palette_preview_image_picked)
+
+    def _on_palette_preview_image_picked(self, image_path):
+        # Always a cosmetic override (preview_image), never `image` -- doesn't
+        # touch `generated` or anything shift/regeneration reads.
+        palette_store.set_preview_image(self.new_palette_path, image_path)
+        self._refresh_wallpaper_panel()
+
     def _action_snapshot_detect(self, _action, _param):
         dialogs.prompt_text(
             self, "Guardar snapshot", "Nombre del snapshot (sin .csv):", "detected-manual", "Guardar",
@@ -442,8 +460,34 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_detected_list()
         self._refresh_palette_list()
         self._refresh_mapping_lists()
+        self._refresh_wallpaper_panel()
         self._refresh_warnings()
         self.apply_button.set_sensitive(bool(self.mapping and self.mapping.resolved_entries()))
+
+    def _refresh_wallpaper_panel(self):
+        image_path = None
+        if self.new_palette_path:
+            meta = palette_store.read_palette_meta(self.new_palette_path)
+            # preview_image (an explicit user override) always wins when
+            # present; the generation source image is only a fallback --
+            # both are existence-checked so a moved/deleted file never
+            # crashes this, it just falls through to the placeholder.
+            candidates = []
+            if meta.get("preview_image"):
+                candidates.append(meta["preview_image"])
+            if meta.get("generated") and meta.get("image"):
+                candidates.append(meta["image"])
+            for candidate in candidates:
+                expanded = color_detector.expand_path(candidate)
+                if os.path.isfile(expanded):
+                    image_path = expanded
+                    break
+
+        has_image = image_path is not None
+        self.palette_image_picture.set_visible(has_image)
+        self.palette_image_placeholder.set_visible(not has_image)
+        if has_image:
+            self.palette_image_picture.set_filename(image_path)
 
     def _refresh_detected_list(self):
         self._clear_listbox(self.available_detected_listbox)
@@ -485,6 +529,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _refresh_mapping_lists(self):
         self._clear_listbox(self.mapping_old_listbox)
         self._clear_listbox(self.mapping_new_listbox)
+        self._clear_listbox(self.mapping_preview_listbox)
         if self.mapping is None:
             return
 
@@ -541,11 +586,16 @@ class MainWindow(Adw.ApplicationWindow):
 
             if new_id is not None and new_id in palette_by_id:
                 new_chip = _build_palette_chip(palette_by_id[new_id], number=idx, warning=warning)
+                new_hex = palette_by_id[new_id]["hex"]
             else:
                 new_chip = _build_empty_target_chip(idx, warning=warning)
+                new_hex = None
             new_row = Gtk.ListBoxRow(child=new_chip)
             new_row.group_ids = tuple(group_old_ids)
             self.mapping_new_listbox.append(new_row)
+
+            preview_row = _build_mapping_preview_row(group_members[0]["color"], new_hex, warning=warning)
+            self.mapping_preview_listbox.append(Gtk.ListBoxRow(child=preview_row, activatable=False))
 
     def _refresh_warnings(self):
         self._clear_listbox_box(self.warnings_box)

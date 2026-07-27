@@ -49,7 +49,12 @@ def load_image_samples(image_path: str, sample_size: int = 40000, seed: int = 42
 
 
 def _make_color_entry(lab, count=0, total=1, label=None):
-    lab = np.asarray(lab, dtype=np.float64)
+    # Gamut-map BEFORE deriving rgb/hex, so "lab" always matches what they
+    # actually render as -- a naive per-channel clip here would silently
+    # distort both lightness and hue for any out-of-gamut request (common
+    # for high-chroma shading ramps and the --my-eyes boost) while leaving
+    # "lab" holding the ORIGINAL, now-inaccurate value. See fit_lab_to_gamut.
+    lab = cm.fit_lab_to_gamut(lab)
     rgb = np.clip(cm.lab_to_rgb(lab), 0, 255)
     _hue, sat, light = cm.rgb_to_hsl(rgb)
     return {

@@ -497,9 +497,12 @@ def test_boost_saturation_multiplies_chroma_keeps_hue_and_lightness():
 
 def test_boost_saturation_caps_at_max_chroma():
     color = pg._make_color_entry(np.array([50.0, 60.0, 40.0]))  # already high chroma
-    boosted = pg._boost_saturation(color, factor=3.0, max_chroma=100.0)
+    # max_chroma=80 (not 100): still well past chroma_before*factor's target, but
+    # low enough to stay achievable in-gamut at this L/hue on its own, so this
+    # isolates the *factor* cap from gamut-mapping's own (separate) chroma cap.
+    boosted = pg._boost_saturation(color, factor=3.0, max_chroma=80.0)
     chroma_after = float(np.hypot(boosted["lab"][1], boosted["lab"][2]))
-    assert chroma_after == pytest.approx(100.0, abs=0.01)  # capped, not chroma_before*3
+    assert chroma_after == pytest.approx(80.0, abs=0.01)  # capped, not chroma_before*3
 
 
 def test_boost_saturation_default_factor_and_cap():
@@ -507,6 +510,27 @@ def test_boost_saturation_default_factor_and_cap():
     boosted = pg._boost_saturation(color)  # defaults: factor=1.5, max_chroma=132
     chroma_after = float(np.hypot(boosted["lab"][1], boosted["lab"][2]))
     assert chroma_after == pytest.approx(30.0, abs=0.01)  # 20*1.5, well under the 132 cap
+
+
+def test_make_color_entry_gamut_maps_out_of_gamut_requests():
+    # A very saturated, very dark red -- not representable in sRGB. Before the
+    # gamut-mapping fix, "lab" would have stayed exactly [10, 90, 70] (a lie
+    # about what the naive-clipped hex actually renders as); now it should be
+    # the gamut-fitted value instead, consistent with the hex.
+    entry = pg._make_color_entry(np.array([10.0, 90.0, 70.0]))
+    assert cm.rgb_to_hex(entry["rgb"]) == entry["hex"]
+    rendered_lab = cm.rgb_to_lab(entry["rgb"])
+    assert np.allclose(entry["lab"], rendered_lab, atol=0.5)  # "lab" no longer lies
+
+
+def test_boost_saturation_caps_are_gamut_safe_even_past_max_chroma():
+    # Requesting a max_chroma that ISN'T achievable at this L/hue (unlike
+    # test_boost_saturation_caps_at_max_chroma's 80, chosen to be safely
+    # in-gamut) should still come back gamut-mapped, never a lying "lab".
+    color = pg._make_color_entry(np.array([50.0, 60.0, 40.0]))
+    boosted = pg._boost_saturation(color, factor=3.0, max_chroma=200.0)
+    rendered_lab = cm.rgb_to_lab(boosted["rgb"])
+    assert np.allclose(boosted["lab"], rendered_lab, atol=0.5)
 
 
 def test_generate_palette_my_eyes_boosts_every_chosen_color(tmp_path):
@@ -667,7 +691,7 @@ def test_find_background_color_picks_highest_coverage():
 def test_score_with_background_penalizes_color_close_to_background():
     background = _entry(45, 50, 20, count=80, total=100)  # a big, saturated red-ish background
     same_as_background = _entry(46, 51, 21, count=80, total=100)  # basically the same color
-    distinct = _entry(45, -50, -20, count=10, total=100)  # equally saturated, but far away
+    distinct = _entry(45, 27, -47, count=10, total=100)  # equally saturated, but far away (in-gamut hue)
 
     score_same = pg.score_cluster(same_as_background, background)
     score_distinct = pg.score_cluster(distinct, background)

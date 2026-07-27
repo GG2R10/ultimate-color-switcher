@@ -46,6 +46,11 @@ menu palette_menu {
   }
 }
 
+Gtk.SizeGroup {
+  mode: horizontal;
+  widgets [detected_column, palette_column]
+}
+
 template $MainWindow: Adw.ApplicationWindow {
   default-width: 1150;
   default-height: 760;
@@ -98,7 +103,7 @@ template $MainWindow: Adw.ApplicationWindow {
           vexpand: true;
 
           [start]
-          Gtk.Box {
+          Gtk.Box detected_column {
             orientation: vertical;
             hexpand: true;
 
@@ -153,7 +158,7 @@ template $MainWindow: Adw.ApplicationWindow {
           }
 
           [end]
-          Gtk.Box {
+          Gtk.Box palette_column {
             orientation: vertical;
             hexpand: true;
 
@@ -265,17 +270,76 @@ template $MainWindow: Adw.ApplicationWindow {
 
           [center]
           Gtk.Box {
-            width-request: 96;
-            halign: center;
-            valign: center;
+            orientation: vertical;
+            width-request: 260;
+            spacing: 8;
+            margin-start: 6;
+            margin-end: 6;
+            margin-top: 10;
 
-            Gtk.Image {
-              icon-name: "go-next-symbolic";
-              pixel-size: 28;
-              hexpand: true;
-              halign: center;
-              can-target: false;
-              css-classes: ["dim-label"];
+            Gtk.Button palette_image_button {
+              css-classes: ["flat"];
+              tooltip-text: _("Elegir imagen para previsualizar");
+
+              child: Gtk.Frame {
+                css-classes: ["card"];
+                height-request: 150;
+                overflow: hidden;
+
+                child: Gtk.Box {
+                  orientation: vertical;
+
+                  Gtk.Picture palette_image_picture {
+                    content-fit: contain;
+                    visible: false;
+                    vexpand: true;
+                  }
+
+                  Gtk.Box palette_image_placeholder {
+                    orientation: vertical;
+                    spacing: 6;
+                    halign: center;
+                    valign: center;
+                    hexpand: true;
+                    vexpand: true;
+                    css-classes: ["dim-label"];
+
+                    Gtk.Image {
+                      icon-name: "image-x-generic-symbolic";
+                      pixel-size: 32;
+                    }
+
+                    Gtk.Label {
+                      label: _("Seleccioná una imagen para mostrar");
+                      wrap: true;
+                      justify: center;
+                      margin-start: 12;
+                      margin-end: 12;
+                    }
+                  }
+                };
+              };
+            }
+
+            Gtk.Separator {
+              margin-top: 2;
+            }
+
+            Gtk.Label {
+              label: _("Vista previa");
+              css-classes: ["heading"];
+              xalign: 0;
+              margin-start: 4;
+            }
+
+            Gtk.ScrolledWindow {
+              vexpand: true;
+              hscrollbar-policy: never;
+
+              Gtk.ListBox mapping_preview_listbox {
+                selection-mode: none;
+                css-classes: ["boxed-list"];
+              }
             }
           }
         }

@@ -14,7 +14,7 @@ from gi.repository import Gtk
 
 from ..backend import color_detector
 
-from .color_chip import ColorChip
+from .color_chip import ColorChip, register_swatch_color
 
 TYPE_DISPLAY = {"hex": "hex", "hex_from_rgb": "rgb"}
 
@@ -65,6 +65,38 @@ def build_empty_target_chip(number, warning=None) -> ColorChip:
     chip.set_number(number)
     chip.set_warning(warning)
     return chip
+
+
+def build_mapping_preview_row(old_hex, new_hex, warning=None) -> Gtk.Box:
+    """Compact 'detected color -> new color' visual summary row: two small
+    circular swatches joined by an arrow, for the wallpaper panel's read-only
+    mapping preview (the boxed-list rows next to it remain the actual editable
+    mapping UI -- this is purely a nicer-looking summary). new_hex=None means
+    the group isn't assigned to anything yet -- shown as a hollow circle."""
+    box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, halign=Gtk.Align.CENTER,
+                  margin_top=4, margin_bottom=4)
+
+    old_class = register_swatch_color(old_hex)
+    box.append(Gtk.Box(width_request=22, height_request=22,
+                       css_classes=["color-swatch-circle", old_class],
+                       tooltip_text=f"#{old_hex}"))
+
+    box.append(Gtk.Image(icon_name="go-next-symbolic", pixel_size=14, css_classes=["dim-label"]))
+
+    if new_hex is not None:
+        new_class = register_swatch_color(new_hex)
+        box.append(Gtk.Box(width_request=22, height_request=22,
+                           css_classes=["color-swatch-circle", new_class],
+                           tooltip_text=f"#{new_hex}"))
+    else:
+        box.append(Gtk.Box(width_request=22, height_request=22,
+                           css_classes=["swatch-empty-circle"],
+                           tooltip_text="Sin asignar"))
+
+    if warning:
+        box.append(Gtk.Image(icon_name="dialog-warning-symbolic", pixel_size=14, tooltip_text=warning))
+
+    return box
 
 
 def build_warning_row(text, action_label=None, action_cb=None) -> Gtk.Box:

@@ -17,6 +17,8 @@ from .template_loader import compiled_ui_path
 _BASE_CSS = """
 .color-swatch { border-radius: 6px; box-shadow: inset 0 0 0 1px alpha(currentColor, 0.15); }
 .swatch-empty { background: transparent; box-shadow: inset 0 0 0 2px alpha(currentColor, 0.25); border-radius: 6px; }
+.color-swatch-circle { border-radius: 999px; box-shadow: inset 0 0 0 1px alpha(currentColor, 0.15); }
+.swatch-empty-circle { background: transparent; box-shadow: inset 0 0 0 2px alpha(currentColor, 0.25); border-radius: 999px; }
 .number-badge {
   background-color: alpha(black, 0.65);
   color: white;

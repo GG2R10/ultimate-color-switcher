@@ -98,6 +98,47 @@ def lab_to_rgb(lab):
     return xyz_to_rgb(lab_to_xyz(lab))
 
 
+def _in_gamut(lab) -> bool:
+    """Whether `lab` converts to sRGB without needing to clip any channel --
+    i.e. the LINEAR (pre-gamma, pre-clip) RGB stays within [0, 1]. Checking
+    at the linear stage (not the clipped 0-255 output) is what makes this
+    exact rather than a guess."""
+    xyz = lab_to_xyz(np.asarray(lab, dtype=np.float64))
+    linear = xyz @ _XYZ_TO_RGB_MATRIX.T
+    return bool(np.all((linear >= -1e-6) & (linear <= 1 + 1e-6)))
+
+
+def fit_lab_to_gamut(lab, max_iter: int = 30):
+    """If `lab` is representable in sRGB, return it unchanged. Otherwise,
+    reduce its CHROMA at FIXED L and hue (binary search) until it just fits --
+    proper gamut mapping, not per-channel RGB clipping.
+
+    Per-channel clipping (what a naive lab_to_rgb->clip does) distorts BOTH
+    lightness and hue at once, in a way that isn't obvious from the Lab
+    values themselves -- e.g. a very saturated dark red's "L=15" shade can
+    silently render as L=26 with a shifted hue, because clamping G/B to 0
+    independently doesn't preserve either. Reducing chroma at fixed L/hue
+    instead keeps both exactly as asked, only giving up SOME of the
+    requested vividness -- which is the only physically correct trade-off:
+    a fully-saturated near-black or near-white simply isn't representable in
+    sRGB, full stop, at ANY hue."""
+    lab = np.asarray(lab, dtype=np.float64)
+    light, a, b = float(lab[0]), float(lab[1]), float(lab[2])
+    chroma = float(np.hypot(a, b))
+    if chroma == 0.0 or _in_gamut(lab):
+        return lab
+    hue = float(np.arctan2(b, a))
+    lo, hi = 0.0, chroma
+    for _ in range(max_iter):
+        mid = (lo + hi) / 2
+        candidate = np.array([light, mid * np.cos(hue), mid * np.sin(hue)])
+        if _in_gamut(candidate):
+            lo = mid
+        else:
+            hi = mid
+    return np.array([light, lo * np.cos(hue), lo * np.sin(hue)])
+
+
 def delta_e76(lab1, lab2):
     """CIE76 Delta E: plain Euclidean distance in Lab space. Good enough for
     dedup/diversity purposes (not print-industry color matching)."""
