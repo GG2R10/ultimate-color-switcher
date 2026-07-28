@@ -104,6 +104,14 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
     detected one, drifting away from it forever once anything nudges it off.
     Re-deriving from color_roles.json first avoids that drift.
 
+    Since a fresh pair can land ANYWHERE in the generated pool (not
+    necessarily the same slot a previous generation used), any of
+    `mapping_path`'s existing entries whose old_id is one of these detected
+    fg/bg colors get REWRITTEN to point at wherever the pair actually
+    landed this time -- see _pending_mapping_updates/_apply_mapping_updates.
+    Otherwise "the detected foreground/background maps to the generated
+    foreground/background" would silently break on every regeneration.
+
     eco (on|off|toggle|None): whether case1/2 pairs are forced to the same
     hue (contrast purely by luminance) -- same resolution shape as
     keep_custom (out_path's own stored eco_contrast if it exists, else the
@@ -228,6 +236,8 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
         "base": merged_base,
     })
     palette_store.write_palette_csv(out_path, entries, meta=meta)
+    _apply_mapping_updates(mapping_path or config.mapping_csv, config,
+                            _pending_mapping_updates(role_pairs, merged_base))
     return entries, out_path, warnings
 
 
@@ -698,6 +708,53 @@ def _role_pairs_from_entries(entries: list) -> list:
     return pairs
 
 
+def _pending_mapping_updates(role_pairs: list, base: list) -> list:
+    """A fresh generation places each fg/bg pair from `role_pairs` SOMEWHERE
+    in `base` (fgbg_pairing picks whichever 2 pool candidates score best --
+    not necessarily the same positions a previous generation used), but a
+    mapping built before generation still points its detected-side old_ids
+    at wherever the pair USED to land. Without fixing that up, "the detected
+    foreground/background maps to the generated foreground/background"
+    silently breaks on every regeneration -- see [[color-roles-design]].
+
+    Only role_pairs sourced from color_detector.compute_role_pairs carry
+    "fg_old_ids"/"bg_old_ids" (tier 1's _role_pairs_from_entries never does,
+    since it has no detected-side old_ids to offer) -- those are the only
+    ones this can act on. Returns [(old_id, new_id), ...] ready to feed
+    into a MappingStore, empty if nothing needs rewiring."""
+    id_by_pair_role = {}
+    for i, b in enumerate(base):
+        pid, role = b.get("pair_id"), b.get("role")
+        if pid is not None and role:
+            id_by_pair_role.setdefault(pid, {})[role] = i + 1
+
+    updates = []
+    for pair in role_pairs:
+        fg_ids = pair.get("fg_old_ids") or []
+        bg_ids = pair.get("bg_old_ids") or []
+        if not fg_ids and not bg_ids:
+            continue
+        landed = id_by_pair_role.get(pair.get("pair_id"))
+        if not landed or "foreground" not in landed or "background" not in landed:
+            continue  # pool ran out before this pair got realized -- nothing to rewire
+        updates.extend((old_id, landed["foreground"]) for old_id in fg_ids)
+        updates.extend((old_id, landed["background"]) for old_id in bg_ids)
+    return updates
+
+
+def _apply_mapping_updates(mapping_path: str, config, updates: list) -> None:
+    """Persist `_pending_mapping_updates`' output to the mapping file, if
+    any. Loads fresh from disk (never reuses a caller's possibly-stale
+    in-memory MappingStore) so this is safe to call right after a write
+    that a long-lived GUI object hasn't seen yet."""
+    if not updates:
+        return
+    store = mapping_store.MappingStore(mapping_path, project_dir=config.project_dir).load()
+    for old_id, new_id in updates:
+        store.add_or_update(old_id, new_id, persist=False)
+    store.save()
+
+
 def _check_role_pairs_fit(n_colors: int, n_pairs: int) -> None:
     """Each pair needs 2 DISTINCT colors (one background, one foreground) --
     same shape of hard constraint as keep_custom's budget check: refuse
@@ -785,10 +842,12 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
     wants_regen = any(selection[k] is not None for k in _SELECTION_KEYS)
     warnings = []
 
+    mapping_updates = []
     if wants_regen:
-        new_entries, new_meta = _regenerate(meta, entries, new_post, selection, config, warnings,
-                                            resolved_keep_custom, resolved_eco,
-                                            resolved_hallucinate, mapping_path)
+        new_entries, new_meta, mapping_updates = _regenerate(
+            meta, entries, new_post, selection, config, warnings,
+            resolved_keep_custom, resolved_eco, resolved_hallucinate, mapping_path,
+        )
     else:
         base = reconstruct_base(entries, meta)
         new_entries = derive_effective(base, new_post)
@@ -801,6 +860,10 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
 
     if write:
         palette_store.write_palette_csv(palette_path, new_entries, meta=new_meta)
+        # Only rewire the mapping once the regenerated pair is actually
+        # persisted -- never on a dry-run preview (write=False, e.g. the
+        # Modificadores dialog's live preview before the user confirms).
+        _apply_mapping_updates(mapping_path or config.mapping_csv, config, mapping_updates)
     return {"entries": new_entries, "meta": new_meta, "regenerated": wants_regen, "warnings": warnings}
 
 
@@ -814,7 +877,11 @@ def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custo
     with no color_roles.json backing to ever see) -- see
     generate_and_save_palette's docstring for why tier 1 can't be preferred
     unconditionally anymore (it self-reinforces a drifted luminance target
-    across repeated deterministic regenerations)."""
+    across repeated deterministic regenerations).
+
+    Returns (new_entries, new_meta, mapping_updates) -- mapping_updates is
+    _pending_mapping_updates' output, for the caller (shift_palette) to
+    persist ONLY if it actually writes (never on a dry-run preview)."""
     if not meta.get("generated"):
         raise ShiftError(
             "Esta paleta es creada (no tiene imagen): no admite modificadores de selección "
@@ -912,4 +979,5 @@ def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custo
     new_meta["eco_contrast"] = eco
     new_meta["hallucinate_on_monochrome"] = hallucinate
     new_meta["base"] = merged_base
-    return new_entries, new_meta
+    mapping_updates = _pending_mapping_updates(role_pairs, merged_base)
+    return new_entries, new_meta, mapping_updates

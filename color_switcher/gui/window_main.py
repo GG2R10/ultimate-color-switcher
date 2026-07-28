@@ -346,6 +346,15 @@ class MainWindow(Adw.ApplicationWindow):
             # replace), just clear who they're assigned to.
             for e in self.mapping.entries:
                 e["new_id"] = None
+        elif self.mapping is not None and self.mapping.new_palette == path:
+            # Same target (e.g. a repeated "Generar paleta desde imagen…" or
+            # a Modificadores regen on the same out_path): the backend can
+            # itself have just rewritten specific old_id->new_id links (to
+            # follow a freshly generated fg/bg pair to wherever it actually
+            # landed -- see palette_shift._apply_mapping_updates). Reload
+            # from disk first, or the blind self.mapping.save() below would
+            # clobber that with this now-stale in-memory copy.
+            self.mapping.load()
 
         self.new_palette_path = path
         self.new_palette = entries

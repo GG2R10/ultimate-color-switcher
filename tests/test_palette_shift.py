@@ -570,6 +570,34 @@ def test_role_tag_alone_without_pair_does_nothing_on_regeneration(gen_palette):
     assert any("rol" in w for w in result["warnings"])
 
 
+def test_pending_mapping_updates_maps_old_ids_to_where_the_pair_landed():
+    role_pairs = [{"pair_id": "a::b", "bg_l": 10.0, "fg_l": 80.0,
+                  "fg_old_ids": [5], "bg_old_ids": [6]}]
+    base = [
+        {"hex": "111111", "role": "background", "pair_id": "a::b"},
+        {"hex": "eeeeee", "role": None, "pair_id": None},
+        {"hex": "ffffff", "role": "foreground", "pair_id": "a::b"},
+    ]
+    updates = palette_shift._pending_mapping_updates(role_pairs, base)
+    assert set(updates) == {(5, 3), (6, 1)}
+
+
+def test_pending_mapping_updates_ignores_pairs_without_detected_old_ids():
+    # tier-1-sourced pairs (_role_pairs_from_entries) never carry
+    # fg_old_ids/bg_old_ids -- nothing detected-side to rewire.
+    role_pairs = [{"pair_id": "1::2", "bg_l": 10.0, "fg_l": 80.0}]
+    base = [{"hex": "111111", "role": "background", "pair_id": "1::2"},
+            {"hex": "ffffff", "role": "foreground", "pair_id": "1::2"}]
+    assert palette_shift._pending_mapping_updates(role_pairs, base) == []
+
+
+def test_pending_mapping_updates_skips_a_pair_the_pool_never_realized():
+    role_pairs = [{"pair_id": "a::b", "bg_l": 10.0, "fg_l": 80.0,
+                  "fg_old_ids": [5], "bg_old_ids": [6]}]
+    base = [{"hex": "111111", "role": None, "pair_id": None}]  # pool ran out, pair never applied
+    assert palette_shift._pending_mapping_updates(role_pairs, base) == []
+
+
 def test_pairing_carries_forward_by_default_on_regeneration(gen_palette):
     """The OLD paired colors' specific hexes change, but the pairing
     RELATIONSHIP itself is read from the palette's own current tags (tier 1)
@@ -585,6 +613,52 @@ def test_pairing_carries_forward_by_default_on_regeneration(gen_palette):
     assert sum(1 for e in result["entries"] if e.get("role") == "background") == 1
     assert sum(1 for e in result["entries"] if e.get("role") == "foreground") == 1
     assert result["warnings"] == []
+
+
+def _setup_detected_pair_mapping(config, path):
+    """detected_palette.csv (id1=bg/id2=fg, paired) + a mapping already
+    pointing both at `path`'s pre-existing slots 1/2 -- the exact real-world
+    setup the user reported: a mapping built BEFORE regeneration, whose
+    old_ids should end up following wherever the freshly generated pair
+    actually lands, not wherever it used to be."""
+    detected = [
+        {"id": 1, "type": "hex", "color": "111111", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "eeeeee", "count": 1, "files": []},
+    ]
+    cd.write_detected_csv(detected, config.detected_palette_csv)
+    cd.write_color_roles(config.color_roles_json, {
+        cd.role_key("hex", "111111"): {"role": "background", "pair": None},
+        cd.role_key("hex", "eeeeee"): {"role": "foreground", "pair": "hex:111111"},
+    })
+    store = ms.MappingStore(config.mapping_csv, old_palette=config.detected_palette_csv,
+                            new_palette=str(path), project_dir=config.project_dir)
+    store.add_or_update(1, 1)
+    store.add_or_update(2, 2)
+
+
+def test_shift_regen_rewires_mapping_to_follow_the_generated_pair(gen_palette):
+    path, base, config = gen_palette
+    _setup_detected_pair_mapping(config, path)
+
+    result = palette_shift.shift_palette(str(path), config, shuffle=1)
+    fg_id = next(e["id"] for e in result["entries"] if e.get("role") == "foreground")
+    bg_id = next(e["id"] for e in result["entries"] if e.get("role") == "background")
+
+    _o, _n, after = ms.read_mapping_csv(config.mapping_csv, project_dir=config.project_dir)
+    by_old = {e["old_id"]: e["new_id"] for e in after}
+    assert by_old[2] == fg_id  # detected foreground (old_id 2) follows the pair
+    assert by_old[1] == bg_id  # detected background (old_id 1) follows the pair
+
+
+def test_shift_dry_run_does_not_rewire_mapping(gen_palette):
+    path, base, config = gen_palette
+    _setup_detected_pair_mapping(config, path)
+
+    palette_shift.shift_palette(str(path), config, shuffle=1, write=False)
+
+    _o, _n, after = ms.read_mapping_csv(config.mapping_csv, project_dir=config.project_dir)
+    by_old = {e["old_id"]: e["new_id"] for e in after}
+    assert by_old == {1: 1, 2: 2}  # untouched -- nothing was actually written
 
 
 # --------------------------------------------------------------------------- #
@@ -742,6 +816,46 @@ def test_generate_role_pairs_tier2_filters_by_mapping(tmp_path, fake_project):
     )
     assert sum(1 for e in entries if e.get("role") == "background") == 1
     assert sum(1 for e in entries if e.get("role") == "foreground") == 1  # id 3's pair didn't count
+
+
+def test_generate_rewires_mapping_to_follow_the_generated_pair(tmp_path, fake_project):
+    """Real bug report: a mapping built BEFORE generation (e.g. detected
+    ids 1..6 pointed at an existing palette's positions 1..6, with detected
+    ids 5/6 tagged fg/bg and paired) kept pointing at those SAME positions
+    after a fresh generation, even though the newly generated fg/bg pair can
+    land anywhere in the pool -- so "the detected foreground maps to the
+    generated foreground" silently broke. Generation must rewire those
+    specific mapping entries to follow wherever the pair actually landed."""
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+
+    detected = [
+        {"id": 1, "type": "hex", "color": "111111", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "eeeeee", "count": 1, "files": []},
+    ]
+    cd.write_detected_csv(detected, config.detected_palette_csv)
+    cd.write_color_roles(config.color_roles_json, {
+        cd.role_key("hex", "111111"): {"role": "background", "pair": None},
+        cd.role_key("hex", "eeeeee"): {"role": "foreground", "pair": "hex:111111"},
+    })
+    out = tmp_path / "fresh.csv"
+    store = ms.MappingStore(config.mapping_csv, old_palette=config.detected_palette_csv,
+                            new_palette=str(out), project_dir=config.project_dir)
+    store.add_or_update(1, 1)
+    store.add_or_update(2, 2)
+
+    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out),
+    )
+    fg_id = next(e["id"] for e in entries if e.get("role") == "foreground")
+    bg_id = next(e["id"] for e in entries if e.get("role") == "background")
+
+    _o, _n, after = ms.read_mapping_csv(config.mapping_csv, project_dir=config.project_dir)
+    by_old = {e["old_id"]: e["new_id"] for e in after}
+    assert by_old[2] == fg_id
+    assert by_old[1] == bg_id
 
 
 def test_generate_role_pairs_tier3_falls_back_to_unfiltered_without_mapping(tmp_path, fake_project):

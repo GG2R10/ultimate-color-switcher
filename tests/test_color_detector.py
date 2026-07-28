@@ -488,6 +488,51 @@ def test_compute_role_pairs_dedupes_hex_and_rgb_siblings():
     assert len(pairs) == 1
 
 
+def test_compute_role_pairs_reports_detected_old_ids_when_mapping_given():
+    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "eeeeee")]
+    roles = {
+        cd.role_key("hex", "111111"): _role("background"),
+        cd.role_key("hex", "eeeeee"): _role("foreground", pair="hex:111111"),
+    }
+    mapping_entries = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}]
+    pairs = cd.compute_role_pairs(detected, roles, mapping_entries)
+    assert len(pairs) == 1
+    assert pairs[0]["fg_old_ids"] == [2]
+    assert pairs[0]["bg_old_ids"] == [1]
+
+
+def test_compute_role_pairs_old_ids_include_every_sibling_mapped_id():
+    # Both hex/hex_from_rgb siblings of the SAME real color can be present in
+    # the mapping under different old_ids -- both must be reported, so a
+    # caller rewiring the mapping doesn't miss one.
+    detected = [
+        _detected(1, "hex", "111111"),
+        _detected(2, "hex_from_rgb", "111111"),
+        _detected(3, "hex", "eeeeee"),
+    ]
+    roles = {
+        cd.role_key("hex", "111111"): _role("background"),
+        cd.role_key("hex_from_rgb", "111111"): _role("background"),
+        cd.role_key("hex", "eeeeee"): _role("foreground", pair="hex:111111"),
+    }
+    mapping_entries = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}, {"old_id": 3, "new_id": 3}]
+    pairs = cd.compute_role_pairs(detected, roles, mapping_entries)
+    assert len(pairs) == 1
+    assert set(pairs[0]["bg_old_ids"]) == {1, 2}
+    assert pairs[0]["fg_old_ids"] == [3]
+
+
+def test_compute_role_pairs_omits_old_ids_without_a_mapping():
+    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "eeeeee")]
+    roles = {
+        cd.role_key("hex", "111111"): _role("background"),
+        cd.role_key("hex", "eeeeee"): _role("foreground", pair="hex:111111"),
+    }
+    pairs = cd.compute_role_pairs(detected, roles, mapping_entries=None)
+    assert "fg_old_ids" not in pairs[0]
+    assert "bg_old_ids" not in pairs[0]
+
+
 def test_tagged_without_pair_flags_unpaired_fg_and_unused_bg():
     roles = {
         "hex:aaaaaa": _role("background"),  # never used as a pair target

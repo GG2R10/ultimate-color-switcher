@@ -494,7 +494,19 @@ def compute_role_pairs(detected_colors: list, roles: dict, mapping_entries: list
     _on_group_pair_selected, which set the SAME role/pair on every sibling),
     so without deduping here, one real user-intended pair would be counted
     TWICE -- consuming twice the palette slots and demanding 2 generated
-    pairs for what the user experiences as 1."""
+    pairs for what the user experiences as 1.
+
+    When `mapping_entries` is given and non-empty, each pair also carries
+    "fg_old_ids"/"bg_old_ids" -- every detected old_id (across sibling
+    representations) currently present in the mapping whose color matches
+    fg_hex/bg_hex. This lets a caller that just generated a fresh palette
+    from these pairs (see palette_shift's mapping-rewire helpers) find which
+    EXISTING mapping entries should be repointed at wherever the freshly
+    generated pair actually landed -- otherwise the mapping keeps whatever
+    new_id it had before generation, which after a fresh generation is an
+    arbitrary, unrelated color (the pair can land anywhere in the pool
+    fgbg_pairing picks). Omitted entirely when there's no mapping context at
+    all, since there's nothing meaningful to rewire in that case."""
     if mapping_entries:
         present_ids = {e["old_id"] for e in mapping_entries}
         detected_by_id = {c["id"]: c for c in detected_colors}
@@ -505,6 +517,7 @@ def compute_role_pairs(detected_colors: list, roles: dict, mapping_entries: list
                 keys_in_use.add(role_key(c["type"], c["color"]))
     else:
         keys_in_use = None  # unfiltered
+        present_ids = None
 
     hex_by_key = {role_key(c["type"], c["color"]): c["color"] for c in detected_colors}
 
@@ -526,7 +539,13 @@ def compute_role_pairs(detected_colors: list, roles: dict, mapping_entries: list
         seen.add(dedupe_key)
         fg_l = float(cm.rgb_to_lab(cm.hex_to_rgb(fg_hex))[0])
         bg_l = float(cm.rgb_to_lab(cm.hex_to_rgb(bg_hex))[0])
-        pairs.append({"pair_id": f"{fg_hex}::{bg_hex}", "bg_l": bg_l, "fg_l": fg_l})
+        pair = {"pair_id": f"{fg_hex}::{bg_hex}", "bg_l": bg_l, "fg_l": fg_l}
+        if present_ids is not None:
+            pair["fg_old_ids"] = [c["id"] for c in detected_colors
+                                   if c["color"] == fg_hex and c["id"] in present_ids]
+            pair["bg_old_ids"] = [c["id"] for c in detected_colors
+                                   if c["color"] == bg_hex and c["id"] in present_ids]
+        pairs.append(pair)
     return pairs
 
 
