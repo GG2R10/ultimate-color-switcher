@@ -320,6 +320,35 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
     settings = settings if settings is not None else pg.read_generation_settings(config)
 
     group = Adw.PreferencesGroup()
+
+    keep_custom_row = Adw.SwitchRow(
+        title="Mantener colores editados/agregados",
+        subtitle="Al regenerar una paleta ya existente en la ruta de salida, preservar sus colores "
+                 "editados/agregados a mano en vez de descartarlos.",
+    )
+    keep_custom_row.set_active(bool(settings.get("keep_custom_on_regen", True)))
+
+    def on_keep_custom_changed(row, _pspec=None):
+        settings["keep_custom_on_regen"] = row.get_active()
+        pg.write_generation_settings(config, settings)
+
+    keep_custom_row.connect("notify::active", on_keep_custom_changed)
+    group.add(keep_custom_row)
+
+    consider_plane_row = Adw.SwitchRow(
+        title="Considerar roles foreground/background",
+        subtitle="Apuntar a la demanda de colores fg/bg tageados (de la paleta existente, o de "
+                 "colores detectados) en vez de ignorar los roles por completo.",
+    )
+    consider_plane_row.set_active(bool(settings.get("consider_roles_on_regen", True)))
+
+    def on_consider_plane_changed(row, _pspec=None):
+        settings["consider_roles_on_regen"] = row.get_active()
+        pg.write_generation_settings(config, settings)
+
+    consider_plane_row.connect("notify::active", on_consider_plane_changed)
+    group.add(consider_plane_row)
+
     expander = Adw.ExpanderRow(
         title="Opciones avanzadas",
         subtitle="Overfetch y shuffle -- para explorar variantes de una misma imagen, pensado para scripts.",

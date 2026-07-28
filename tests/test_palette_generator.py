@@ -260,6 +260,74 @@ def test_improve_contrast_increases_ratio_against_background():
     assert after >= 3.0 or after > before  # either it clears the bar, or it at least improved
 
 
+def test_reduce_contrast_decreases_ratio_against_background():
+    background = _entry(50, 0, 0)
+    high_contrast = _entry(95, 10, 10)  # far in lightness -> strong contrast against background
+    before = cm.contrast_ratio(high_contrast["rgb"], background["rgb"])
+    reduced = pg._reduce_contrast(high_contrast, background, max_ratio=3.0)
+    after = cm.contrast_ratio(reduced["rgb"], background["rgb"])
+    assert after <= before
+    assert after <= 3.0 or after < before
+
+
+def test_reduce_contrast_never_overshoots_past_backgrounds_lightness():
+    background = _entry(50, 0, 0)
+    high_contrast = _entry(95, 10, 10)
+    reduced = pg._reduce_contrast(high_contrast, background, max_ratio=3.0)
+    assert reduced["lab"][0] >= background["lab"][0]  # clamped AT background_l, never crossed past it
+
+
+def test_assign_roles_labels_natural_candidates_without_topping_up():
+    background = _entry(20, 0, 0)  # dark background, so a high-L color easily clears WCAG 4.5
+    chosen = [
+        _entry(25, 30, 20),   # close in lightness (ratio ~1.2) -> naturally background-safe
+        _entry(90, 30, 20),   # far in lightness (ratio ~10) -> naturally foreground-safe
+        _entry(85, 0, 0),     # also far (ratio ~8.9) -> naturally foreground-safe too, but not needed
+    ]
+    roles, out = pg._assign_roles(chosen, background, n_background_needed=1, n_foreground_needed=1)
+    assert roles[0] == "background"
+    assert roles[1] == "foreground"
+    assert roles[2] is None
+    # natural candidates already satisfied the demand -- nothing gets touched
+    assert out[0]["hex"] == chosen[0]["hex"]
+    assert out[1]["hex"] == chosen[1]["hex"]
+
+
+def test_assign_roles_tops_up_foreground_shortfall():
+    background = _entry(50, 0, 0)
+    chosen = [_entry(52, 10, 10), _entry(48, 10, 10)]  # both close in lightness, no natural fg candidate
+    roles, out = pg._assign_roles(chosen, background, n_background_needed=0, n_foreground_needed=1)
+    assert roles.count("foreground") == 1
+    i = roles.index("foreground")
+    ratio = cm.contrast_ratio(out[i]["rgb"], background["rgb"])
+    assert ratio >= pg._FOREGROUND_SAFE_MIN_RATIO - 0.5  # topped up to clear (or very near) the WCAG bar
+
+
+def test_assign_roles_tops_up_background_shortfall():
+    background = _entry(50, 0, 0)
+    chosen = [_entry(95, 10, 10), _entry(5, 10, 10)]  # both far in lightness, no natural bg candidate
+    roles, out = pg._assign_roles(chosen, background, n_background_needed=1, n_foreground_needed=0)
+    assert roles.count("background") == 1
+    i = roles.index("background")
+    ratio = cm.contrast_ratio(out[i]["rgb"], background["rgb"])
+    assert ratio <= pg._BACKGROUND_SAFE_MAX_RATIO + 0.5
+
+
+def test_assign_roles_best_effort_when_demand_exceeds_pool():
+    background = _entry(50, 0, 0)
+    chosen = [_entry(52, 10, 10)]  # only one color, can't cover both a bg AND fg slot
+    roles, out = pg._assign_roles(chosen, background, n_background_needed=1, n_foreground_needed=1)
+    assert roles.count(None) == 0  # the single color gets claimed by whichever ran first (background)
+    assert roles[0] == "background"
+
+
+def test_assign_roles_never_double_books_the_same_color():
+    background = _entry(50, 0, 0)
+    chosen = [_entry(90, 10, 10)]  # naturally foreground-safe
+    roles, out = pg._assign_roles(chosen, background, n_background_needed=1, n_foreground_needed=1)
+    assert roles.count("foreground") + roles.count("background") == 1  # never both
+
+
 def _make_test_image(path):
     img = Image.new("RGB", (80, 80), (10, 10, 10))
     pixels = img.load()
@@ -287,6 +355,43 @@ def test_generate_palette_end_to_end(tmp_path):
     for entry in palette:
         assert len(entry["hex"]) == 6
         int(entry["hex"], 16)  # valid hex
+
+
+def test_generate_palette_role_demand_defaults_produce_no_role_key(tmp_path):
+    """n_background_needed=n_foreground_needed=0 (the default) must stay
+    byte-identical in shape to before this feature existed -- no "role" key
+    on any entry at all, not even role=None."""
+    image_path = tmp_path / "wallpaper.png"
+    _make_test_image(image_path)
+    palette = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000)
+    assert all("role" not in c for c in palette)
+
+
+def test_generate_palette_with_role_demand_tags_entries(tmp_path):
+    image_path = tmp_path / "wallpaper.png"
+    _make_test_image(image_path)
+
+    palette = pg.generate_palette(
+        str(image_path), n_colors=4, sample_size=5000,
+        n_background_needed=1, n_foreground_needed=1,
+    )
+
+    roles = [c.get("role") for c in palette]
+    assert roles.count("background") == 1
+    assert roles.count("foreground") == 1
+    assert roles.count(None) == 2
+
+
+def test_generate_palette_role_demand_with_base_tags_base_too(tmp_path):
+    image_path = tmp_path / "wallpaper.png"
+    _make_test_image(image_path)
+
+    effective, base = pg.generate_palette(
+        str(image_path), n_colors=4, sample_size=5000,
+        n_background_needed=1, n_foreground_needed=0, with_base=True,
+    )
+    assert sum(1 for c in effective if c.get("role") == "background") == 1
+    assert sum(1 for c in base if c.get("role") == "background") == 1
 
 
 _CREATED_PALETTE = [
@@ -938,6 +1043,8 @@ def test_write_then_read_generation_settings_roundtrip(fake_project):
         "shading_max_luminance": 92.0,
         "my_eyes_factor": 1.5,
         "my_eyes_max_chroma": 132.0,
+        "keep_custom_on_regen": True,
+        "consider_roles_on_regen": True,
     }
 
 

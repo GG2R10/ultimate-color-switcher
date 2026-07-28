@@ -13,6 +13,8 @@ already tracks as separate detected ids. The GUI should offer to map them
 together ("same as hex format") instead of asking the user twice.
 """
 
+from .color_detector import role_key
+
 
 def find_case1_collisions(detected_colors: list, new_palette: list, mapping_entries: list) -> list:
     """
@@ -99,6 +101,43 @@ def find_target_convergence(detected_colors: list, new_palette: list, mapping_en
             collisions.append({"target_hex": target_hex, "old_ids": sorted(old_ids)})
 
     return collisions
+
+
+def find_role_mismatches(detected_colors: list, new_palette: list, mapping_entries: list,
+                          detected_roles: dict) -> list:
+    """
+    Flags mapping entries where a detected color explicitly tagged
+    foreground/background (color_roles.json, see [[color-roles-design]])
+    gets mapped to a palette color explicitly tagged the OPPOSITE role
+    (Phase 4's palette-side role column) -- e.g. a color you use as text
+    (foreground) about to be replaced by a color someone tagged as a
+    background swatch. Neither side being tagged, or both agreeing, is not
+    a mismatch. Warn, don't block -- same precedent as
+    find_case1_collisions/find_target_convergence.
+
+    Returns [{"old_id", "new_id", "detected_role", "palette_role"}, ...].
+    """
+    color_by_id = {c["id"]: c for c in detected_colors}
+    palette_by_id = {p["id"]: p for p in new_palette}
+    opposite = {"foreground": "background", "background": "foreground"}
+
+    mismatches = []
+    for e in mapping_entries:
+        old_id, new_id = e["old_id"], e.get("new_id")
+        if new_id is None:
+            continue
+        color = color_by_id.get(old_id)
+        entry = palette_by_id.get(new_id)
+        if not color or not entry:
+            continue
+        detected_role = detected_roles.get(role_key(color["type"], color["color"]))
+        palette_role = entry.get("role")
+        if detected_role and palette_role and palette_role == opposite[detected_role]:
+            mismatches.append({
+                "old_id": old_id, "new_id": new_id,
+                "detected_role": detected_role, "palette_role": palette_role,
+            })
+    return mismatches
 
 
 def find_case2_siblings(detected_colors: list) -> dict:

@@ -107,13 +107,26 @@ template $MainWindow: Adw.ApplicationWindow {
             orientation: vertical;
             hexpand: true;
 
-            Gtk.Label {
-              label: _("Colores detectados");
-              css-classes: ["heading"];
-              xalign: 0;
+            Gtk.Box {
+              orientation: horizontal;
               margin-start: 12;
               margin-top: 10;
               margin-bottom: 4;
+              margin-end: 6;
+
+              Gtk.Label {
+                label: _("Colores detectados");
+                css-classes: ["heading"];
+                xalign: 0;
+                hexpand: true;
+              }
+
+              Gtk.ToggleButton detected_view_toggle {
+                icon-name: "folder-symbolic";
+                css-classes: ["flat"];
+                tooltip-text: _("Agrupar por archivo en vez de por cantidad de ocurrencias");
+                valign: center;
+              }
             }
 
             Gtk.ScrolledWindow {
@@ -162,13 +175,28 @@ template $MainWindow: Adw.ApplicationWindow {
             orientation: vertical;
             hexpand: true;
 
-            Gtk.Label {
-              label: _("Paleta nueva");
-              css-classes: ["heading"];
-              xalign: 0;
+            Gtk.Box {
+              orientation: horizontal;
               margin-start: 12;
               margin-top: 10;
               margin-bottom: 4;
+              margin-end: 10;
+
+              Gtk.Label {
+                label: _("Paleta nueva");
+                css-classes: ["heading"];
+                xalign: 0;
+                hexpand: true;
+              }
+
+              Gtk.DropDown palette_role_filter {
+                visible: false;
+                valign: center;
+                tooltip-text: _("Filtrar por rol de contraste");
+                model: Gtk.StringList {
+                  strings [_("Todos"), _("Solo foreground"), _("Solo background"), _("Sin rol")]
+                };
+              }
             }
 
             Gtk.ScrolledWindow {

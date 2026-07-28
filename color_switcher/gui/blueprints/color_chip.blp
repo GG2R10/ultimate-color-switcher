@@ -67,6 +67,13 @@ template $ColorChip: Gtk.Box {
       tooltip-text: _("Ver archivos");
     }
 
+    Gtk.Button role_button {
+      valign: center;
+      visible: false;
+      css-classes: ["flat", "role-badge"];
+      tooltip-text: _("Sin rol de contraste -- clic para ciclar: sin marcar → background → foreground");
+    }
+
     Gtk.Button add_button {
       icon-name: "list-add-symbolic";
       valign: center;

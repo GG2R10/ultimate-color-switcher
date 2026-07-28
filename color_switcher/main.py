@@ -178,14 +178,24 @@ def _color_swatch(hex_str: str, width: int = 3) -> str:
     return f"\x1b[48;2;{r};{g};{b}m{' ' * width}\x1b[0m"
 
 
+_ROLE_TAGS = {"foreground": "[F]", "background": "[B]"}
+
+
 def _print_palette(entries, show_id: bool = True) -> None:
     """Print a palette one color per line, each led by its swatch (falls back
-    to just hex + label when color is off)."""
+    to just hex + label when color is off), with a trailing [F]/[B] tag when
+    the color has a foreground/background role."""
     for e in entries:
         swatch = _color_swatch(e["hex"])
         prefix = f"  {e['id']}) " if show_id else "  "
-        cells = [swatch, f"#{e['hex']}", e.get("label", "")]
+        cells = [swatch, f"#{e['hex']}", e.get("label", ""), _ROLE_TAGS.get(e.get("role"))]
         print((prefix + "  ".join(c for c in cells if c)).rstrip())
+
+
+def _role_arg_to_value(raw):
+    """--role CLI value ('foreground'|'background'|'none'|None) -> internal
+    role, mapping both 'none' and omission (None) to unmarked (None)."""
+    return None if raw in (None, "none") else raw
 
 
 def cmd_palette_create(args, config):
@@ -193,9 +203,23 @@ def cmd_palette_create(args, config):
     if not os.path.isabs(path):
         path = os.path.join(config.palettes_created_dir, path)
     entries = []
-    for hexval, label in (args.add or []):
+    for parts in (args.add or []):
+        if len(parts) not in (2, 3):
+            print(f"--add espera HEX LABEL [ROLE], se recibieron {len(parts)} valor(es): {parts}")
+            sys.exit(1)
+        hexval, label = parts[0], parts[1]
+        role = None
+        if len(parts) == 3:
+            role_raw = parts[2]
+            if role_raw not in ("foreground", "background", "none"):
+                print(f"--add: rol inválido {role_raw!r} (usá foreground, background o none)")
+                sys.exit(1)
+            role = _role_arg_to_value(role_raw)
         next_id = max((e["id"] for e in entries), default=0) + 1
-        entries.append({"id": next_id, "hex": hexval.lstrip("#").lower(), "label": label})
+        entry = {"id": next_id, "hex": hexval.lstrip("#").lower(), "label": label}
+        if role:
+            entry["role"] = role
+        entries.append(entry)
     palette_store.write_palette_csv(path, entries)
     print(f"Paleta creada: {path} ({len(entries)} colores)")
     _print_palette(entries)
@@ -229,7 +253,7 @@ def cmd_palette_show(args, config):
 
 def cmd_palette_add_color(args, config):
     path = _resolve_target_palette(args.path, config, mapping_path=args.mapping)
-    entry = palette_shift.add_color(path, args.hex, args.label or "")
+    entry = palette_shift.add_color(path, args.hex, args.label or "", role=_role_arg_to_value(args.role))
     swatch = _color_swatch(entry["hex"])
     cells = ["Agregado:", swatch, f"#{entry['hex']}", entry.get("label", "")]
     print(" ".join(c for c in cells if c))
@@ -285,7 +309,10 @@ def _adjust_mapping_after_palette_delete(config, mapping_path, palette_path, del
 def cmd_palette_edit(args, config):
     mapping_path = args.mapping or config.mapping_csv
     path = _resolve_target_palette(args.palette, config, mapping_path=mapping_path)
-    palette_shift.edit_color(path, args.target, args.new_hex)
+    if args.role is not None:
+        palette_shift.edit_color(path, args.target, args.new_hex, role=_role_arg_to_value(args.role))
+    else:
+        palette_shift.edit_color(path, args.target, args.new_hex)
     print(f"Editado en {path}:")
     _print_palette(palette_store.read_palette_csv(path))
     _maybe_apply_after_edit(args, config, path, mapping_path=mapping_path)
@@ -322,14 +349,17 @@ def cmd_palette_generate(args, config):
         _old_p, _new_p, mapping_entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
         n_colors = len({e["new_id"] for e in mapping_entries}) if mapping_entries else 6
 
-    entries, out_path = palette_shift.generate_and_save_palette(
+    entries, out_path, warnings = palette_shift.generate_and_save_palette(
         config, args.image, n_colors, args.sample_size, args.mode, args.my_eyes, args.out,
         scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
         weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
         ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
         shading_direction=args.shading_direction,
         shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
+        keep_custom=args.keep_custom, consider_plane=args.consider_plane, mapping_path=mapping_path,
     )
+    for w in warnings:
+        print(f"⚠ {w}")
 
     print(f"Paleta generada desde {args.image} ({n_colors} color(es)):")
     _print_palette(entries)
@@ -501,6 +531,11 @@ def _apply_or_test(args, config, mode):
         print("⚠ Se forzó un conflicto/convergencia: el mapping usado probablemente quedó desactualizado "
               "(algunos ids ya no representan el mismo color real). Conviene rehacerlo antes de reusarlo.")
     if not dry_run:
+        roles_path = os.path.join(os.path.dirname(detected_path), "color_roles.json")
+        role_collisions = color_detector.rekey_roles_after_apply(roles_path, detected_colors, new_palette, entries)
+        for new_key, old_keys in role_collisions:
+            print(f"⚠ {new_key} quedó sin rol asignado: los colores {old_keys} tenían roles distintos "
+                  "y convergieron en él. Reasigná el rol a mano si corresponde.")
         print(f"Backup en: {config.backup_dir}")
         print("Para deshacer: ucs restore")
         _refresh_detected_after_change(config)
@@ -567,14 +602,17 @@ def cmd_automatic(args, config):
             print(f"Mapping vacío o no encontrado: {mapping_path}")
             sys.exit(1)
         n_colors = args.colors or len({e["new_id"] for e in entries})
-        palette_source, saved_path = palette_shift.generate_and_save_palette(
+        palette_source, saved_path, gen_warnings = palette_shift.generate_and_save_palette(
             config, args.from_image, n_colors, args.sample_size, args.mode, args.my_eyes,
             scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
             weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
             ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
             shading_direction=args.shading_direction,
             shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
+            keep_custom=args.keep_custom, consider_plane=args.consider_plane, mapping_path=mapping_path,
         )
+        for w in gen_warnings:
+            print(f"⚠ {w}")
         print(f"Paleta generada desde {args.from_image} ({n_colors} color(es)) — guardada en: {saved_path}")
         _print_palette(palette_source)
 
@@ -622,6 +660,9 @@ def _report_apply_result(result, args, config, mapping_path):
         if result.get("stale_mapping_warning"):
             print("⚠ Se forzó un conflicto/convergencia: el mapping usado probablemente quedó desactualizado "
                   "(algunos ids ya no representan el mismo color real). Conviene rehacerlo antes de reusarlo.")
+        for new_key, old_keys in result.get("role_collisions", []):
+            print(f"⚠ {new_key} quedó sin rol asignado: los colores {old_keys} tenían roles distintos "
+                  "y convergieron en él. Reasigná el rol a mano si corresponde.")
         if not args.test:
             print(f"Backup en: {config.backup_dir}")
             _refresh_detected_after_change(config)
@@ -664,7 +705,7 @@ def cmd_palette_shift(args, config):
         weighted_contrast=weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
         colors=args.colors, shading_direction=args.shading_direction,
         shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
-        write=not args.test,
+        keep_custom=args.keep_custom, consider_plane=args.consider_plane, write=not args.test,
     )
     for w in result["warnings"]:
         print(f"⚠ {w}")
@@ -817,6 +858,16 @@ def _add_shift_args(parser):
     parser.add_argument("--shading-max-luminance", type=float, default=None,
                          help="Solo con --shading-direction light: luminancia máxima del ramp "
                               "(default: mantener). Regenera.")
+    parser.add_argument("--keep-custom", choices=onofftoggle, default=None, metavar="on|off|toggle",
+                         help="Al regenerar (paletas generadas), preservar los colores agregados/editados "
+                              "a mano en su mismo lugar en vez de descartarlos (default: mantener la "
+                              "preferencia guardada en la paleta, que empieza en 'on'). No dispara una "
+                              "regeneración por sí solo.")
+    parser.add_argument("--consider-plane", choices=onofftoggle, default=None, metavar="on|off|toggle",
+                         help="Al regenerar (paletas generadas), apuntar a la demanda de colores "
+                              "foreground/background ya tageados en esta paleta (default: mantener la "
+                              "preferencia guardada, que empieza en 'on'). No dispara una regeneración "
+                              "por sí solo.")
 
 
 def _add_my_eyes_generation_args(parser):
@@ -849,6 +900,34 @@ def _add_shading_generation_args(parser):
     parser.add_argument("--shading-max-luminance", type=float, default=92.0,
                          help="Solo con --mode shading --shading-direction light: luminancia máxima "
                               "del ramp (default: 92).")
+
+
+def _add_keep_custom_generation_arg(parser):
+    """Whether a FRESH generation (palette generate / automatic --from-image)
+    preserves hand-added/edited colors already at the output path, when it
+    already exists as a palette (e.g. a wallpaper-switch hook regenerating
+    the same generated.csv every time) -- see
+    palette_shift.generate_and_save_palette. Shared so the two entry points
+    can't drift apart."""
+    parser.add_argument("--keep-custom", choices=["on", "off", "toggle"], default=None, metavar="on|off|toggle",
+                         help="Si la ruta de salida ya existe como paleta: preservar sus colores "
+                              "agregados/editados a mano en vez de descartarlos (default: mantener la "
+                              "preferencia guardada -- de esa paleta si ya existe, si no la del proyecto, "
+                              "que empieza en 'on').")
+
+
+def _add_consider_plane_generation_arg(parser):
+    """Whether a FRESH generation (palette generate / automatic --from-image)
+    aims for a foreground/background contrast demand at all -- see
+    color_detector.compute_role_demand / palette_shift.generate_and_save_palette.
+    Shared so the two entry points can't drift apart."""
+    parser.add_argument("--consider-plane", choices=["on", "off", "toggle"], default=None,
+                         metavar="on|off|toggle",
+                         help="Generar apuntando a la demanda de colores foreground/background "
+                              "(de la paleta de salida si ya existe, si no de color_roles.json filtrado "
+                              "por el mapping activo, o sin filtrar si no hay mapping) en vez de ignorar "
+                              "los roles por completo (default: mantener la preferencia guardada -- de "
+                              "esa paleta si ya existe, si no la del proyecto, que empieza en 'on').")
 
 
 def build_parser():
@@ -889,8 +968,9 @@ def build_parser():
 
     pc = psub.add_parser("create", help="Crear una paleta CSV")
     pc.add_argument("path", help="Ruta de salida (relativa a palettes/created/ si no es absoluta)")
-    pc.add_argument("--add", nargs=2, metavar=("HEX", "LABEL"), action="append",
-                     help="Agregar un color (puede repetirse)")
+    pc.add_argument("--add", nargs="+", metavar="HEX", action="append",
+                     help="Agregar un color: HEX LABEL, o HEX LABEL ROLE "
+                          "(ROLE: foreground|background|none) (puede repetirse)")
     _add_apply_args(pc)
     pc.set_defaults(func=cmd_palette_create)
 
@@ -909,6 +989,8 @@ def build_parser():
                     help="Paleta (default: la que aplica el mapping actual, vía #new_palette=)")
     pa.add_argument("hex")
     pa.add_argument("--label", default="", help="Etiqueta para el color (default: vacía)")
+    pa.add_argument("--role", choices=["foreground", "background", "none"], default=None,
+                    help="Rol de contraste del color (default: sin marcar)")
     _add_apply_args(pa)
     pa.set_defaults(func=cmd_palette_add_color)
 
@@ -917,6 +999,8 @@ def build_parser():
                      help="Paleta a editar (default: la que aplica el mapping actual, vía #new_palette=)")
     ped.add_argument("target", help="Color a cambiar: su id o su hex")
     ped.add_argument("new_hex", metavar="new-hex", help="Nuevo color (hex)")
+    ped.add_argument("--role", choices=["foreground", "background", "none"], default=None,
+                     help="Además, fijar el rol de contraste (default: no lo toca)")
     _add_apply_args(ped)
     ped.set_defaults(func=cmd_palette_edit)
 
@@ -953,6 +1037,8 @@ def build_parser():
     )
     _add_shuffle_args(pg)
     _add_shading_generation_args(pg)
+    _add_keep_custom_generation_arg(pg)
+    _add_consider_plane_generation_arg(pg)
     pg.add_argument("--out", help="Ruta de salida (default: palettes/created/generated.csv, se reemplaza en cada corrida)")
     _add_apply_args(pg)
     pg.set_defaults(func=cmd_palette_generate)
@@ -1029,6 +1115,8 @@ def build_parser():
     )
     _add_shuffle_args(ap, from_image_note=" con --from-image")
     _add_shading_generation_args(ap)
+    _add_keep_custom_generation_arg(ap)
+    _add_consider_plane_generation_arg(ap)
     ap.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
     ap.add_argument("--test", action="store_true", help="Simular, no modificar archivos")
     ap.add_argument("--force", action="store_true",

@@ -45,6 +45,16 @@ class Config:
         fresh generated-<image>-<timestamp>.csv per run)."""
         return os.path.join(self.palettes_created_dir, "generated.csv")
 
+    @property
+    def color_roles_json(self) -> str:
+        """Cosmetic foreground/background role tags for detected colors,
+        keyed by "type:hex" -- deliberately its own file, separate from
+        detected_palette_csv (which must stay a pure, reproducible function
+        of the scanned files -- roles are user state, not file-derived) and
+        from mapping.csv (deleting/recreating a mapping shouldn't wipe role
+        tags). See the color-roles design notes."""
+        return os.path.join(self.palettes_detected_dir, "color_roles.json")
+
 
 _DEFAULT_CONFIG_JSON = {"files_to_replace": [], "backup_dir": "$HOME/.config-colors-backup"}
 

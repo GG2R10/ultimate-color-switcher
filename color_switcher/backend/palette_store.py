@@ -2,7 +2,9 @@
 """
 palette_store.py — Read/write/create palette CSVs.
 
-Row format: "id,#hexvalue,label[,origin]" (origin optional: "gen"|"custom").
+Row format: "id,#hexvalue,label[,origin[,role]]" (origin optional: "gen"|"custom";
+role optional: "foreground"|"background" -- only written once any entry has
+one, same convention as origin; empty string means unmarked).
 Optionally preceded by ONE metadata header line:
 
     #ucs-meta={...json...}
@@ -26,6 +28,7 @@ _HEX_RE = re.compile(r"^[0-9a-f]{6}$")
 META_PREFIX = "#ucs-meta="
 META_VERSION = 1
 _VALID_ORIGINS = ("gen", "custom")
+_VALID_ROLES = ("foreground", "background")
 
 
 def default_meta() -> dict:
@@ -43,6 +46,17 @@ def default_meta() -> dict:
         "preview_image": None,
         "gen": None,   # generation params (colors, mode, scoring, ...) — only for generated palettes
         "post": {"my_eyes": False, "ying_yang": False},
+        # Regeneration policy, not a post-modifier: whether a selection-modifier
+        # shift preserves hand-added/edited (origin=custom) colors in their
+        # original slot instead of discarding them. Defaults True so existing
+        # palettes (no key yet) get the safer behavior automatically.
+        "keep_custom_on_regen": True,
+        # Regeneration policy: whether generation aims for a foreground/
+        # background contrast demand read from color_roles.json (or, on a
+        # regen, this same palette's OWN already-tagged colors) instead of
+        # being oblivious to roles entirely. Defaults True; harmless when
+        # nothing is tagged anywhere (demand resolves to 0/0 either way).
+        "consider_roles_on_regen": True,
     }
 
 
@@ -99,9 +113,12 @@ def _read(path: str):
                 continue
             label = parts[2].strip() if len(parts) > 2 else ""
             origin = parts[3].strip().lower() if len(parts) > 3 else None
+            role = parts[4].strip().lower() if len(parts) > 4 else None
             entry = {"id": int(id_str), "hex": hex_clean, "label": label}
             if origin in _VALID_ORIGINS:  # keep the dict at {id,hex,label} unless origin is meaningful
                 entry["origin"] = origin
+            if role in _VALID_ROLES:
+                entry["role"] = role
             entries.append(entry)
 
     return entries, meta
@@ -109,7 +126,7 @@ def _read(path: str):
 
 def read_palette(path: str):
     """Load a palette CSV. Returns (entries, meta):
-      entries: [{"id": int, "hex": "rrggbb", "label": str, "origin": str|None}]
+      entries: [{"id": int, "hex": "rrggbb", "label": str, "origin": str|None, "role": str|None}]
       meta:    the parsed #ucs-meta dict, or default_meta() if there's no header.
     Returns ([], default_meta()) if the file doesn't exist."""
     entries, meta = _read(path)
@@ -145,19 +162,25 @@ def write_palette_csv(path: str, entries: list, meta: dict = None) -> None:
     path = expand_path(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     write_origin = any(e.get("origin") in _VALID_ORIGINS for e in entries)
+    write_role = any(e.get("role") in _VALID_ROLES for e in entries)
     with open(path, "w", encoding="utf-8") as f:
         if meta is not None:
             f.write(_serialize_meta(meta) + "\n")
         for e in entries:
             hex_clean = e["hex"].lstrip("#").lower()
             label = e.get("label", "")
-            if write_origin:
+            if write_role:
+                # origin column must stay in position even if no entry actually
+                # has one, so role (position 5) doesn't shift into its slot.
+                origin_field = e.get("origin") or ("custom" if write_origin else "")
+                f.write(f"{e['id']},#{hex_clean},{label},{origin_field},{e.get('role') or ''}\n")
+            elif write_origin:
                 f.write(f"{e['id']},#{hex_clean},{label},{e.get('origin') or 'custom'}\n")
             else:
                 f.write(f"{e['id']},#{hex_clean},{label}\n")
 
 
-def add_color(path: str, hex_value: str, label: str = "", origin: str = None) -> dict:
+def add_color(path: str, hex_value: str, label: str = "", origin: str = None, role: str = None) -> dict:
     """Append a new color to a palette CSV, assigning the next free id, and
     PRESERVING the file's #ucs-meta header. On a generated palette a manually
     added color is marked origin="custom" so a later regenerating shift can
@@ -169,6 +192,8 @@ def add_color(path: str, hex_value: str, label: str = "", origin: str = None) ->
     entry = {"id": next_id, "hex": hex_value.lstrip("#").lower(), "label": label}
     if origin in _VALID_ORIGINS:
         entry["origin"] = origin
+    if role in _VALID_ROLES:
+        entry["role"] = role
     entries.append(entry)
     write_palette_csv(path, entries, meta=meta)  # meta is None for header-less files -> stays header-less
     return entry

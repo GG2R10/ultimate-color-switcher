@@ -25,6 +25,15 @@ DEFAULT_GENERATION_SETTINGS = {
     "shading_max_luminance": 92.0,
     "my_eyes_factor": 1.5,  # only used when saturate=True -- see _boost_saturation
     "my_eyes_max_chroma": 132.0,
+    # Project-wide remembered default for a FRESH generation (out_path doesn't
+    # exist yet, so there's no per-file #ucs-meta to read it from) -- see
+    # palette_shift.generate_and_save_palette. An existing out_path's own
+    # stored value always takes priority over this one.
+    "keep_custom_on_regen": True,
+    # Same pattern, for whether a fresh generation considers fg/bg role
+    # demand at all -- see color_detector.compute_role_demand and
+    # palette_shift.generate_and_save_palette.
+    "consider_roles_on_regen": True,
 }
 
 

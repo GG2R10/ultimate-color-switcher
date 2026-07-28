@@ -35,15 +35,25 @@ _BASE_CSS = """
 .pill-text-light { color: rgba(255, 255, 255, 0.95); }
 .ucs-section-title { font-size: 1.3em; font-weight: 700; }
 .ucs-section-description { font-size: 0.85em; }
+.role-badge { min-width: 22px; min-height: 22px; padding: 0; border-radius: 999px; font-weight: 700; }
+.role-badge-unmarked { background: alpha(currentColor, 0.08); box-shadow: inset 0 0 0 2px alpha(currentColor, 0.55); }
 """
+
+_ROLE_LABELS = {"foreground": "F", "background": "B", None: ""}
+_ROLE_NAMES_ES = {"foreground": "Foreground", "background": "Background", None: "Sin rol"}
 
 _css_provider = None
 _known_swatch_colors = set()
 
 
 def _rebuild_css():
+    # Every registered hex gets both a solid-fill (.swatch-<hex>, used for
+    # the chip's own swatch and the role badge's "background" fill) and a
+    # text-only variant (.role-fg-<hex>, the role badge's "foreground" state:
+    # transparent fill, letter colored like the detected color itself).
     rules = "\n".join(
-        f".swatch-{h} {{ background-color: #{h}; }}" for h in sorted(_known_swatch_colors)
+        f".swatch-{h} {{ background-color: #{h}; }}\n.role-fg-{h} {{ color: #{h}; }}"
+        for h in sorted(_known_swatch_colors)
     )
     _css_provider.load_from_string(_BASE_CSS + rules)
 
@@ -52,8 +62,16 @@ def _ensure_display_provider():
     global _css_provider
     if _css_provider is None:
         _css_provider = Gtk.CssProvider()
+        # USER (not APPLICATION) priority: some GTK4 themes (e.g. Sweet-Dark)
+        # ship a user gtk.css that resets button.flat's background/box-shadow
+        # unconditionally, loaded at USER priority -- the highest GTK level,
+        # which otherwise beats an APPLICATION-priority provider regardless
+        # of selector specificity. Our own classes (role-badge-unmarked,
+        # swatch-<hex>, ...) are always at least as specific as the theme's
+        # `button`/`button.flat` reset, so tying its priority is enough for
+        # our rules to win the tiebreak.
         Gtk.StyleContext.add_provider_for_display(
-            Gdk.Display.get_default(), _css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+            Gdk.Display.get_default(), _css_provider, Gtk.STYLE_PROVIDER_PRIORITY_USER
         )
         _rebuild_css()
 
@@ -104,6 +122,7 @@ class ColorChip(Gtk.Box):
     edit_button = Gtk.Template.Child()
     delete_button = Gtk.Template.Child()
     remove_button = Gtk.Template.Child()
+    role_button = Gtk.Template.Child()
     files_revealer = Gtk.Template.Child()
     files_box = Gtk.Template.Child()
 
@@ -111,6 +130,7 @@ class ColorChip(Gtk.Box):
         super().__init__(**kwargs)
         self._current_swatch_class = None
         self._current_text_class = None
+        self._current_role_fg_class = None
         self.expand_button.connect("toggled", self._on_expand_toggled)
 
     def _on_expand_toggled(self, button):
@@ -123,6 +143,7 @@ class ColorChip(Gtk.Box):
         self.swatch.add_css_class(css_class)
         self._current_swatch_class = css_class
         self._current_text_class = _readable_text_class(hex_value)
+        self._current_role_fg_class = f"role-fg-{hex_value.lstrip('#').lower()}"
 
     def set_hex_text(self, text: str):
         self.hex_label.set_label(text)
@@ -204,3 +225,44 @@ class ColorChip(Gtk.Box):
         self.delete_button.set_visible(callback is not None)
         if callback is not None:
             self.delete_button.connect("clicked", lambda _b: callback())
+
+    def set_role(self, role):
+        """role: None (unmarked) | "foreground" | "background" -- purely
+        display, doesn't decide the NEXT state itself (see
+        set_role_toggleable, which just reports a click; the caller owns
+        cycling + persisting, then re-renders with the new role).
+
+        unmarked: transparent, just a thin ring outline (otherwise invisible
+        against the chip). background: filled with the chip's OWN color
+        (same .swatch-<hex> class the swatch itself uses), letter colored by
+        _readable_text_class for guaranteed contrast regardless of how
+        light/dark that color is. foreground: transparent fill, letter
+        colored like the color itself (.role-fg-<hex>) -- an outline look,
+        mirroring how a foreground/text color reads AS a color, not as a
+        block. (A true "cut-out" letter showing the backdrop through it
+        would need masking GTK4 CSS doesn't support -- this is the closest
+        practical equivalent.)"""
+        self.role_button.set_label(_ROLE_LABELS[role])
+        self.role_button.set_tooltip_text(
+            f"{_ROLE_NAMES_ES[role]} -- clic para ciclar: sin marcar → background → foreground"
+        )
+        for css_class in ("role-badge-unmarked", self._current_swatch_class,
+                         self._current_text_class, self._current_role_fg_class):
+            if css_class:
+                self.role_button.remove_css_class(css_class)
+
+        if role == "background":
+            if self._current_swatch_class:
+                self.role_button.add_css_class(self._current_swatch_class)
+            if self._current_text_class:
+                self.role_button.add_css_class(self._current_text_class)
+        elif role == "foreground":
+            if self._current_role_fg_class:
+                self.role_button.add_css_class(self._current_role_fg_class)
+        else:
+            self.role_button.add_css_class("role-badge-unmarked")
+
+    def set_role_toggleable(self, callback=None):
+        self.role_button.set_visible(callback is not None)
+        if callback is not None:
+            self.role_button.connect("clicked", lambda _b: callback())

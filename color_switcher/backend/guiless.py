@@ -28,6 +28,7 @@ conflict.
 """
 
 import json
+import os
 
 from . import color_detector, color_replacer, conflicts, mapping_store, palette_store
 
@@ -136,8 +137,15 @@ def apply_palette(
     results = color_replacer.apply_mapping(
         detected_colors, assigned_palette, resolved_entries, backup_dir, dry_run=dry_run
     )
+    role_collisions = []
+    if not dry_run:
+        roles_path = os.path.join(os.path.dirname(old_palette_path), "color_roles.json")
+        role_collisions = color_detector.rekey_roles_after_apply(
+            roles_path, detected_colors, assigned_palette, resolved_entries
+        )
     return {
         "status": "applied",
         "results": results,
         "stale_mapping_warning": bool(collisions or convergence) and force,
+        "role_collisions": role_collisions,
     }

@@ -108,3 +108,33 @@ def test_convergence_ignores_unresolved_and_single_targets():
     palette = [{"id": 1, "hex": "999999", "label": "shared"}]
     mapping = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": None}]
     assert conflicts.find_target_convergence(detected, palette, mapping) == []
+
+
+def test_role_mismatch_flags_foreground_mapped_to_background():
+    detected = _detected()
+    palette = [{"id": 1, "hex": "999999", "label": "bg", "role": "background"}]
+    mapping = [{"old_id": 2, "new_id": 1}]  # detected id 2 is tagged foreground below
+    roles = {conflicts.role_key("hex", "ff00aa"): "foreground"}
+
+    result = conflicts.find_role_mismatches(detected, palette, mapping, roles)
+    assert len(result) == 1
+    assert result[0] == {"old_id": 2, "new_id": 1, "detected_role": "foreground", "palette_role": "background"}
+
+
+def test_role_mismatch_ignores_agreeing_roles():
+    detected = _detected()
+    palette = [{"id": 1, "hex": "999999", "label": "bg", "role": "foreground"}]
+    mapping = [{"old_id": 2, "new_id": 1}]
+    roles = {conflicts.role_key("hex", "ff00aa"): "foreground"}
+    assert conflicts.find_role_mismatches(detected, palette, mapping, roles) == []
+
+
+def test_role_mismatch_ignores_when_either_side_unmarked():
+    detected = _detected()
+    palette_untagged = [{"id": 1, "hex": "999999", "label": "bg"}]
+    mapping = [{"old_id": 2, "new_id": 1}]
+    roles = {conflicts.role_key("hex", "ff00aa"): "foreground"}
+    assert conflicts.find_role_mismatches(detected, palette_untagged, mapping, roles) == []
+
+    palette_tagged = [{"id": 1, "hex": "999999", "label": "bg", "role": "background"}]
+    assert conflicts.find_role_mismatches(detected, palette_tagged, mapping, {}) == []

@@ -20,7 +20,7 @@ from gi.repository import Adw, Gio, GLib, Gtk
 
 from ..backend import color_detector, color_replacer, conflicts, detect_diff, mapping_store, palette_store
 from ..backend import palette_generator, palette_shift, restart_actions
-from ..backend.config import load_config
+from ..backend.config import load_config, to_home_relative
 
 from . import dialogs
 from .chip_builders import TYPE_DISPLAY as _TYPE_DISPLAY
@@ -43,10 +43,12 @@ class MainWindow(Adw.ApplicationWindow):
     rescan_button = Gtk.Template.Child()
     modifiers_button = Gtk.Template.Child()
     available_detected_listbox = Gtk.Template.Child()
+    detected_view_toggle = Gtk.Template.Child()
     mapping_old_listbox = Gtk.Template.Child()
     palette_left_area = Gtk.Template.Child()
     palette_empty_box = Gtk.Template.Child()
     available_palette_listbox = Gtk.Template.Child()
+    palette_role_filter = Gtk.Template.Child()
     add_color_button = Gtk.Template.Child()
     mapping_new_listbox = Gtk.Template.Child()
     palette_image_button = Gtk.Template.Child()
@@ -73,6 +75,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.active_group_ids = frozenset()
         self._welcomed = False  # welcome dialog shows once per session, before anything else
         self.auto_link_siblings = True
+        self.detected_by_folder = False
 
         self._setup_actions()
         self.rescan_button.connect("clicked", lambda _b: self._start_detection())
@@ -88,6 +91,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.available_palette_listbox.connect("row-activated", self._on_available_palette_activated)
         self.mapping_new_listbox.connect("row-activated", self._on_mapping_new_activated)
         self.palette_image_button.connect("clicked", self._on_palette_image_clicked)
+        self.detected_view_toggle.connect("toggled", self._on_detected_view_toggled)
+        self.palette_role_filter.connect("notify::selected", self._on_palette_role_filter_changed)
 
         GLib.idle_add(self._start_detection)
 
@@ -140,6 +145,10 @@ class MainWindow(Adw.ApplicationWindow):
             action.set_state(GLib.Variant.new_boolean(True))
             self.auto_link_siblings = True
             self._refresh_all()
+
+    def _on_detected_view_toggled(self, toggle_button):
+        self.detected_by_folder = toggle_button.get_active()
+        self._refresh_detected_list()
 
     def _action_new_palette(self, _action, _param):
         dialogs.prompt_text(
@@ -243,7 +252,7 @@ class MainWindow(Adw.ApplicationWindow):
             # Same shared save-a-generated-palette-to-disk path the CLI's
             # `palette generate` / `automatic --from-image` use, so the two
             # never drift out of sync on what a "generated palette" looks like.
-            entries, path = palette_shift.generate_and_save_palette(
+            entries, path, warnings = palette_shift.generate_and_save_palette(
                 self.config, image_path, n_colors, 40000, settings["mode"], settings["saturate"],
                 scoring=settings["scoring"], custom_scoring_values=settings.get("custom_percentages"),
                 weighted_contrast=settings.get("weighted_contrast", True),
@@ -262,6 +271,8 @@ class MainWindow(Adw.ApplicationWindow):
         self._set_new_palette(path, entries)
         base = os.path.splitext(os.path.basename(image_path))[0]
         dialogs.toast(self.toast_overlay, f"Paleta generada: {len(entries)} color(es) desde {base}")
+        for w in warnings:
+            dialogs.toast(self.toast_overlay, f"⚠ {w}")
 
     def _action_modifiers(self, _action, _param):
         if not self.new_palette_path or not self.new_palette:
@@ -427,6 +438,53 @@ class MainWindow(Adw.ApplicationWindow):
                 return group
         return None
 
+    def _group_role(self, group):
+        """The role currently on file for this group's representative color
+        -- role_key is by VALUE (type+hex), so this works regardless of
+        whether the group is currently in the mapping or not."""
+        roles = color_detector.read_color_roles(self.config.color_roles_json)
+        return roles.get(color_detector.role_key(group[0]["type"], group[0]["color"]))
+
+    def _on_group_role_clicked(self, group):
+        """Cycles the WHOLE group's role atomically (every member, e.g. both
+        the hex and hex_from_rgb sibling when auto-link is on) -- a group is
+        one identity everywhere else in this app (adding it, removing it),
+        roles follow the same rule."""
+        roles = color_detector.read_color_roles(self.config.color_roles_json)
+        current = roles.get(color_detector.role_key(group[0]["type"], group[0]["color"]))
+        new_role = color_detector.cycle_role(current)
+        for c in group:
+            key = color_detector.role_key(c["type"], c["color"])
+            if new_role is None:
+                roles.pop(key, None)
+            else:
+                roles[key] = new_role
+        color_detector.write_color_roles(self.config.color_roles_json, roles)
+        self._refresh_all()
+
+    def _on_palette_role_clicked(self, entry):
+        """Cycles a palette color's role. Uses palette_shift.set_role (not
+        edit_color) so this never marks a generated color as hand-edited --
+        only the role changes, never the hex/origin."""
+        new_role = color_detector.cycle_role(entry.get("role"))
+        palette_shift.set_role(self.new_palette_path, entry["id"], new_role)
+        self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
+        self._refresh_all()
+
+    def _palette_entry_matches_filter(self, entry):
+        idx = self.palette_role_filter.get_selected()
+        role = entry.get("role")
+        if idx == 1:
+            return role == "foreground"
+        if idx == 2:
+            return role == "background"
+        if idx == 3:
+            return role is None
+        return True  # idx == 0 ("Todos"), or nothing selected yet
+
+    def _on_palette_role_filter_changed(self, _dropdown, _pspec):
+        self._refresh_palette_list()
+
     def _add_group_to_mapping(self, group):
         for c in group:
             self.mapping.add_or_update(c["id"], None)
@@ -492,21 +550,75 @@ class MainWindow(Adw.ApplicationWindow):
     def _refresh_detected_list(self):
         self._clear_listbox(self.available_detected_listbox)
         present_ids = {e["old_id"] for e in self.mapping.entries} if self.mapping else set()
-        for group in self._detected_groups_ordered():
-            member_ids = {c["id"] for c in group}
-            if member_ids & present_ids:
-                continue  # already (at least partially) in the mapping
-            chip = _build_group_chip(group)
+        groups = [
+            g for g in self._detected_groups_ordered()
+            if not ({c["id"] for c in g} & present_ids)  # already (at least partially) in the mapping
+        ]
+        if self.detected_by_folder:
+            self._render_detected_by_folder(groups)
+        else:
+            self._render_detected_flat(groups)
+
+    def _render_detected_flat(self, groups):
+        for group in groups:
+            chip = _build_group_chip(
+                group, role=self._group_role(group), role_cb=self._on_group_role_clicked,
+            )
             chip.set_addable(lambda g=group: self._add_group_to_mapping(g))
             row = Gtk.ListBoxRow(child=chip)
             row.group = group
             self.available_detected_listbox.append(row)
+
+    def _render_detected_by_folder(self, groups):
+        """Same groups (and same "add" semantics) as the flat view -- just
+        presented grouped by top-level folder, with a mini-separator per file
+        and that file's color chips right below it. A group with occurrences
+        in several files gets a fresh chip instance under EACH of them (a
+        widget can only have one parent), but "add" on any of them adds the
+        exact same underlying group, same as clicking it in the flat view."""
+        all_files = set()
+        for g in groups:
+            for c in g:
+                all_files.update(c["files"])
+        if not all_files:
+            return
+
+        config_root = os.path.join(os.path.expanduser("~"), ".config")
+        for folder, files in color_detector.group_paths_by_top_level(sorted(all_files)):
+            if folder == config_root:
+                title = f"{to_home_relative(folder)}  ·  sueltos"
+            else:
+                title = to_home_relative(folder)
+            expander = Adw.ExpanderRow(title=title, subtitle=f"{len(files)} archivo(s)")
+            expander.set_expanded(True)
+
+            for abs_path, display in files:
+                groups_here = [g for g in groups if any(abs_path in c["files"] for c in g)]
+                if not groups_here:
+                    continue
+                sep_label = Gtk.Label(
+                    label=display, xalign=0, wrap=True,
+                    css_classes=["dim-label", "caption-heading"],
+                    margin_start=6, margin_top=6, margin_bottom=2,
+                )
+                expander.add_row(Gtk.ListBoxRow(child=sep_label, activatable=False, selectable=False))
+                for group in groups_here:
+                    chip = _build_group_chip(
+                        group, role=self._group_role(group), role_cb=self._on_group_role_clicked,
+                    )
+                    chip.set_addable(lambda g=group: self._add_group_to_mapping(g))
+                    row = Gtk.ListBoxRow(child=chip)
+                    row.group = group
+                    expander.add_row(row)
+
+            self.available_detected_listbox.append(expander)
 
     def _refresh_palette_list(self):
         has_palette = self.new_palette_path is not None
         self.palette_empty_box.set_visible(not has_palette)
         self.available_palette_listbox.set_visible(has_palette)
         self.add_color_button.set_visible(has_palette)
+        self.palette_role_filter.set_visible(has_palette)
         self.modifiers_button.set_sensitive(has_palette and bool(self.new_palette))
 
         self._clear_listbox(self.available_palette_listbox)
@@ -519,7 +631,10 @@ class MainWindow(Adw.ApplicationWindow):
                 usage_counts[e["new_id"]] = usage_counts.get(e["new_id"], 0) + 1
 
         for entry in self.new_palette:
-            chip = _build_palette_chip(entry, usage_count=usage_counts.get(entry["id"], 0))
+            if not self._palette_entry_matches_filter(entry):
+                continue
+            chip = _build_palette_chip(entry, usage_count=usage_counts.get(entry["id"], 0),
+                                       role_cb=self._on_palette_role_clicked)
             chip.set_editable(lambda e=entry: self._on_palette_edit(e))
             chip.set_deletable(lambda e=entry: self._on_palette_delete(e))
             row = Gtk.ListBoxRow(child=chip)
@@ -570,6 +685,7 @@ class MainWindow(Adw.ApplicationWindow):
             old_chip = _build_group_chip(
                 group_members, number=idx, warning=warning,
                 removable_cb=(lambda ids=tuple(group_old_ids): self._remove_group(ids)),
+                role=self._group_role(group_members), role_cb=self._on_group_role_clicked,
             )
             old_row = Gtk.ListBoxRow(child=old_chip)
             old_row.group_ids = tuple(group_old_ids)
@@ -585,7 +701,8 @@ class MainWindow(Adw.ApplicationWindow):
                     break
 
             if new_id is not None and new_id in palette_by_id:
-                new_chip = _build_palette_chip(palette_by_id[new_id], number=idx, warning=warning)
+                new_chip = _build_palette_chip(palette_by_id[new_id], number=idx, warning=warning,
+                                               role_cb=self._on_palette_role_clicked)
                 new_hex = palette_by_id[new_id]["hex"]
             else:
                 new_chip = _build_empty_target_chip(idx, warning=warning)
@@ -620,6 +737,19 @@ class MainWindow(Adw.ApplicationWindow):
                 text = (
                     f"Los colores con id {c['old_ids']} van a terminar todos en #{c['target_hex']}. "
                     "Si no era intencional, vas a perder la distinción entre ellos en un futuro re-escaneo."
+                )
+                self.warnings_box.append(_build_warning_row(text))
+                added_any = True
+
+            detected_roles = color_detector.read_color_roles(self.config.color_roles_json)
+            role_mismatches = conflicts.find_role_mismatches(
+                self.detected_colors, self.new_palette, resolved, detected_roles
+            )
+            for m in role_mismatches:
+                text = (
+                    f"El color detectado id {m['old_id']} está marcado como {m['detected_role']}, pero se "
+                    f"está mapeando a un color de paleta (id {m['new_id']}) marcado como {m['palette_role']}. "
+                    "Puede generar mal contraste."
                 )
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
@@ -771,6 +901,15 @@ class MainWindow(Adw.ApplicationWindow):
                 return
 
             dialogs.toast(self.toast_overlay, f"Backup en: {self.config.backup_dir}")
+            role_collisions = color_detector.rekey_roles_after_apply(
+                self.config.color_roles_json, self.detected_colors, self.new_palette, entries
+            )
+            if role_collisions:
+                new_keys = ", ".join(k for k, _old in role_collisions)
+                dialogs.toast(
+                    self.toast_overlay,
+                    f"{len(role_collisions)} color(es) nuevo(s) quedaron sin rol asignado por convergencia: {new_keys}.",
+                )
             # Files on disk just changed -- the old mapping's ids point at
             # colors that no longer exist, so re-scan and start fresh.
             self._finish_detection(detect_diff.run_detect(self.config), persist=True)

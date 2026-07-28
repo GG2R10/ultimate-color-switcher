@@ -65,6 +65,128 @@ def test_read_detected_csv_missing_file_returns_empty(tmp_path):
     assert cd.read_detected_csv(str(tmp_path / "nope.csv")) == []
 
 
+def test_role_key_normalizes_hash_and_case():
+    assert cd.role_key("hex", "#AABBCC") == "hex:aabbcc"
+    assert cd.role_key("hex_from_rgb", "aabbcc") == "hex_from_rgb:aabbcc"
+
+
+def test_cycle_role_is_unmarked_background_foreground_unmarked():
+    assert cd.cycle_role(None) == "background"
+    assert cd.cycle_role("background") == "foreground"
+    assert cd.cycle_role("foreground") is None
+
+
+def test_read_color_roles_missing_file_returns_empty(tmp_path):
+    assert cd.read_color_roles(str(tmp_path / "color_roles.json")) == {}
+
+
+def test_write_read_color_roles_roundtrip(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:112233": "foreground"})
+    assert cd.read_color_roles(str(path)) == {"hex:aabbcc": "background", "hex:112233": "foreground"}
+
+
+def test_write_color_roles_drops_unmarked_and_invalid_entries(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:ffffff": None, "hex:000000": "bogus"})
+    assert cd.read_color_roles(str(path)) == {"hex:aabbcc": "background"}
+
+
+def test_read_color_roles_tolerates_malformed_json(tmp_path):
+    path = tmp_path / "color_roles.json"
+    path.write_text("{not valid json")
+    assert cd.read_color_roles(str(path)) == {}
+
+
+def test_read_color_roles_tolerates_non_dict_json(tmp_path):
+    path = tmp_path / "color_roles.json"
+    path.write_text("[1, 2, 3]")
+    assert cd.read_color_roles(str(path)) == {}
+
+
+def test_rekey_roles_after_apply_carries_role_to_new_hex(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {"hex:aabbcc": "background"})
+
+    detected = [{"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []}]
+    new_palette = [{"id": 1, "hex": "112233"}]
+    resolved = [{"old_id": 1, "new_id": 1}]
+
+    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert collisions == []
+    assert cd.read_color_roles(str(path)) == {"hex:112233": "background"}
+
+
+def test_rekey_roles_after_apply_leaves_unrelated_roles_untouched(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:ffffff": "foreground"})
+
+    detected = [{"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []}]
+    new_palette = [{"id": 1, "hex": "112233"}]
+    resolved = [{"old_id": 1, "new_id": 1}]
+
+    cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert cd.read_color_roles(str(path)) == {"hex:112233": "background", "hex:ffffff": "foreground"}
+
+
+def test_rekey_roles_after_apply_no_op_when_nothing_tagged(tmp_path):
+    path = tmp_path / "color_roles.json"
+    detected = [{"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []}]
+    new_palette = [{"id": 1, "hex": "112233"}]
+    resolved = [{"old_id": 1, "new_id": 1}]
+
+    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert collisions == []
+    assert not path.exists()  # nothing to write, no file created
+
+
+def test_rekey_roles_after_apply_same_hex_is_a_no_op(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {"hex:aabbcc": "foreground"})
+    detected = [{"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []}]
+    new_palette = [{"id": 1, "hex": "aabbcc"}]  # mapped to itself, unchanged
+    resolved = [{"old_id": 1, "new_id": 1}]
+
+    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert collisions == []
+    assert cd.read_color_roles(str(path)) == {"hex:aabbcc": "foreground"}
+
+
+def test_rekey_roles_after_apply_convergence_with_different_roles_is_left_unmarked(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:ddeeff": "foreground"})
+
+    detected = [
+        {"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "ddeeff", "count": 1, "files": []},
+    ]
+    new_palette = [{"id": 1, "hex": "112233"}]
+    resolved = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 1}]  # both converge on id 1
+
+    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert len(collisions) == 1
+    new_key, old_keys = collisions[0]
+    assert new_key == "hex:112233"
+    assert set(old_keys) == {"hex:aabbcc", "hex:ddeeff"}
+    assert cd.read_color_roles(str(path)) == {}  # left unmarked, not guessed
+
+
+def test_rekey_roles_after_apply_convergence_with_same_role_is_not_a_collision(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:ddeeff": "background"})
+
+    detected = [
+        {"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "ddeeff", "count": 1, "files": []},
+    ]
+    new_palette = [{"id": 1, "hex": "112233"}]
+    resolved = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 1}]
+
+    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert collisions == []
+    assert cd.read_color_roles(str(path)) == {"hex:112233": "background"}
+
+
 def test_grouped_by_hex_finds_siblings():
     colors = [
         {"id": 1, "type": "hex", "color": "00ccff", "count": 1, "files": []},
@@ -136,6 +258,38 @@ def test_scan_does_not_recurse_into_symlinked_dirs(tmp_path):
     found = cd.scan_config_dir_for_color_files(str(cfg))
     assert any(p.endswith("real/a.css") for p in found)
     assert not any("escaped.css" in p for p in found)
+
+
+def _detected(id_, type_, color):
+    return {"id": id_, "type": type_, "color": color}
+
+
+def test_compute_role_demand_filters_by_mapping_when_given():
+    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "222222"), _detected(3, "hex", "333333")]
+    roles = {
+        cd.role_key("hex", "111111"): "background",
+        cd.role_key("hex", "222222"): "foreground",
+        cd.role_key("hex", "333333"): "foreground",  # tagged but NOT in the mapping below
+    }
+    mapping_entries = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}]
+    n_bg, n_fg = cd.compute_role_demand(detected, roles, mapping_entries)
+    assert (n_bg, n_fg) == (1, 1)  # id 3's tag doesn't count -- not mapped
+
+
+def test_compute_role_demand_falls_back_to_unfiltered_roles_when_no_mapping():
+    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "222222")]
+    roles = {
+        cd.role_key("hex", "111111"): "background",
+        cd.role_key("hex", "222222"): "foreground",
+    }
+    assert cd.compute_role_demand(detected, roles, mapping_entries=None) == (1, 1)
+    assert cd.compute_role_demand(detected, roles, mapping_entries=[]) == (1, 1)  # empty == no mapping
+
+
+def test_compute_role_demand_zero_when_nothing_tagged():
+    detected = [_detected(1, "hex", "111111")]
+    assert cd.compute_role_demand(detected, {}, mapping_entries=[{"old_id": 1, "new_id": 1}]) == (0, 0)
+    assert cd.compute_role_demand(detected, {}, mapping_entries=None) == (0, 0)
 
 
 def test_group_paths_by_top_level_collapses_nested_subfolders():

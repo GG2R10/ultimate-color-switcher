@@ -25,6 +25,7 @@ from .selection import (
 from .transforms import (
     _MY_EYES_CHROMA_FACTOR,
     _MY_EYES_CHROMA_MAX,
+    _assign_roles,
     _boost_saturation,
     _complement_hue,
     _normalize_extreme_lightness,
@@ -51,6 +52,8 @@ def generate_palette(
     shading_direction: str = "dark",
     shading_min_l: float = 8.0,
     shading_max_l: float = 92.0,
+    n_background_needed: int = 0,
+    n_foreground_needed: int = 0,
     with_base: bool = False,
 ) -> list:
     """
@@ -117,6 +120,16 @@ def generate_palette(
     +180°) right before returning, turning the palette into its complementary
     scheme (see _complement_hue). Applied after all selection/contrast logic,
     so it preserves the palette's internal contrast relationships.
+
+    n_background_needed/n_foreground_needed (see [[color-roles-design]]):
+    how many of the chosen colors should come out tagged "role":
+    "background"/"foreground" in the returned dicts, chosen by auto-labeling
+    each color's own WCAG contrast against the image's OWN background
+    reference (find_background_color -- unrelated to any user-tagged dotfile
+    color) and topping up any shortfall via improve_contrast/_reduce_contrast
+    (see _assign_roles). Both default to 0 -- the byte-identical, opt-in-only
+    default: no role key appears on any entry unless a role actually got
+    assigned.
 
     shading_direction/shading_min_l/shading_max_l: only used when
     mode="shading" -- see generate_shading_series. Direction is explicit
@@ -216,6 +229,10 @@ def generate_palette(
 
     chosen = chosen[:n_colors]
 
+    roles = [None] * len(chosen)
+    if (n_background_needed or n_foreground_needed) and background is not None:
+        roles, chosen = _assign_roles(chosen, background, n_background_needed, n_foreground_needed)
+
     n = len(chosen)
     if mode == "shading":
         labels = ["primary"] + [f"shade{i}" for i in range(1, n)]
@@ -229,7 +246,13 @@ def generate_palette(
         # Final safety pass: never emit a pure black/white -- normalize the
         # near-extremes into a usable band (see _normalize_extreme_lightness).
         normed = [_normalize_extreme_lightness(c) for c in entries]
-        return [{"hex": c["hex"], "label": labels[i]} for i, c in enumerate(normed)]
+        result = []
+        for i, c in enumerate(normed):
+            entry = {"hex": c["hex"], "label": labels[i]}
+            if roles[i]:
+                entry["role"] = roles[i]
+            result.append(entry)
+        return result
 
     effective = list(chosen)
     if saturate:

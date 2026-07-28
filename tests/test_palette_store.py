@@ -149,3 +149,50 @@ def test_set_preview_image_none_clears_it(tmp_path):
 
 def test_default_meta_includes_preview_image_key():
     assert ps.default_meta()["preview_image"] is None
+
+
+def test_write_read_roundtrip_with_role(tmp_path):
+    path = tmp_path / "p.csv"
+    entries = [
+        {"id": 1, "hex": "ff00aa", "label": "primary", "role": "foreground"},
+        {"id": 2, "hex": "00ccff", "label": "secondary"},  # no role -> stays unmarked
+    ]
+    ps.write_palette_csv(str(path), entries)
+
+    lines = path.read_text().splitlines()
+    assert lines[0] == "1,#ff00aa,primary,,foreground"  # origin field empty, role present
+    assert lines[1] == "2,#00ccff,secondary,,"
+
+    got = ps.read_palette_csv(str(path))
+    assert got[0] == entries[0]
+    assert "role" not in got[1]  # absence round-trips back to "no key", not "" or None
+
+
+def test_write_read_roundtrip_with_role_and_origin(tmp_path):
+    path = tmp_path / "p.csv"
+    entries = [{"id": 1, "hex": "cbff29", "label": "primary", "origin": "gen", "role": "background"}]
+    ps.write_palette_csv(str(path), entries)
+
+    assert path.read_text().splitlines()[0] == "1,#cbff29,primary,gen,background"
+    assert ps.read_palette_csv(str(path)) == entries
+
+
+def test_role_column_omitted_when_no_entry_has_one(tmp_path):
+    path = tmp_path / "p.csv"
+    ps.write_palette_csv(str(path), [{"id": 1, "hex": "111111", "label": "a"}])
+    assert path.read_text().splitlines()[0] == "1,#111111,a"  # unchanged shape, no role column at all
+
+
+def test_read_ignores_invalid_role_value(tmp_path):
+    path = tmp_path / "p.csv"
+    path.write_text("1,#111111,a,,sideways\n")
+    entries = ps.read_palette_csv(str(path))
+    assert "role" not in entries[0]
+
+
+def test_add_color_with_role(tmp_path):
+    path = tmp_path / "p.csv"
+    ps.write_palette_csv(str(path), [{"id": 1, "hex": "111111", "label": "a"}])
+    entry = ps.add_color(str(path), "222222", "b", role="foreground")
+    assert entry["role"] == "foreground"
+    assert ps.read_palette_csv(str(path))[-1]["role"] == "foreground"

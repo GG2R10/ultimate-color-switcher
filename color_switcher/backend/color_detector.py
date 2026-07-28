@@ -12,6 +12,7 @@ detected_palette.csv format: header id,type,color,count,files — color has
 no leading '#', files are '|'-joined.
 """
 
+import json
 import re
 import os
 from collections import OrderedDict
@@ -172,6 +173,165 @@ def read_detected_csv(path: str) -> list:
         })
 
     return colors
+
+
+_ROLE_VALUES = ("foreground", "background")
+
+
+def role_key(color_type: str, color: str) -> str:
+    """The color_roles.json key for a detected color: identified by VALUE
+    (type + hex), not by its `id` -- ids are just a rank in a single scan
+    (recomputed from scratch every detect_colors() call, so they can shift
+    even when nothing about THIS color changed), while the value is the one
+    thing that's actually stable across rescans."""
+    return f"{color_type}:{color.lstrip('#').lower()}"
+
+
+def cycle_role(current):
+    """Tri-state cycle for the role toggle button: unmarked (None) ->
+    background -> foreground -> back to unmarked. Deliberately no
+    binary/guessed default -- unmarked means "opt out of the contrast
+    system for this color", not an assumed role nobody actually chose."""
+    if current is None:
+        return "background"
+    if current == "background":
+        return "foreground"
+    return None
+
+
+def read_color_roles(path: str) -> dict:
+    """{"type:hex": "foreground"|"background", ...} -- a key's ABSENCE means
+    unmarked, so this file only ever records actual user decisions. Returns
+    {} if the file doesn't exist or is malformed (never raises)."""
+    path = expand_path(path)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (ValueError, OSError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and v in _ROLE_VALUES}
+
+
+def write_color_roles(path: str, roles: dict) -> None:
+    """Persists only actual foreground/background entries -- anything else
+    (None, an unrecognized value) is dropped rather than written."""
+    path = expand_path(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cleaned = {k: v for k, v in roles.items() if v in _ROLE_VALUES}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(cleaned, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def rekey_roles_after_apply(roles_path: str, detected_colors: list, new_palette: list,
+                            resolved_entries: list) -> list:
+    """Call this after a REAL apply (never for --test/dry-run) so a role tag
+    follows the color it was on, across the detect -> generate -> apply
+    cycle. Without this, a role tagged on an OLD hex would be silently
+    orphaned the moment that hex gets replaced in the files -- the very next
+    rescan won't find it anymore, and this cycle is the app's core recurring
+    workflow, not an edge case.
+
+    detected_colors: the OLD colors the apply just used (id-keyed, same
+    list `color_replacer.apply_mapping` was called with).
+    new_palette: the palette colors the apply just used (id-keyed, e.g.
+    `guiless.apply_palette`'s already-remapped `assigned_palette`, or a
+    plain `palette_store.read_palette_csv` result for the id-based path --
+    either is fine, this only needs {"id", "hex"} per entry).
+    resolved_entries: [{"old_id", "new_id"}, ...] the apply just used --
+    already resolved against new_palette's OWN ids by the caller, regardless
+    of which of the app's two apply mechanisms (id-based or positional
+    compaction) produced them.
+
+    Same-type rekey: the replaced hex keeps the format it was detected in
+    (hex stays hex, hex_from_rgb stays hex_from_rgb) -- color_replacer
+    substitutes in place, it doesn't change which representation a file uses.
+
+    Returns a list of (new_role_key, [old_role_key, ...]) for every
+    convergence where two OLD colors carrying DIFFERENT roles landed on the
+    SAME new color -- that new key is deliberately left unmarked rather than
+    guessed; the caller should warn about these, mirroring the project's
+    existing warn-rather-than-guess precedent for ambiguous merges."""
+    detected_by_id = {c["id"]: c for c in detected_colors}
+    palette_by_id = {p["id"]: p for p in new_palette}
+
+    old_to_new = {}
+    for e in resolved_entries:
+        old_c = detected_by_id.get(e["old_id"])
+        new_c = palette_by_id.get(e["new_id"])
+        if old_c is None or new_c is None:
+            continue
+        old_key = role_key(old_c["type"], old_c["color"])
+        new_key = role_key(old_c["type"], new_c["hex"])
+        if old_key != new_key:
+            old_to_new[old_key] = new_key
+
+    if not old_to_new:
+        return []
+
+    roles = read_color_roles(roles_path)
+    original_roles = dict(roles)
+    incoming = {}
+    for old_key, new_key in old_to_new.items():
+        role = roles.get(old_key)
+        if role is None:
+            continue
+        incoming.setdefault(new_key, []).append((old_key, role))
+
+    for old_key in old_to_new:
+        roles.pop(old_key, None)
+
+    collisions = []
+    for new_key, contributions in incoming.items():
+        distinct_roles = {role for _old_key, role in contributions}
+        if len(distinct_roles) == 1:
+            roles[new_key] = distinct_roles.pop()
+        else:
+            roles.pop(new_key, None)
+            collisions.append((new_key, [k for k, _r in contributions]))
+
+    if roles != original_roles:
+        write_color_roles(roles_path, roles)
+    return collisions
+
+
+def compute_role_demand(detected_colors: list, roles: dict, mapping_entries: list = None) -> tuple:
+    """How many background/foreground-tagged colors currently have real
+    demand for a fresh generation to aim for. Returns (n_background,
+    n_foreground). See [[color-roles-design]] Phase 5.
+
+    If `mapping_entries` is given and non-empty, counts only tagged colors
+    that are ALSO currently present in the mapping (by old_id) -- a color
+    tagged fg/bg but not mapped anywhere doesn't need a palette slot yet
+    (e.g. 20 detected, 15 tagged, only 10 actually used in the mapping ->
+    demand should reflect those 10, not all 15).
+
+    If `mapping_entries` is falsy (None or empty -- no mapping built yet),
+    falls back to counting EVERY tagged entry in `roles` directly, unfiltered.
+    Deliberately generous rather than 0: this is a soft target for generation
+    (unlike keep_custom's hard positional constraint), so over-provisioning a
+    few extra fg/bg-safe candidates is harmless, while defaulting to 0 just
+    because no mapping exists yet would ignore roles the user tagged before
+    ever building one."""
+    if mapping_entries:
+        present_ids = {e["old_id"] for e in mapping_entries}
+        detected_by_id = {c["id"]: c for c in detected_colors}
+        keys_in_use = set()
+        for old_id in present_ids:
+            c = detected_by_id.get(old_id)
+            if c is not None:
+                keys_in_use.add(role_key(c["type"], c["color"]))
+        relevant = [roles[k] for k in keys_in_use if k in roles]
+    else:
+        relevant = list(roles.values())
+
+    n_background = sum(1 for r in relevant if r == "background")
+    n_foreground = sum(1 for r in relevant if r == "foreground")
+    return n_background, n_foreground
 
 
 def generate_regex_for_color(hex_color: str) -> str:

@@ -33,8 +33,19 @@ class FakeProject:
             self.files.append(path_str)
         return path_str
 
-    def load_config(self, silent_apps=None, restart_commands=None):
-        cfg = {"files_to_replace": self.files, "backup_dir": str(self.backup_dir)}
+    def load_config(self, silent_apps=None, restart_commands=None, restart_actions=None):
+        # restart_actions is ALWAYS written explicitly (default []) -- omitting
+        # the key entirely makes restart_actions.read_restart_actions() fall
+        # back to the real DEFAULT_ACTIONS (killall waybar, hyprctl reload,
+        # ...), which any test that reaches a real (non---test) apply would
+        # then actually execute against whatever desktop session runs this
+        # suite. Pass restart_actions=[...] explicitly if a test genuinely
+        # needs to exercise real restart-action behavior.
+        cfg = {
+            "files_to_replace": self.files,
+            "backup_dir": str(self.backup_dir),
+            "restart_actions": restart_actions if restart_actions is not None else [],
+        }
         if silent_apps is not None:
             cfg["silent_apps"] = silent_apps
         if restart_commands is not None:

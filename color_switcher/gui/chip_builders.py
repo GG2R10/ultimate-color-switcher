@@ -19,7 +19,8 @@ from .color_chip import ColorChip, register_swatch_color
 TYPE_DISPLAY = {"hex": "hex", "hex_from_rgb": "rgb"}
 
 
-def build_group_chip(group, number=None, warning=None, removable_cb=None) -> ColorChip:
+def build_group_chip(group, number=None, warning=None, removable_cb=None,
+                     role=None, role_cb=None) -> ColorChip:
     chip = ColorChip()
     representative = group[0]
     chip.set_color(representative["color"])
@@ -41,10 +42,12 @@ def build_group_chip(group, number=None, warning=None, removable_cb=None) -> Col
     chip.set_number(number)
     chip.set_warning(warning)
     chip.set_removable(removable_cb)
+    chip.set_role(role)
+    chip.set_role_toggleable((lambda g=group: role_cb(g)) if role_cb is not None else None)
     return chip
 
 
-def build_palette_chip(entry, number=None, warning=None, usage_count=0) -> ColorChip:
+def build_palette_chip(entry, number=None, warning=None, usage_count=0, role_cb=None) -> ColorChip:
     chip = ColorChip()
     chip.set_color(entry["hex"])
     chip.set_hex_text(f"#{entry['hex']}")
@@ -54,6 +57,8 @@ def build_palette_chip(entry, number=None, warning=None, usage_count=0) -> Color
     chip.set_meta_text(label)
     chip.set_number(number)
     chip.set_warning(warning)
+    chip.set_role(entry.get("role"))
+    chip.set_role_toggleable((lambda e=entry: role_cb(e)) if role_cb is not None else None)
     return chip
 
 

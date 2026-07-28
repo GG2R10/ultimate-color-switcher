@@ -55,13 +55,17 @@ from .selection import (
     synthesize_shade,
 )
 from .transforms import (
+    _BACKGROUND_SAFE_MAX_RATIO,
     _EXTREME_L_MAX,
     _EXTREME_L_MIN,
+    _FOREGROUND_SAFE_MIN_RATIO,
     _MY_EYES_CHROMA_FACTOR,
     _MY_EYES_CHROMA_MAX,
+    _assign_roles,
     _boost_saturation,
     _complement_hue,
     _normalize_extreme_lightness,
+    _reduce_contrast,
     apply_post_modifiers,
     improve_contrast,
 )

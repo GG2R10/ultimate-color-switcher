@@ -7,6 +7,18 @@ from color_switcher.backend import restart_actions as ra
 def test_read_returns_defaults_when_key_missing(fake_project):
     fake_project.make_file("a.css", "#111111")
     config = fake_project.load_config()
+    # fake_project.load_config() always writes restart_actions explicitly
+    # (safety default, see conftest.py) -- simulate a config.json that
+    # genuinely never had the key by removing it after the fact. This test
+    # only ever calls read_restart_actions (a pure read), never run_enabled,
+    # so it stays safe regardless.
+    config_path = config.project_dir + "/config.json"
+    with open(config_path) as f:
+        raw = json.load(f)
+    del raw["restart_actions"]
+    with open(config_path, "w") as f:
+        json.dump(raw, f)
+
     actions = ra.read_restart_actions(config)
     assert actions == ra.DEFAULT_ACTIONS
     assert actions is not ra.DEFAULT_ACTIONS  # must be a copy, not the shared module list

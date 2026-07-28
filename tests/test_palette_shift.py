@@ -2,6 +2,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from color_switcher.backend import color_detector as cd
+from color_switcher.backend import mapping_store as ms
 from color_switcher.backend import palette_generator as pg
 from color_switcher.backend import palette_shift, palette_store
 
@@ -110,13 +112,82 @@ def test_post_only_shift_transforms_and_keeps_hand_added_color(gen_palette):
     assert "abcdef" in [e["hex"] for e in back["entries"]]
 
 
-def test_selection_shift_regenerates_and_warns_about_custom_wipe(gen_palette):
+def test_selection_shift_keeps_custom_colors_by_default(gen_palette):
+    """keep_custom_on_regen defaults True -- a hand-added color survives a
+    regeneration instead of being wiped, with no discard warning."""
     path, base, config = gen_palette
     palette_shift.add_color(str(path), "abcdef", "mine")
     result = palette_shift.shift_palette(str(path), config, shuffle=1)
     assert result["regenerated"] is True
+    assert not any("mano" in w for w in result["warnings"])
+    assert "abcdef" in [e["hex"] for e in result["entries"]]
+    assert result["meta"]["keep_custom_on_regen"] is True
+
+
+def test_selection_shift_keep_custom_off_wipes_and_warns(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.add_color(str(path), "abcdef", "mine")
+    result = palette_shift.shift_palette(str(path), config, shuffle=1, keep_custom="off")
+    assert result["regenerated"] is True
     assert any("mano" in w for w in result["warnings"])
     assert "abcdef" not in [e["hex"] for e in result["entries"]]   # wiped by regeneration
+    assert result["meta"]["keep_custom_on_regen"] is False
+
+
+def test_keep_custom_preference_persists_across_shifts(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.shift_palette(str(path), config, keep_custom="off")  # post-only shift, no regen
+    assert palette_store.read_palette_meta(str(path))["keep_custom_on_regen"] is False
+
+    palette_shift.add_color(str(path), "abcdef", "mine")
+    result = palette_shift.shift_palette(str(path), config, shuffle=1)  # keep_custom not passed -> stays off
+    assert "abcdef" not in [e["hex"] for e in result["entries"]]
+
+
+def test_edited_in_place_custom_keeps_its_original_id_on_regen(gen_palette):
+    """The key correctness property: an edit_color'd slot (same id it always
+    had, not appended) survives regeneration in that SAME position -- so an
+    existing mapping pointing at that id keeps pointing at the right color."""
+    path, base, config = gen_palette
+    palette_shift.edit_color(str(path), 2, "abcdef")  # slot 2 becomes custom, same id
+    result = palette_shift.shift_palette(str(path), config, shuffle=1)
+    assert result["regenerated"] is True
+    entries = result["entries"]
+    assert entries[1]["id"] == 2
+    assert entries[1]["hex"] == "abcdef"          # still there, still at id 2
+    assert entries[1]["origin"] == "custom"
+    other_hexes = [e["hex"] for i, e in enumerate(entries) if i != 1]
+    assert all(h != base[1]["hex"] for h in other_hexes)  # the rest actually regenerated
+
+
+def test_keep_custom_raises_when_in_range_customs_fill_the_whole_budget(gen_palette):
+    path, base, config = gen_palette  # 4 colors
+    for i in range(1, 5):
+        palette_shift.edit_color(str(path), i, f"{i:02x}{i:02x}{i:02x}")  # all 4 slots now custom
+    with pytest.raises(palette_shift.ShiftError):
+        palette_shift.shift_palette(str(path), config, shuffle=1)
+
+
+def test_keep_custom_off_bypasses_the_in_range_budget_error(gen_palette):
+    path, base, config = gen_palette
+    for i in range(1, 5):
+        palette_shift.edit_color(str(path), i, f"{i:02x}{i:02x}{i:02x}")
+    result = palette_shift.shift_palette(str(path), config, shuffle=1, keep_custom="off")
+    assert result["regenerated"] is True  # doesn't raise -- keep_custom off has no budget conflict
+
+
+def test_keep_custom_trailing_customs_dont_count_against_the_budget(gen_palette):
+    """Customs ADDED beyond the original n_colors (never occupied a gen slot)
+    must not be mistaken for occupying part of the budget -- regenerating
+    must still request a FULL n_colors fresh gen colors, not fewer."""
+    path, base, config = gen_palette  # 4 colors
+    palette_shift.add_color(str(path), "abcdef", "extra1")  # position 4 (trailing, beyond n_colors=4)
+    palette_shift.add_color(str(path), "123456", "extra2")  # position 5 (also trailing)
+    result = palette_shift.shift_palette(str(path), config, shuffle=1)  # must not raise/IndexError
+    assert result["regenerated"] is True
+    hexes = [e["hex"] for e in result["entries"]]
+    assert "abcdef" in hexes and "123456" in hexes
+    assert len(result["entries"]) == 6  # 4 regenerated + 2 preserved trailing customs
 
 
 def test_selection_shift_on_created_palette_raises(tmp_path, fake_project):
@@ -271,3 +342,305 @@ def test_shift_shading_min_luminance_alone_triggers_regeneration(shading_palette
     assert result["meta"]["gen"]["shading_min_luminance"] == 30.0
     assert result["meta"]["gen"]["shading_direction"] == "dark"  # untouched override still defaults
     assert palette_shift._resolve_bool(False, "toggle") is True
+
+
+# --------------------------------------------------------------------------- #
+# palette-side roles (Phase 4)
+# --------------------------------------------------------------------------- #
+
+def test_add_color_with_role(gen_palette):
+    path, base, config = gen_palette
+    entry = palette_shift.add_color(str(path), "abcdef", "mine", role="foreground")
+    assert entry["role"] == "foreground"
+    assert palette_store.read_palette_csv(str(path))[-1]["role"] == "foreground"
+
+
+def test_edit_color_with_role_sets_it(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.edit_color(str(path), 1, "abcdef", role="background")
+    entries = palette_store.read_palette_csv(str(path))
+    assert entries[0]["hex"] == "abcdef"
+    assert entries[0]["role"] == "background"
+
+
+def test_edit_color_without_role_arg_preserves_existing_role(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "foreground")
+    palette_shift.edit_color(str(path), 1, "abcdef")  # role not passed -> _UNSET default
+    entries = palette_store.read_palette_csv(str(path))
+    assert entries[0]["hex"] == "abcdef"
+    assert entries[0]["role"] == "foreground"
+
+
+def test_edit_color_role_none_clears_it(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "foreground")
+    palette_shift.edit_color(str(path), 1, "abcdef", role=None)
+    entries = palette_store.read_palette_csv(str(path))
+    assert "role" not in entries[0]
+
+
+def test_set_role_does_not_mark_color_custom(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    entries, meta = palette_store.read_palette(str(path))
+    assert entries[0]["role"] == "background"
+    assert entries[0]["origin"] == "gen"  # untouched -- set_role never mutates origin/hex
+
+
+def test_set_role_none_clears_it(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 1, None)
+    entries = palette_store.read_palette_csv(str(path))
+    assert "role" not in entries[0]
+
+
+def test_role_survives_post_mod_shift(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "foreground")
+    result = palette_shift.shift_palette(str(path), config, ying_yang="on")
+    assert result["entries"][0]["role"] == "foreground"
+    # hex changed (post-mod applied) but role followed the same logical slot
+    assert result["entries"][0]["hex"] != base[0]["hex"]
+
+
+def test_role_wiped_on_regeneration_when_consider_plane_off_and_warns(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    result = palette_shift.shift_palette(str(path), config, shuffle=1, consider_plane="off")
+    assert result["regenerated"] is True
+    assert not any(e.get("role") for e in result["entries"])
+    assert any("rol" in w for w in result["warnings"])
+
+
+def test_role_demand_carries_forward_by_default_on_regeneration(gen_palette):
+    """consider_roles_on_regen defaults True -- the OLD role tag is lost
+    (its color changed), but the DEMAND it represented (1 background needed)
+    is read from the palette's own current tags and a NEW color satisfies it
+    automatically -- this is the actual point of the whole feature."""
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    result = palette_shift.shift_palette(str(path), config, shuffle=1)
+    assert result["regenerated"] is True
+    assert sum(1 for e in result["entries"] if e.get("role") == "background") == 1
+    assert not any("rol" in w for w in result["warnings"])  # nothing "lost" -- demand was carried forward
+
+
+# --------------------------------------------------------------------------- #
+# generate_and_save_palette + keep_custom (palette generate / automatic --from-image)
+# --------------------------------------------------------------------------- #
+
+def test_generate_fresh_out_path_defaults_keep_custom_true(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "fresh.csv"
+
+    entries, saved_path, warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out),
+    )
+    assert saved_path == str(out)
+    assert warnings == []
+    assert palette_store.read_palette_meta(str(out))["keep_custom_on_regen"] is True
+
+
+def test_generate_falls_back_to_project_setting_when_out_path_is_fresh(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    pg.write_generation_settings(config, {**pg.DEFAULT_GENERATION_SETTINGS, "keep_custom_on_regen": False})
+    out = tmp_path / "fresh.csv"
+
+    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+
+    assert palette_store.read_palette_meta(str(out))["keep_custom_on_regen"] is False
+
+
+def test_generate_into_existing_file_preserves_its_own_customs_by_default(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+    palette_shift.edit_color(str(out), 2, "abcdef")  # slot 2 becomes a hand edit, same id
+
+    entries, saved_path, warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out),
+    )
+    assert warnings == []
+    assert entries[1]["id"] == 2
+    assert entries[1]["hex"] == "abcdef"
+    assert entries[1]["origin"] == "custom"
+
+
+def test_generate_existing_files_own_stored_preference_wins_over_project_setting(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+    palette_shift.edit_color(str(out), 1, "abcdef")
+    palette_shift.shift_palette(str(out), config, keep_custom="off")  # this file's OWN preference -> off
+    pg.write_generation_settings(config, {**pg.DEFAULT_GENERATION_SETTINGS, "keep_custom_on_regen": True})
+
+    entries, _saved_path, warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out),
+    )
+    # the file's own "off" wins over the project's "on" -- wiped, with a warning
+    assert "abcdef" not in [e["hex"] for e in entries]
+    assert any("mano" in w for w in warnings)
+
+
+def test_generate_keep_custom_override_beats_everything_stored(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+    palette_shift.edit_color(str(out), 1, "abcdef")
+
+    entries, _saved_path, warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out), keep_custom="off",
+    )
+    assert "abcdef" not in [e["hex"] for e in entries]
+    assert any("mano" in w for w in warnings)
+
+
+def test_generate_resolved_keep_custom_persists_back_to_project_settings(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "fresh.csv"
+
+    palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out), keep_custom="off",
+    )
+    assert pg.read_generation_settings(config)["keep_custom_on_regen"] is False
+
+
+def test_generate_raises_when_in_range_customs_fill_the_whole_budget(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+    for i in range(1, 5):
+        palette_shift.edit_color(str(out), i, f"{i:02x}{i:02x}{i:02x}")
+
+    with pytest.raises(palette_shift.ShiftError):
+        palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+
+
+# --------------------------------------------------------------------------- #
+# generate_and_save_palette + consider_plane (Phase 5: role-aware generation)
+# --------------------------------------------------------------------------- #
+
+def test_generate_role_demand_tier1_reads_existing_out_paths_own_tags(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+    palette_shift.set_role(str(out), 1, "background")
+
+    entries, _saved_path, warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out), shuffle=1,
+    )
+    assert sum(1 for e in entries if e.get("role") == "background") == 1
+    assert not any("rol" in w for w in warnings)  # demand carried forward, not "lost"
+
+
+def test_generate_role_demand_tier2_filters_by_mapping(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+
+    detected = [
+        {"id": 1, "type": "hex", "color": "111111", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "222222", "count": 1, "files": []},
+        {"id": 3, "type": "hex", "color": "333333", "count": 1, "files": []},
+    ]
+    cd.write_detected_csv(detected, config.detected_palette_csv)
+    cd.write_color_roles(config.color_roles_json, {
+        cd.role_key("hex", "111111"): "background",
+        cd.role_key("hex", "222222"): "foreground",
+        cd.role_key("hex", "333333"): "foreground",  # tagged, but NOT in the mapping below
+    })
+    store = ms.MappingStore(config.mapping_csv, old_palette=config.detected_palette_csv,
+                            new_palette="", project_dir=config.project_dir)
+    store.add_or_update(1, 1)
+    store.add_or_update(2, 2)
+
+    out = tmp_path / "fresh.csv"
+    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out),
+    )
+    assert sum(1 for e in entries if e.get("role") == "background") == 1
+    assert sum(1 for e in entries if e.get("role") == "foreground") == 1  # id 3's tag didn't count
+
+
+def test_generate_role_demand_tier3_falls_back_to_unfiltered_roles_without_mapping(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    fake_project.make_file("a.css", "#111111")
+    config = fake_project.load_config()
+
+    detected = [
+        {"id": 1, "type": "hex", "color": "111111", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "222222", "count": 1, "files": []},
+    ]
+    cd.write_detected_csv(detected, config.detected_palette_csv)
+    cd.write_color_roles(config.color_roles_json, {
+        cd.role_key("hex", "111111"): "background",
+        cd.role_key("hex", "222222"): "foreground",
+    })
+    # deliberately no mapping.csv at all
+
+    out = tmp_path / "fresh.csv"
+    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out),
+    )
+    assert sum(1 for e in entries if e.get("role") == "background") == 1
+    assert sum(1 for e in entries if e.get("role") == "foreground") == 1
+
+
+def test_generate_consider_plane_off_ignores_all_role_tags(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+    palette_shift.set_role(str(out), 1, "background")
+
+    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out), shuffle=1, consider_plane="off",
+    )
+    assert not any(e.get("role") for e in entries)
+
+
+def test_generate_raises_when_role_demand_exceeds_colors_requested(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 2, 3000, "contrast", False, str(out))
+    palette_shift.set_role(str(out), 1, "background")
+    palette_shift.set_role(str(out), 2, "foreground")
+
+    with pytest.raises(palette_shift.ShiftError):
+        # demanding both bg+fg (2) but asking for only 1 color total
+        palette_shift.generate_and_save_palette(config, str(img), 1, 3000, "contrast", False, str(out))
+
+
+def test_generate_consider_plane_resolved_value_persists_to_project_settings(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "fresh.csv"
+
+    palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out), consider_plane="off",
+    )
+    assert pg.read_generation_settings(config)["consider_roles_on_regen"] is False

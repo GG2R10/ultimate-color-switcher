@@ -58,11 +58,18 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         "colors": int(orig_gen.get("colors", len(entries))),
         "overfetch": int(orig_gen.get("overfetch", 0)),
         "shuffle": int(orig_gen.get("shuffle", 0)),
+        "keep_custom": bool(meta.get("keep_custom_on_regen", True)),
+        "consider_plane": bool(meta.get("consider_roles_on_regen", True)),
     }
 
     def overrides():
         ov = {"my_eyes": "on" if state["my_eyes"] else "off",
-              "ying_yang": "on" if state["ying_yang"] else "off"}
+              "ying_yang": "on" if state["ying_yang"] else "off",
+              # Neither is a selection key (doesn't trigger a regen by
+              # itself), so unlike mode/scoring/colors below they're always
+              # safe to pass.
+              "keep_custom": "on" if state["keep_custom"] else "off",
+              "consider_plane": "on" if state["consider_plane"] else "off"}
         # Pass a selection override ONLY when it differs from what's stored, so
         # merely toggling my-eyes stays on the fast post-only path (no regen).
         if generated:
@@ -194,6 +201,32 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
 
         overfetch_row.connect("notify::value", on_overfetch)
         sel_group.add(overfetch_row)
+
+        keep_custom_row = Adw.SwitchRow(
+            title="Mantener colores editados/agregados",
+            subtitle="Al regenerar, preservarlos en su mismo lugar en vez de descartarlos.",
+        )
+        keep_custom_row.set_active(state["keep_custom"])
+
+        def on_keep_custom(row, _p):
+            state["keep_custom"] = row.get_active()
+            refresh_preview()
+
+        keep_custom_row.connect("notify::active", on_keep_custom)
+        sel_group.add(keep_custom_row)
+
+        consider_plane_row = Adw.SwitchRow(
+            title="Considerar roles foreground/background",
+            subtitle="Al regenerar, apuntar a la demanda de colores fg/bg ya tageados en esta paleta.",
+        )
+        consider_plane_row.set_active(state["consider_plane"])
+
+        def on_consider_plane(row, _p):
+            state["consider_plane"] = row.get_active()
+            refresh_preview()
+
+        consider_plane_row.connect("notify::active", on_consider_plane)
+        sel_group.add(consider_plane_row)
         page.add(sel_group)
     else:
         note = Adw.PreferencesGroup()

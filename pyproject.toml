@@ -34,10 +34,13 @@ packages = ["color_switcher"]
 
 [tool.hatch.build]
 # .blp sources ride along for reference/dev use; the compiled .ui files are
-# what the app actually loads at runtime (see gui/template_loader.py) --
-# packagers should run blueprint-compiler at build time so a fully-packaged
-# install never needs blueprint-compiler itself, nor writes into its own
-# (typically read-only) install location. See PKGBUILD. `artifacts` is
-# needed because *.ui is .gitignored (generated), which hatchling would
+# what the app actually loads at runtime (see gui/template_loader.py). The
+# build hook below (hatch_build.py) always recompiles them fresh at build
+# time, so an installed package never needs blueprint-compiler itself, nor
+# writes into its own (typically read-only) install location. `artifacts`
+# is needed because *.ui is .gitignored (generated), which hatchling would
 # otherwise exclude from the build too.
 artifacts = ["color_switcher/gui/blueprints/*.ui"]
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
