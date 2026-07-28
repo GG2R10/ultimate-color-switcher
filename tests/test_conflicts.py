@@ -114,7 +114,7 @@ def test_role_mismatch_flags_foreground_mapped_to_background():
     detected = _detected()
     palette = [{"id": 1, "hex": "999999", "label": "bg", "role": "background"}]
     mapping = [{"old_id": 2, "new_id": 1}]  # detected id 2 is tagged foreground below
-    roles = {conflicts.role_key("hex", "ff00aa"): "foreground"}
+    roles = {conflicts.role_key("hex", "ff00aa"): {"role": "foreground", "pair": None}}
 
     result = conflicts.find_role_mismatches(detected, palette, mapping, roles)
     assert len(result) == 1
@@ -125,7 +125,7 @@ def test_role_mismatch_ignores_agreeing_roles():
     detected = _detected()
     palette = [{"id": 1, "hex": "999999", "label": "bg", "role": "foreground"}]
     mapping = [{"old_id": 2, "new_id": 1}]
-    roles = {conflicts.role_key("hex", "ff00aa"): "foreground"}
+    roles = {conflicts.role_key("hex", "ff00aa"): {"role": "foreground", "pair": None}}
     assert conflicts.find_role_mismatches(detected, palette, mapping, roles) == []
 
 
@@ -133,8 +133,79 @@ def test_role_mismatch_ignores_when_either_side_unmarked():
     detected = _detected()
     palette_untagged = [{"id": 1, "hex": "999999", "label": "bg"}]
     mapping = [{"old_id": 2, "new_id": 1}]
-    roles = {conflicts.role_key("hex", "ff00aa"): "foreground"}
+    roles = {conflicts.role_key("hex", "ff00aa"): {"role": "foreground", "pair": None}}
     assert conflicts.find_role_mismatches(detected, palette_untagged, mapping, roles) == []
 
     palette_tagged = [{"id": 1, "hex": "999999", "label": "bg", "role": "background"}]
     assert conflicts.find_role_mismatches(detected, palette_tagged, mapping, {}) == []
+
+
+def test_pair_mismatch_flags_mapped_colors_not_actually_paired():
+    detected = _detected()  # id1=00ccff, id2=ff00aa, id3=00ccff(hex_from_rgb)
+    palette = [
+        {"id": 1, "hex": "111111", "label": "bg"},
+        {"id": 2, "hex": "eeeeee", "label": "fg"},  # NOT paired with id 1 in the palette
+    ]
+    mapping = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}]
+    roles = {
+        conflicts.role_key("hex", "00ccff"): {"role": "background", "pair": None},
+        conflicts.role_key("hex", "ff00aa"): {"role": "foreground", "pair": "hex:00ccff"},
+    }
+    result = conflicts.find_pair_mismatches(detected, palette, mapping, roles)
+    assert len(result) == 1
+    assert result[0] == {"fg_old_id": 2, "bg_old_id": 1, "fg_new_id": 2, "bg_new_id": 1}
+
+
+def test_pair_mismatch_ignores_when_palette_agrees():
+    detected = _detected()
+    palette = [
+        {"id": 1, "hex": "111111", "label": "bg", "paired_id": 2},
+        {"id": 2, "hex": "eeeeee", "label": "fg", "paired_id": 1},
+    ]
+    mapping = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}]
+    roles = {
+        conflicts.role_key("hex", "00ccff"): {"role": "background", "pair": None},
+        conflicts.role_key("hex", "ff00aa"): {"role": "foreground", "pair": "hex:00ccff"},
+    }
+    assert conflicts.find_pair_mismatches(detected, palette, mapping, roles) == []
+
+
+def test_pair_mismatch_ignores_when_no_pairing_tagged():
+    detected = _detected()
+    palette = [
+        {"id": 1, "hex": "111111", "label": "bg"},
+        {"id": 2, "hex": "eeeeee", "label": "fg"},
+    ]
+    mapping = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}]
+    assert conflicts.find_pair_mismatches(detected, palette, mapping, {}) == []
+
+
+def test_pair_mismatch_skips_when_background_not_mapped():
+    detected = _detected()
+    palette = [{"id": 2, "hex": "eeeeee", "label": "fg"}]
+    mapping = [{"old_id": 2, "new_id": 2}]  # bg (old_id 1) never mapped at all
+    roles = {
+        conflicts.role_key("hex", "00ccff"): {"role": "background", "pair": None},
+        conflicts.role_key("hex", "ff00aa"): {"role": "foreground", "pair": "hex:00ccff"},
+    }
+    assert conflicts.find_pair_mismatches(detected, palette, mapping, roles) == []
+
+
+def test_pair_mismatch_dedupes_hex_and_rgb_siblings_mapped_to_same_target():
+    # detected id 2 (ff00aa) is the foreground; detected ids 1 and 3 are the
+    # SAME real background color (00ccff) in its two representations, both
+    # tagged background and both mapped to the same target -- must only
+    # surface the mismatch ONCE, not twice.
+    detected = _detected()  # id1=00ccff(hex), id2=ff00aa(hex), id3=00ccff(hex_from_rgb)
+    palette = [
+        {"id": 1, "hex": "999999", "label": "fg"},
+        {"id": 2, "hex": "111111", "label": "bg"},
+    ]
+    mapping = [{"old_id": 2, "new_id": 1}, {"old_id": 1, "new_id": 2}, {"old_id": 3, "new_id": 2}]
+    roles = {
+        conflicts.role_key("hex", "00ccff"): {"role": "background", "pair": None},
+        conflicts.role_key("hex_from_rgb", "00ccff"): {"role": "background", "pair": None},
+        conflicts.role_key("hex", "ff00aa"): {"role": "foreground", "pair": "hex:00ccff"},
+    }
+    result = conflicts.find_pair_mismatches(detected, palette, mapping, roles)
+    assert len(result) == 1

@@ -3,6 +3,7 @@ import pytest
 from PIL import Image
 
 from color_switcher.backend import color_detector as cd
+from color_switcher.backend import color_math as cm
 from color_switcher.backend import mapping_store as ms
 from color_switcher.backend import palette_generator as pg
 from color_switcher.backend import palette_shift, palette_store
@@ -242,6 +243,54 @@ def test_edit_color_marks_custom_and_keeps_position(gen_palette):
     assert [e["id"] for e in entries] == [1, 2, 3, 4]
 
 
+def _assert_hex_close(a, b, tol=1):
+    ra, ga, ba = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
+    rb, gb, bb = int(b[0:2], 16), int(b[2:4], 16), int(b[4:6], 16)
+    assert max(abs(ra - rb), abs(ga - gb), abs(ba - bb)) <= tol, f"{a} vs {b}"
+
+
+def test_edit_color_shows_up_as_picked_even_with_ying_yang_already_active(gen_palette):
+    """The reported bug: picking yellow via the editor while ying-yang is
+    already on used to show up as yellow's COMPLEMENT (blue) -- the picked
+    hex was stored literally as base, then transformed forward on top."""
+    path, base, config = gen_palette
+    palette_shift.shift_palette(str(path), config, ying_yang="on")
+    palette_shift.edit_color(str(path), 1, "ffcc00")  # yellow
+    entries = palette_store.read_palette_csv(str(path))
+    _assert_hex_close(entries[0]["hex"], "ffcc00")
+
+
+def test_add_color_shows_up_as_picked_even_with_ying_yang_already_active(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.shift_palette(str(path), config, ying_yang="on")
+    entry = palette_shift.add_color(str(path), "ffcc00", "mine")
+    _assert_hex_close(entry["hex"], "ffcc00")
+
+
+def test_edit_color_shows_up_as_picked_even_with_my_eyes_already_active(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.shift_palette(str(path), config, my_eyes="on")
+    palette_shift.edit_color(str(path), 1, "8899aa")
+    entries = palette_store.read_palette_csv(str(path))
+    _assert_hex_close(entries[0]["hex"], "8899aa")
+
+
+def test_edit_color_then_toggling_ying_yang_off_flips_the_custom_color_too(gen_palette):
+    """Consistent with how a GENERATED color already behaves: toggling a
+    post-mod off/on transforms EVERY base color the same way, hand-picked or
+    not -- a custom color picked while ying-yang was active WILL look
+    different (its complement) once ying-yang is turned back off. Accepted,
+    documented tradeoff (see [[color-roles-design]]), not a bug: the base
+    model has no other way to keep post-mods uniformly reversible."""
+    path, base, config = gen_palette
+    palette_shift.shift_palette(str(path), config, ying_yang="on")
+    palette_shift.edit_color(str(path), 1, "ffcc00")  # shows up as yellow while ying-yang is on
+
+    result = palette_shift.shift_palette(str(path), config, ying_yang="off")
+    # ying-yang off now -> the STORED base (yellow's complement) shows plainly
+    assert result["entries"][0]["hex"] != "ffcc00"
+
+
 def test_edit_color_rejects_duplicate(gen_palette):
     path, base, config = gen_palette
     with pytest.raises(palette_shift.PaletteEditError):
@@ -396,6 +445,106 @@ def test_set_role_none_clears_it(gen_palette):
     assert "role" not in entries[0]
 
 
+def test_set_pair_links_both_sides(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_pair(str(path), 2, 1)
+    entries = palette_store.read_palette_csv(str(path))
+    assert entries[0]["paired_id"] == 2
+    assert entries[1]["paired_id"] == 1
+
+
+def test_set_pair_none_unlinks(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_pair(str(path), 2, 1)
+    palette_shift.set_pair(str(path), 2, None)
+    entries = palette_store.read_palette_csv(str(path))
+    assert "paired_id" not in entries[0]
+    assert "paired_id" not in entries[1]
+
+
+def test_set_pair_rejects_pairing_a_color_with_itself(gen_palette):
+    path, base, config = gen_palette
+    with pytest.raises(palette_shift.PaletteEditError):
+        palette_shift.set_pair(str(path), 1, 1)
+
+
+def test_set_pair_relinking_drops_the_old_partners_pairing(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_role(str(path), 3, "background")
+    palette_shift.set_pair(str(path), 2, 1)
+    palette_shift.set_pair(str(path), 2, 3)  # re-link 2 to a different background
+    entries = palette_store.read_palette_csv(str(path))
+    assert "paired_id" not in entries[0]  # old partner (1) no longer paired
+    assert entries[1]["paired_id"] == 3
+    assert entries[2]["paired_id"] == 2
+
+
+def test_role_change_clears_own_and_partners_pairing(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_pair(str(path), 2, 1)
+    palette_shift.set_role(str(path), 1, "foreground")  # 1 stops being background
+    entries = palette_store.read_palette_csv(str(path))
+    assert "paired_id" not in entries[0]
+    assert "paired_id" not in entries[1]  # partner's side cleared too
+
+
+def test_edit_color_hex_change_alone_preserves_pairing(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_pair(str(path), 2, 1)
+    palette_shift.edit_color(str(path), 2, "abcdef")  # role not passed, hex changes
+    entries = palette_store.read_palette_csv(str(path))
+    assert entries[1]["hex"] == "abcdef"
+    assert entries[0]["paired_id"] == 2
+    assert entries[1]["paired_id"] == 1
+
+
+def test_edit_color_role_change_clears_pairing(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_pair(str(path), 2, 1)
+    palette_shift.edit_color(str(path), 2, "abcdef", role="background")
+    entries = palette_store.read_palette_csv(str(path))
+    assert "paired_id" not in entries[0]
+    assert "paired_id" not in entries[1]
+
+
+def test_delete_color_clears_partners_pairing_and_renumbers(gen_palette):
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_pair(str(path), 2, 1)
+    palette_shift.delete_color(str(path), 2)
+    entries = palette_store.read_palette_csv(str(path))
+    assert "paired_id" not in entries[0]
+    assert len(entries) == len(base) - 1
+
+
+def test_pairing_survives_a_reload_from_disk(gen_palette):
+    """paired_id read back from a fresh CSV load must still resolve correctly
+    through a subsequent per-color op (reconstruct_base's fallback via
+    _pair_ids_from_entries when meta.base doesn't carry pair_id yet)."""
+    path, base, config = gen_palette
+    palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_pair(str(path), 2, 1)
+    # touch an unrelated color, forcing a fresh _load()/_write_derived() cycle
+    palette_shift.edit_color(str(path), 3, "abcdef")
+    entries = palette_store.read_palette_csv(str(path))
+    assert entries[0]["paired_id"] == 2
+    assert entries[1]["paired_id"] == 1
+
+
 def test_role_survives_post_mod_shift(gen_palette):
     path, base, config = gen_palette
     palette_shift.set_role(str(path), 1, "foreground")
@@ -405,26 +554,37 @@ def test_role_survives_post_mod_shift(gen_palette):
     assert result["entries"][0]["hex"] != base[0]["hex"]
 
 
-def test_role_wiped_on_regeneration_when_consider_plane_off_and_warns(gen_palette):
+def test_role_tag_alone_without_pair_does_nothing_on_regeneration(gen_palette):
+    """A plain set_role with NO explicit pairing has no generation-time
+    effect anymore (the old flat count mechanism was fully retired) -- it's
+    just inert metadata unless it's also linked via set_pair. Unlike a
+    paired role (which the pairing mechanism carries forward -- see
+    test_pairing_carries_forward_by_default_on_regeneration), this one has
+    no fallback at all, so losing it on a regen IS a genuine, unrecoverable
+    loss worth warning about."""
     path, base, config = gen_palette
     palette_shift.set_role(str(path), 1, "background")
-    result = palette_shift.shift_palette(str(path), config, shuffle=1, consider_plane="off")
+    result = palette_shift.shift_palette(str(path), config, shuffle=1)
     assert result["regenerated"] is True
     assert not any(e.get("role") for e in result["entries"])
     assert any("rol" in w for w in result["warnings"])
 
 
-def test_role_demand_carries_forward_by_default_on_regeneration(gen_palette):
-    """consider_roles_on_regen defaults True -- the OLD role tag is lost
-    (its color changed), but the DEMAND it represented (1 background needed)
-    is read from the palette's own current tags and a NEW color satisfies it
-    automatically -- this is the actual point of the whole feature."""
+def test_pairing_carries_forward_by_default_on_regeneration(gen_palette):
+    """The OLD paired colors' specific hexes change, but the pairing
+    RELATIONSHIP itself is read from the palette's own current tags (tier 1)
+    and re-satisfied by 2 NEW colors elsewhere -- this is the actual point
+    of the whole pairing feature, and genuinely nothing is lost from the
+    user's perspective, so no warning should fire."""
     path, base, config = gen_palette
     palette_shift.set_role(str(path), 1, "background")
+    palette_shift.set_role(str(path), 2, "foreground")
+    palette_shift.set_pair(str(path), 2, 1)
     result = palette_shift.shift_palette(str(path), config, shuffle=1)
     assert result["regenerated"] is True
     assert sum(1 for e in result["entries"] if e.get("role") == "background") == 1
-    assert not any("rol" in w for w in result["warnings"])  # nothing "lost" -- demand was carried forward
+    assert sum(1 for e in result["entries"] if e.get("role") == "foreground") == 1
+    assert result["warnings"] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -533,25 +693,28 @@ def test_generate_raises_when_in_range_customs_fill_the_whole_budget(tmp_path, f
 
 
 # --------------------------------------------------------------------------- #
-# generate_and_save_palette + consider_plane (Phase 5: role-aware generation)
+# generate_and_save_palette + fg/bg pairing rework
 # --------------------------------------------------------------------------- #
 
-def test_generate_role_demand_tier1_reads_existing_out_paths_own_tags(tmp_path, fake_project):
+def test_generate_role_pairs_tier1_reads_existing_out_paths_own_pairing(tmp_path, fake_project):
     img = tmp_path / "wall.png"
     _make_image(img)
     config = fake_project.load_config()
     out = tmp_path / "generated.csv"
     palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
     palette_shift.set_role(str(out), 1, "background")
+    palette_shift.set_role(str(out), 2, "foreground")
+    palette_shift.set_pair(str(out), 2, 1)
 
     entries, _saved_path, warnings = palette_shift.generate_and_save_palette(
         config, str(img), 4, 3000, "contrast", False, str(out), shuffle=1,
     )
     assert sum(1 for e in entries if e.get("role") == "background") == 1
-    assert not any("rol" in w for w in warnings)  # demand carried forward, not "lost"
+    assert sum(1 for e in entries if e.get("role") == "foreground") == 1
+    assert warnings == []  # pairing carried forward -- nothing actually lost, no false alarm
 
 
-def test_generate_role_demand_tier2_filters_by_mapping(tmp_path, fake_project):
+def test_generate_role_pairs_tier2_filters_by_mapping(tmp_path, fake_project):
     img = tmp_path / "wall.png"
     _make_image(img)
     fake_project.make_file("a.css", "#111111")
@@ -559,14 +722,14 @@ def test_generate_role_demand_tier2_filters_by_mapping(tmp_path, fake_project):
 
     detected = [
         {"id": 1, "type": "hex", "color": "111111", "count": 1, "files": []},
-        {"id": 2, "type": "hex", "color": "222222", "count": 1, "files": []},
-        {"id": 3, "type": "hex", "color": "333333", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "eeeeee", "count": 1, "files": []},
+        {"id": 3, "type": "hex", "color": "ff0000", "count": 1, "files": []},
     ]
     cd.write_detected_csv(detected, config.detected_palette_csv)
     cd.write_color_roles(config.color_roles_json, {
-        cd.role_key("hex", "111111"): "background",
-        cd.role_key("hex", "222222"): "foreground",
-        cd.role_key("hex", "333333"): "foreground",  # tagged, but NOT in the mapping below
+        cd.role_key("hex", "111111"): {"role": "background", "pair": None},
+        cd.role_key("hex", "eeeeee"): {"role": "foreground", "pair": "hex:111111"},
+        cd.role_key("hex", "ff0000"): {"role": "foreground", "pair": "hex:111111"},  # NOT in the mapping below
     })
     store = ms.MappingStore(config.mapping_csv, old_palette=config.detected_palette_csv,
                             new_palette="", project_dir=config.project_dir)
@@ -578,10 +741,10 @@ def test_generate_role_demand_tier2_filters_by_mapping(tmp_path, fake_project):
         config, str(img), 4, 3000, "contrast", False, str(out),
     )
     assert sum(1 for e in entries if e.get("role") == "background") == 1
-    assert sum(1 for e in entries if e.get("role") == "foreground") == 1  # id 3's tag didn't count
+    assert sum(1 for e in entries if e.get("role") == "foreground") == 1  # id 3's pair didn't count
 
 
-def test_generate_role_demand_tier3_falls_back_to_unfiltered_roles_without_mapping(tmp_path, fake_project):
+def test_generate_role_pairs_tier3_falls_back_to_unfiltered_without_mapping(tmp_path, fake_project):
     img = tmp_path / "wall.png"
     _make_image(img)
     fake_project.make_file("a.css", "#111111")
@@ -589,12 +752,12 @@ def test_generate_role_demand_tier3_falls_back_to_unfiltered_roles_without_mappi
 
     detected = [
         {"id": 1, "type": "hex", "color": "111111", "count": 1, "files": []},
-        {"id": 2, "type": "hex", "color": "222222", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "eeeeee", "count": 1, "files": []},
     ]
     cd.write_detected_csv(detected, config.detected_palette_csv)
     cd.write_color_roles(config.color_roles_json, {
-        cd.role_key("hex", "111111"): "background",
-        cd.role_key("hex", "222222"): "foreground",
+        cd.role_key("hex", "111111"): {"role": "background", "pair": None},
+        cd.role_key("hex", "eeeeee"): {"role": "foreground", "pair": "hex:111111"},
     })
     # deliberately no mapping.csv at all
 
@@ -606,21 +769,27 @@ def test_generate_role_demand_tier3_falls_back_to_unfiltered_roles_without_mappi
     assert sum(1 for e in entries if e.get("role") == "foreground") == 1
 
 
-def test_generate_consider_plane_off_ignores_all_role_tags(tmp_path, fake_project):
+def test_generate_tagged_without_pair_is_ignored_and_warns(tmp_path, fake_project):
     img = tmp_path / "wall.png"
     _make_image(img)
+    fake_project.make_file("a.css", "#111111")
     config = fake_project.load_config()
-    out = tmp_path / "generated.csv"
-    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
-    palette_shift.set_role(str(out), 1, "background")
 
-    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
-        config, str(img), 4, 3000, "contrast", False, str(out), shuffle=1, consider_plane="off",
+    detected = [{"id": 1, "type": "hex", "color": "111111", "count": 1, "files": []}]
+    cd.write_detected_csv(detected, config.detected_palette_csv)
+    cd.write_color_roles(config.color_roles_json, {
+        cd.role_key("hex", "111111"): {"role": "background", "pair": None},  # tagged, never paired
+    })
+
+    out = tmp_path / "fresh.csv"
+    entries, _saved_path, warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out),
     )
     assert not any(e.get("role") for e in entries)
+    assert any("sin pareja" in w for w in warnings)
 
 
-def test_generate_raises_when_role_demand_exceeds_colors_requested(tmp_path, fake_project):
+def test_generate_raises_when_role_pairs_exceed_colors_requested(tmp_path, fake_project):
     img = tmp_path / "wall.png"
     _make_image(img)
     config = fake_project.load_config()
@@ -628,19 +797,202 @@ def test_generate_raises_when_role_demand_exceeds_colors_requested(tmp_path, fak
     palette_shift.generate_and_save_palette(config, str(img), 2, 3000, "contrast", False, str(out))
     palette_shift.set_role(str(out), 1, "background")
     palette_shift.set_role(str(out), 2, "foreground")
+    palette_shift.set_pair(str(out), 2, 1)
 
     with pytest.raises(palette_shift.ShiftError):
-        # demanding both bg+fg (2) but asking for only 1 color total
+        # demanding a full pair (2 colors) but asking for only 1 color total
         palette_shift.generate_and_save_palette(config, str(img), 1, 3000, "contrast", False, str(out))
 
 
-def test_generate_consider_plane_resolved_value_persists_to_project_settings(tmp_path, fake_project):
+def test_generate_eco_resolved_value_persists_to_project_settings(tmp_path, fake_project):
     img = tmp_path / "wall.png"
     _make_image(img)
     config = fake_project.load_config()
     out = tmp_path / "fresh.csv"
 
     palette_shift.generate_and_save_palette(
-        config, str(img), 4, 3000, "contrast", False, str(out), consider_plane="off",
+        config, str(img), 4, 3000, "contrast", False, str(out), eco="on",
     )
-    assert pg.read_generation_settings(config)["consider_roles_on_regen"] is False
+    assert pg.read_generation_settings(config)["eco_contrast"] is True
+
+
+def _make_grayscale_image(path, dark_fraction=0.5):
+    img = Image.new("RGB", (60, 60))
+    pixels = img.load()
+    split = int(60 * dark_fraction)
+    for x in range(60):
+        for y in range(60):
+            v = 5 if x < split else 250
+            pixels[x, y] = (v, v, v)
+    img.save(path)
+
+
+def _saturations(entries):
+    sats = []
+    for e in entries:
+        _hue, sat, _light = cm.rgb_to_hsl(cm.hex_to_rgb(e["hex"]))
+        sats.append(sat)
+    return sats
+
+
+def test_generate_fresh_out_path_defaults_hallucinate_true(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "fresh.csv"
+
+    palette_shift.generate_and_save_palette(config, str(img), 4, 3000, "contrast", False, str(out))
+    assert palette_store.read_palette_meta(str(out))["hallucinate_on_monochrome"] is True
+
+
+def test_generate_hallucinate_true_colors_a_monochrome_wallpapers_whole_palette(tmp_path, fake_project):
+    img = tmp_path / "bw.png"
+    _make_grayscale_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+
+    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out),
+    )
+    assert all(s > 15 for s in _saturations(entries))
+
+
+def test_generate_hallucinate_off_gives_a_genuinely_greyscale_palette(tmp_path, fake_project):
+    img = tmp_path / "bw.png"
+    _make_grayscale_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+
+    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 2, 3000, "contrast", False, str(out), hallucinate="off",
+    )
+    assert all(s < 10 for s in _saturations(entries))
+
+
+def test_generate_existing_files_own_stored_hallucinate_preference_wins_over_project_setting(
+    tmp_path, fake_project,
+):
+    img = tmp_path / "bw.png"
+    _make_grayscale_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 2, 3000, "contrast", False, str(out))
+    palette_shift.shift_palette(str(out), config, hallucinate="off")  # this file's OWN preference -> off
+    pg.write_generation_settings(config, {**pg.DEFAULT_GENERATION_SETTINGS, "hallucinate_on_monochrome": True})
+
+    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 2, 3000, "contrast", False, str(out),
+    )
+    # the file's own "off" wins over the project's "on" -- stays genuinely grey
+    assert all(s < 10 for s in _saturations(entries))
+
+
+def test_generate_hallucinate_override_beats_everything_stored(tmp_path, fake_project):
+    img = tmp_path / "bw.png"
+    _make_grayscale_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 2, 3000, "contrast", False, str(out))
+
+    entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 2, 3000, "contrast", False, str(out), hallucinate="off",
+    )
+    assert all(s < 10 for s in _saturations(entries))
+
+
+def test_generate_resolved_hallucinate_persists_back_to_project_settings(tmp_path, fake_project):
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "fresh.csv"
+
+    palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False, str(out), hallucinate="off",
+    )
+    assert pg.read_generation_settings(config)["hallucinate_on_monochrome"] is False
+
+
+def test_shift_hallucinate_off_forces_greyscale_on_regenerate(tmp_path, fake_project):
+    img = tmp_path / "bw.png"
+    _make_grayscale_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(config, str(img), 2, 3000, "contrast", False, str(out))
+
+    result = palette_shift.shift_palette(str(out), config, colors=2, hallucinate="off")
+    assert result["regenerated"] is True
+    assert all(s < 10 for s in _saturations(result["entries"]))
+    assert result["meta"]["hallucinate_on_monochrome"] is False
+
+
+def _make_two_tone_image(path):
+    # A strict 2-value black/white image: only 2 distinct real clusters exist
+    # no matter how many colors are requested -- the scarce-real-clusters case.
+    img = Image.new("RGB", (60, 60))
+    pixels = img.load()
+    for x in range(60):
+        for y in range(60):
+            v = 5 if x < 30 else 250
+            pixels[x, y] = (v, v, v)
+    img.save(path)
+
+
+def test_generate_raises_clean_error_instead_of_indexerror_when_image_lacks_diversity(
+    tmp_path, fake_project,
+):
+    # Real bug: hallucinate=off against a scarce-real-cluster image used to
+    # let generate_palette return fewer colors than requested, which then
+    # IndexError'd inside _merge_regen_base (keep_custom defaults True) instead
+    # of failing cleanly.
+    img = tmp_path / "bw.png"
+    _make_two_tone_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+
+    with pytest.raises(palette_shift.ShiftError):
+        palette_shift.generate_and_save_palette(
+            config, str(img), 6, 3000, "contrast", False, str(out), hallucinate="off",
+        )
+
+
+def test_generate_raises_clean_error_even_without_keep_custom(tmp_path, fake_project):
+    # Same shortfall, but with keep_custom off (n_gen_needed == n_colors, no
+    # positional merge involved) -- must still be flagged instead of silently
+    # handing back fewer colors than asked for.
+    img = tmp_path / "bw.png"
+    _make_two_tone_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+
+    with pytest.raises(palette_shift.ShiftError):
+        palette_shift.generate_and_save_palette(
+            config, str(img), 6, 3000, "contrast", False, str(out),
+            hallucinate="off", keep_custom="off",
+        )
+
+
+def test_shift_raises_clean_error_instead_of_indexerror_when_image_lacks_diversity(
+    tmp_path, fake_project,
+):
+    img = tmp_path / "bw.png"
+    _make_two_tone_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+    palette_shift.generate_and_save_palette(
+        config, str(img), 2, 3000, "contrast", False, str(out), hallucinate="off",
+    )
+
+    with pytest.raises(palette_shift.ShiftError):
+        palette_shift.shift_palette(str(out), config, colors=6, hallucinate="off")
+
+
+def test_generate_shortfall_error_hints_at_hallucinate_when_off(tmp_path, fake_project):
+    img = tmp_path / "bw.png"
+    _make_two_tone_image(img)
+    config = fake_project.load_config()
+    out = tmp_path / "generated.csv"
+
+    with pytest.raises(palette_shift.ShiftError, match="hallucinate"):
+        palette_shift.generate_and_save_palette(
+            config, str(img), 6, 3000, "contrast", False, str(out), hallucinate="off",
+        )

@@ -2,9 +2,14 @@
 """
 palette_store.py — Read/write/create palette CSVs.
 
-Row format: "id,#hexvalue,label[,origin[,role]]" (origin optional: "gen"|"custom";
-role optional: "foreground"|"background" -- only written once any entry has
-one, same convention as origin; empty string means unmarked).
+Row format: "id,#hexvalue,label[,origin[,role[,paired_id]]]" (origin optional:
+"gen"|"custom"; role optional: "foreground"|"background"; paired_id optional:
+the 1-based id of the OTHER palette color this one is fg/bg-paired with --
+each column only written once any entry has one, same convention throughout;
+empty string means unmarked. paired_id is computer-generated only (see
+palette_generator.fgbg_pairing) -- palette_shift.derive_effective resolves it
+fresh from each base entry's `pair_id` every write, so it can never go stale
+across an edit/delete elsewhere).
 Optionally preceded by ONE metadata header line:
 
     #ucs-meta={...json...}
@@ -51,12 +56,17 @@ def default_meta() -> dict:
         # original slot instead of discarding them. Defaults True so existing
         # palettes (no key yet) get the safer behavior automatically.
         "keep_custom_on_regen": True,
-        # Regeneration policy: whether generation aims for a foreground/
-        # background contrast demand read from color_roles.json (or, on a
-        # regen, this same palette's OWN already-tagged colors) instead of
-        # being oblivious to roles entirely. Defaults True; harmless when
-        # nothing is tagged anywhere (demand resolves to 0/0 either way).
-        "consider_roles_on_regen": True,
+        # Regeneration policy: whether a monochrome source image gets a
+        # synthesized saturated accent (+ a shading ramp off it) instead of a
+        # genuinely greyscale palette -- see
+        # palette_generator.generate_palette's hallucinate param. Defaults
+        # True (matches the pre-existing, only-ever behavior).
+        "hallucinate_on_monochrome": True,
+        # Regeneration policy: whether case1/2 fg/bg pairs are forced to the
+        # same hue (contrast purely by luminance) -- see
+        # palette_generator.generate_palette's eco param. Defaults False (a
+        # stylistic modifier, same category as my_eyes/ying_yang).
+        "eco_contrast": False,
     }
 
 
@@ -114,11 +124,14 @@ def _read(path: str):
             label = parts[2].strip() if len(parts) > 2 else ""
             origin = parts[3].strip().lower() if len(parts) > 3 else None
             role = parts[4].strip().lower() if len(parts) > 4 else None
+            paired_id = parts[5].strip() if len(parts) > 5 else None
             entry = {"id": int(id_str), "hex": hex_clean, "label": label}
             if origin in _VALID_ORIGINS:  # keep the dict at {id,hex,label} unless origin is meaningful
                 entry["origin"] = origin
             if role in _VALID_ROLES:
                 entry["role"] = role
+            if paired_id and paired_id.isdigit():
+                entry["paired_id"] = int(paired_id)
             entries.append(entry)
 
     return entries, meta
@@ -126,7 +139,8 @@ def _read(path: str):
 
 def read_palette(path: str):
     """Load a palette CSV. Returns (entries, meta):
-      entries: [{"id": int, "hex": "rrggbb", "label": str, "origin": str|None, "role": str|None}]
+      entries: [{"id": int, "hex": "rrggbb", "label": str, "origin": str|None,
+                "role": str|None, "paired_id": int|None}]
       meta:    the parsed #ucs-meta dict, or default_meta() if there's no header.
     Returns ([], default_meta()) if the file doesn't exist."""
     entries, meta = _read(path)
@@ -163,13 +177,22 @@ def write_palette_csv(path: str, entries: list, meta: dict = None) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     write_origin = any(e.get("origin") in _VALID_ORIGINS for e in entries)
     write_role = any(e.get("role") in _VALID_ROLES for e in entries)
+    write_paired = any(e.get("paired_id") for e in entries)
     with open(path, "w", encoding="utf-8") as f:
         if meta is not None:
             f.write(_serialize_meta(meta) + "\n")
         for e in entries:
             hex_clean = e["hex"].lstrip("#").lower()
             label = e.get("label", "")
-            if write_role:
+            if write_paired:
+                # origin/role columns must stay in position even if no entry
+                # actually has one, so paired_id (position 6) doesn't shift
+                # into their slot.
+                origin_field = e.get("origin") or ("custom" if write_origin else "")
+                role_field = e.get("role") or ""
+                paired_field = e.get("paired_id") or ""
+                f.write(f"{e['id']},#{hex_clean},{label},{origin_field},{role_field},{paired_field}\n")
+            elif write_role:
                 # origin column must stay in position even if no entry actually
                 # has one, so role (position 5) doesn't shift into its slot.
                 origin_field = e.get("origin") or ("custom" if write_origin else "")

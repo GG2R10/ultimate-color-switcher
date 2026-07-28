@@ -10,7 +10,10 @@ from color_switcher.backend import detect_diff, mapping_store, palette_store
 
 
 def _args(**kwargs):
-    return argparse.Namespace(mapping=None, force=False, **kwargs)
+    kwargs.setdefault("mapping", None)
+    kwargs.setdefault("force", False)
+    kwargs.setdefault("link", None)
+    return argparse.Namespace(**kwargs)
 
 
 def _setup(fake_project, monkeypatch):
@@ -66,26 +69,26 @@ def test_apply_rekeys_color_role_to_the_new_hex(fake_project, monkeypatch, capsy
     config, detected, store = _setup(fake_project, monkeypatch)
     old_key = cd.role_key(detected[0]["type"], detected[0]["color"])
     roles_path = os.path.join(os.path.dirname(config.detected_palette_csv), "color_roles.json")
-    cd.write_color_roles(roles_path, {old_key: "background"})
+    cd.write_color_roles(roles_path, {old_key: {"role": "background", "pair": None}})
     store.add_or_update(detected[0]["id"], 1)
 
     ucs_main.cmd_apply(_args(), config)  # real apply, not --test
 
     roles = cd.read_color_roles(roles_path)
     assert old_key not in roles
-    assert roles.get(cd.role_key(detected[0]["type"], "ff00aa")) == "background"
+    assert cd.role_of(roles, cd.role_key(detected[0]["type"], "ff00aa")) == "background"
 
 
 def test_test_mode_never_rekeys_color_roles(fake_project, monkeypatch, capsys):
     config, detected, store = _setup(fake_project, monkeypatch)
     old_key = cd.role_key(detected[0]["type"], detected[0]["color"])
     roles_path = os.path.join(os.path.dirname(config.detected_palette_csv), "color_roles.json")
-    cd.write_color_roles(roles_path, {old_key: "foreground"})
+    cd.write_color_roles(roles_path, {old_key: {"role": "foreground", "pair": None}})
     store.add_or_update(detected[0]["id"], 1)
 
     ucs_main.cmd_test(_args(), config)  # --test / dry-run, must NOT rekey
 
-    assert cd.read_color_roles(roles_path) == {old_key: "foreground"}
+    assert cd.read_color_roles(roles_path) == {old_key: {"role": "foreground", "pair": None}}
 
 
 # --------------------------------------------------------------------------- #
@@ -201,6 +204,51 @@ def test_cmd_palette_edit_role_none_clears_it(tmp_path, fake_project):
     assert "role" not in entries[0]
 
 
+def test_cmd_palette_add_color_with_link(tmp_path, fake_project):
+    config = fake_project.load_config()
+    path = tmp_path / "p.csv"
+    palette_store.write_palette_csv(str(path), [{"id": 1, "hex": "111111", "label": "bg", "role": "background"}])
+    args = _args(path=str(path), hex="eeeeee", label="fg", role="foreground", link="1")
+
+    ucs_main.cmd_palette_add_color(args, config)
+
+    entries = palette_store.read_palette_csv(str(path))
+    assert entries[0]["paired_id"] == 2
+    assert entries[1]["paired_id"] == 1
+
+
+def test_cmd_palette_edit_with_link(tmp_path, fake_project):
+    config = fake_project.load_config()
+    path = tmp_path / "p.csv"
+    palette_store.write_palette_csv(str(path), [
+        {"id": 1, "hex": "111111", "label": "bg", "role": "background"},
+        {"id": 2, "hex": "222222", "label": "fg", "role": "foreground"},
+    ])
+    args = _args(palette=str(path), target="2", new_hex="eeeeee", role=None, link="1")
+
+    ucs_main.cmd_palette_edit(args, config)
+
+    entries = palette_store.read_palette_csv(str(path))
+    assert entries[0]["paired_id"] == 2
+    assert entries[1]["paired_id"] == 1
+
+
+def test_cmd_palette_edit_link_none_unlinks(tmp_path, fake_project):
+    config = fake_project.load_config()
+    path = tmp_path / "p.csv"
+    palette_store.write_palette_csv(str(path), [
+        {"id": 1, "hex": "111111", "label": "bg", "role": "background", "paired_id": 2},
+        {"id": 2, "hex": "222222", "label": "fg", "role": "foreground", "paired_id": 1},
+    ])
+    args = _args(palette=str(path), target="2", new_hex="222222", role=None, link="none")
+
+    ucs_main.cmd_palette_edit(args, config)
+
+    entries = palette_store.read_palette_csv(str(path))
+    assert "paired_id" not in entries[0]
+    assert "paired_id" not in entries[1]
+
+
 def test_palette_generate_parser_accepts_keep_custom():
     parser = ucs_main.build_parser()
     args = parser.parse_args(["palette", "generate", "wall.png", "--keep-custom", "off"])
@@ -213,19 +261,50 @@ def test_automatic_from_image_parser_accepts_keep_custom():
     assert args.keep_custom == "on"
 
 
-def test_palette_generate_parser_accepts_consider_plane():
+def test_palette_generate_parser_accepts_eco():
     parser = ucs_main.build_parser()
-    args = parser.parse_args(["palette", "generate", "wall.png", "--consider-plane", "off"])
-    assert args.consider_plane == "off"
+    args = parser.parse_args(["palette", "generate", "wall.png", "--eco", "off"])
+    assert args.eco == "off"
 
 
-def test_automatic_from_image_parser_accepts_consider_plane():
+def test_automatic_from_image_parser_accepts_eco():
     parser = ucs_main.build_parser()
-    args = parser.parse_args(["automatic", "apply", "--from-image", "wall.png", "--consider-plane", "toggle"])
-    assert args.consider_plane == "toggle"
+    args = parser.parse_args(["automatic", "apply", "--from-image", "wall.png", "--eco", "toggle"])
+    assert args.eco == "toggle"
 
 
-def test_palette_shift_parser_accepts_consider_plane():
+def test_palette_shift_parser_accepts_eco():
     parser = ucs_main.build_parser()
-    args = parser.parse_args(["palette", "shift", "p.csv", "--consider-plane", "on"])
-    assert args.consider_plane == "on"
+    args = parser.parse_args(["palette", "shift", "p.csv", "--eco", "on"])
+    assert args.eco == "on"
+
+
+def test_palette_shift_parser_accepts_hallucinate_on_off_toggle():
+    parser = ucs_main.build_parser()
+    for value in ("on", "off", "toggle"):
+        args = parser.parse_args(["palette", "shift", "p.csv", "--hallucinate", value])
+        assert args.hallucinate == value
+
+
+def test_palette_shift_parser_rejects_invalid_hallucinate_value():
+    parser = ucs_main.build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["palette", "shift", "p.csv", "--hallucinate", "sideways"])
+
+
+def test_palette_shift_parser_hallucinate_defaults_to_none():
+    parser = ucs_main.build_parser()
+    args = parser.parse_args(["palette", "shift", "p.csv"])
+    assert args.hallucinate is None
+
+
+def test_palette_generate_parser_accepts_hallucinate():
+    parser = ucs_main.build_parser()
+    args = parser.parse_args(["palette", "generate", "wall.png", "--hallucinate", "off"])
+    assert args.hallucinate == "off"
+
+
+def test_automatic_from_image_parser_accepts_hallucinate():
+    parser = ucs_main.build_parser()
+    args = parser.parse_args(["automatic", "apply", "--from-image", "wall.png", "--hallucinate", "toggle"])
+    assert args.hallucinate == "toggle"

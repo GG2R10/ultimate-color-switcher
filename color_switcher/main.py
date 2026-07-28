@@ -254,6 +254,8 @@ def cmd_palette_show(args, config):
 def cmd_palette_add_color(args, config):
     path = _resolve_target_palette(args.path, config, mapping_path=args.mapping)
     entry = palette_shift.add_color(path, args.hex, args.label or "", role=_role_arg_to_value(args.role))
+    if args.link is not None:
+        palette_shift.set_pair(path, entry["id"], args.link)
     swatch = _color_swatch(entry["hex"])
     cells = ["Agregado:", swatch, f"#{entry['hex']}", entry.get("label", "")]
     print(" ".join(c for c in cells if c))
@@ -310,9 +312,12 @@ def cmd_palette_edit(args, config):
     mapping_path = args.mapping or config.mapping_csv
     path = _resolve_target_palette(args.palette, config, mapping_path=mapping_path)
     if args.role is not None:
-        palette_shift.edit_color(path, args.target, args.new_hex, role=_role_arg_to_value(args.role))
+        new_id = palette_shift.edit_color(path, args.target, args.new_hex, role=_role_arg_to_value(args.role))
     else:
-        palette_shift.edit_color(path, args.target, args.new_hex)
+        new_id = palette_shift.edit_color(path, args.target, args.new_hex)
+    if args.link is not None:
+        link_target = None if args.link == "none" else args.link
+        palette_shift.set_pair(path, new_id, link_target)
     print(f"Editado en {path}:")
     _print_palette(palette_store.read_palette_csv(path))
     _maybe_apply_after_edit(args, config, path, mapping_path=mapping_path)
@@ -356,7 +361,8 @@ def cmd_palette_generate(args, config):
         ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
         shading_direction=args.shading_direction,
         shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
-        keep_custom=args.keep_custom, consider_plane=args.consider_plane, mapping_path=mapping_path,
+        keep_custom=args.keep_custom, eco=args.eco, hallucinate=args.hallucinate,
+        mapping_path=mapping_path,
     )
     for w in warnings:
         print(f"⚠ {w}")
@@ -532,10 +538,15 @@ def _apply_or_test(args, config, mode):
               "(algunos ids ya no representan el mismo color real). Conviene rehacerlo antes de reusarlo.")
     if not dry_run:
         roles_path = os.path.join(os.path.dirname(detected_path), "color_roles.json")
-        role_collisions = color_detector.rekey_roles_after_apply(roles_path, detected_colors, new_palette, entries)
+        role_collisions, pair_collisions = color_detector.rekey_roles_after_apply(
+            roles_path, detected_colors, new_palette, entries
+        )
         for new_key, old_keys in role_collisions:
             print(f"⚠ {new_key} quedó sin rol asignado: los colores {old_keys} tenían roles distintos "
                   "y convergieron en él. Reasigná el rol a mano si corresponde.")
+        for fg_key, dangling_bg_key in pair_collisions:
+            print(f"⚠ {fg_key} perdió su vínculo con {dangling_bg_key}: ese background ya no existe "
+                  "como tal tras el apply. Re-vinculalo a mano si corresponde.")
         print(f"Backup en: {config.backup_dir}")
         print("Para deshacer: ucs restore")
         _refresh_detected_after_change(config)
@@ -609,7 +620,8 @@ def cmd_automatic(args, config):
             ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
             shading_direction=args.shading_direction,
             shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
-            keep_custom=args.keep_custom, consider_plane=args.consider_plane, mapping_path=mapping_path,
+            keep_custom=args.keep_custom, eco=args.eco, hallucinate=args.hallucinate,
+            mapping_path=mapping_path,
         )
         for w in gen_warnings:
             print(f"⚠ {w}")
@@ -705,7 +717,8 @@ def cmd_palette_shift(args, config):
         weighted_contrast=weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
         colors=args.colors, shading_direction=args.shading_direction,
         shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
-        keep_custom=args.keep_custom, consider_plane=args.consider_plane, write=not args.test,
+        keep_custom=args.keep_custom, eco=args.eco, hallucinate=args.hallucinate,
+        mapping_path=mapping_path, write=not args.test,
     )
     for w in result["warnings"]:
         print(f"⚠ {w}")
@@ -863,11 +876,18 @@ def _add_shift_args(parser):
                               "a mano en su mismo lugar en vez de descartarlos (default: mantener la "
                               "preferencia guardada en la paleta, que empieza en 'on'). No dispara una "
                               "regeneración por sí solo.")
-    parser.add_argument("--consider-plane", choices=onofftoggle, default=None, metavar="on|off|toggle",
-                         help="Al regenerar (paletas generadas), apuntar a la demanda de colores "
-                              "foreground/background ya tageados en esta paleta (default: mantener la "
-                              "preferencia guardada, que empieza en 'on'). No dispara una regeneración "
-                              "por sí solo.")
+    parser.add_argument("--eco", choices=onofftoggle, default=None, metavar="on|off|toggle",
+                         help="Al regenerar (paletas generadas), forzar mismo tono en las parejas "
+                              "foreground/background que contrastan por luminancia (contraste solo por "
+                              "luminancia, sin variedad de tono) (default: mantener la preferencia "
+                              "guardada, que empieza en 'off'). No dispara una regeneración por sí solo. "
+                              "Los colores tageados fg/bg sin pareja vinculada se ignoran para la "
+                              "generación (se avisa, sin bloquear).")
+    parser.add_argument("--hallucinate", choices=onofftoggle, default=None, metavar="on|off|toggle",
+                         help="Al regenerar (paletas generadas) contra una imagen monocromática, "
+                              "sintetizar un acento saturado + un ramp de shading a partir de él en vez "
+                              "de una paleta gris de verdad (default: mantener la preferencia guardada, "
+                              "que empieza en 'on'). No dispara una regeneración por sí solo.")
 
 
 def _add_my_eyes_generation_args(parser):
@@ -916,18 +936,38 @@ def _add_keep_custom_generation_arg(parser):
                               "que empieza en 'on').")
 
 
-def _add_consider_plane_generation_arg(parser):
+def _add_eco_generation_arg(parser):
     """Whether a FRESH generation (palette generate / automatic --from-image)
-    aims for a foreground/background contrast demand at all -- see
-    color_detector.compute_role_demand / palette_shift.generate_and_save_palette.
-    Shared so the two entry points can't drift apart."""
-    parser.add_argument("--consider-plane", choices=["on", "off", "toggle"], default=None,
+    forces same-hue fg/bg pairs (contrast purely by luminance) for the
+    luminance-contrasting cases -- see
+    palette_generator.fgbg_pairing.apply_fgbg_pairing /
+    palette_shift.generate_and_save_palette. Shared so the two entry points
+    can't drift apart. fg/bg PAIRING ITSELF is always resolved (no flag) --
+    it's read from the palette's own current pairing if out_path already
+    exists, else from color_roles.json filtered by the mapping (or
+    unfiltered if there's no mapping); a color tagged fg/bg with no pair
+    vinculada is simply ignored (warned about, not blocked)."""
+    parser.add_argument("--eco", choices=["on", "off", "toggle"], default=None,
                          metavar="on|off|toggle",
-                         help="Generar apuntando a la demanda de colores foreground/background "
-                              "(de la paleta de salida si ya existe, si no de color_roles.json filtrado "
-                              "por el mapping activo, o sin filtrar si no hay mapping) en vez de ignorar "
-                              "los roles por completo (default: mantener la preferencia guardada -- de "
-                              "esa paleta si ya existe, si no la del proyecto, que empieza en 'on').")
+                         help="Forzar mismo tono en las parejas foreground/background que contrastan "
+                              "por luminancia, en vez de dejar que cada una mantenga su propio tono "
+                              "(default: mantener la preferencia guardada -- de esa paleta si ya existe, "
+                              "si no la del proyecto, que empieza en 'off').")
+
+
+def _add_hallucinate_generation_arg(parser):
+    """Whether a FRESH generation (palette generate / automatic --from-image)
+    against a monochrome source image synthesizes a saturated accent (+ a
+    shading ramp off it) instead of a genuinely greyscale palette -- see
+    palette_generator.generate_palette's hallucinate param. Shared so the
+    two entry points can't drift apart."""
+    parser.add_argument("--hallucinate", choices=["on", "off", "toggle"], default=None,
+                         metavar="on|off|toggle",
+                         help="Contra una imagen monocromática: sintetizar un acento saturado + un ramp "
+                              "de shading a partir de él ('on', default: mantener la preferencia guardada "
+                              "-- de la paleta de salida si ya existe, si no la del proyecto, que empieza "
+                              "en 'on') en vez de una paleta gris de verdad ('off'). Sin efecto si la "
+                              "imagen no es monocromática.")
 
 
 def build_parser():
@@ -991,6 +1031,9 @@ def build_parser():
     pa.add_argument("--label", default="", help="Etiqueta para el color (default: vacía)")
     pa.add_argument("--role", choices=["foreground", "background", "none"], default=None,
                     help="Rol de contraste del color (default: sin marcar)")
+    pa.add_argument("--link", default=None, metavar="ID-O-HEX",
+                    help="Vincular este color (recién agregado) como pareja fg/bg de otro color de la "
+                         "misma paleta, por id o hex (default: sin vincular).")
     _add_apply_args(pa)
     pa.set_defaults(func=cmd_palette_add_color)
 
@@ -1001,6 +1044,9 @@ def build_parser():
     ped.add_argument("new_hex", metavar="new-hex", help="Nuevo color (hex)")
     ped.add_argument("--role", choices=["foreground", "background", "none"], default=None,
                      help="Además, fijar el rol de contraste (default: no lo toca)")
+    ped.add_argument("--link", default=None, metavar="ID-O-HEX",
+                     help="Además, vincular este color como pareja fg/bg de otro color de la misma "
+                          "paleta, por id o hex ('none' para desvincularlo; default: no lo toca).")
     _add_apply_args(ped)
     ped.set_defaults(func=cmd_palette_edit)
 
@@ -1038,7 +1084,8 @@ def build_parser():
     _add_shuffle_args(pg)
     _add_shading_generation_args(pg)
     _add_keep_custom_generation_arg(pg)
-    _add_consider_plane_generation_arg(pg)
+    _add_eco_generation_arg(pg)
+    _add_hallucinate_generation_arg(pg)
     pg.add_argument("--out", help="Ruta de salida (default: palettes/created/generated.csv, se reemplaza en cada corrida)")
     _add_apply_args(pg)
     pg.set_defaults(func=cmd_palette_generate)
@@ -1116,7 +1163,8 @@ def build_parser():
     _add_shuffle_args(ap, from_image_note=" con --from-image")
     _add_shading_generation_args(ap)
     _add_keep_custom_generation_arg(ap)
-    _add_consider_plane_generation_arg(ap)
+    _add_eco_generation_arg(ap)
+    _add_hallucinate_generation_arg(ap)
     ap.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
     ap.add_argument("--test", action="store_true", help="Simular, no modificar archivos")
     ap.add_argument("--force", action="store_true",

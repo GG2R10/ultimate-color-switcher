@@ -55,18 +55,29 @@ from .selection import (
     synthesize_shade,
 )
 from .transforms import (
-    _BACKGROUND_SAFE_MAX_RATIO,
     _EXTREME_L_MAX,
     _EXTREME_L_MIN,
-    _FOREGROUND_SAFE_MIN_RATIO,
     _MY_EYES_CHROMA_FACTOR,
     _MY_EYES_CHROMA_MAX,
-    _assign_roles,
     _boost_saturation,
     _complement_hue,
+    _invert_boost_saturation,
     _normalize_extreme_lightness,
-    _reduce_contrast,
     apply_post_modifiers,
+    debase_for_post,
     improve_contrast,
+)
+from .fgbg_pairing import (
+    _CASE_L_THRESHOLD,
+    _PAIR_L_MAX,
+    _PAIR_L_MIN,
+    _apply_case1_or_2,
+    _apply_case3,
+    _best_available_pair,
+    _classify_pair,
+    _designate_roles,
+    _nudge_to_target_delta_l,
+    _pair_score,
+    apply_fgbg_pairing,
 )
 from .core import _MODES, generate_palette

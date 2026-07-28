@@ -20,7 +20,7 @@ TYPE_DISPLAY = {"hex": "hex", "hex_from_rgb": "rgb"}
 
 
 def build_group_chip(group, number=None, warning=None, removable_cb=None,
-                     role=None, role_cb=None) -> ColorChip:
+                     role=None, role_cb=None, pair_widget=None) -> ColorChip:
     chip = ColorChip()
     representative = group[0]
     chip.set_color(representative["color"])
@@ -44,10 +44,12 @@ def build_group_chip(group, number=None, warning=None, removable_cb=None,
     chip.set_removable(removable_cb)
     chip.set_role(role)
     chip.set_role_toggleable((lambda g=group: role_cb(g)) if role_cb is not None else None)
+    chip.set_pair_section(pair_widget)
     return chip
 
 
-def build_palette_chip(entry, number=None, warning=None, usage_count=0, role_cb=None) -> ColorChip:
+def build_palette_chip(entry, number=None, warning=None, usage_count=0, role_cb=None,
+                       pair_widget=None) -> ColorChip:
     chip = ColorChip()
     chip.set_color(entry["hex"])
     chip.set_hex_text(f"#{entry['hex']}")
@@ -59,6 +61,7 @@ def build_palette_chip(entry, number=None, warning=None, usage_count=0, role_cb=
     chip.set_warning(warning)
     chip.set_role(entry.get("role"))
     chip.set_role_toggleable((lambda e=entry: role_cb(e)) if role_cb is not None else None)
+    chip.set_pair_section(pair_widget)
     return chip
 
 
@@ -70,6 +73,22 @@ def build_empty_target_chip(number, warning=None) -> ColorChip:
     chip.set_number(number)
     chip.set_warning(warning)
     return chip
+
+
+def build_swatch_circle(hex_value, size=18, tooltip=None) -> Gtk.Box:
+    """A small circular swatch -- hex_value=None renders a hollow "empty"
+    circle (nothing linked/assigned yet). Shared by the pairing widgets
+    (window_main._build_pair_widget/_build_palette_pair_widget) so a
+    dropdown's current selection is also visible at a glance, not just as
+    hex text inside the dropdown itself."""
+    if hex_value is None:
+        return Gtk.Box(width_request=size, height_request=size,
+                       css_classes=["swatch-empty-circle"], valign=Gtk.Align.CENTER,
+                       tooltip_text=tooltip or "Sin vincular")
+    css_class = register_swatch_color(hex_value)
+    return Gtk.Box(width_request=size, height_request=size,
+                   css_classes=["color-swatch-circle", css_class], valign=Gtk.Align.CENTER,
+                   tooltip_text=tooltip or f"#{hex_value}")
 
 
 def build_mapping_preview_row(old_hex, new_hex, warning=None) -> Gtk.Box:

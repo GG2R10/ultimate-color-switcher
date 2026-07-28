@@ -30,10 +30,15 @@ DEFAULT_GENERATION_SETTINGS = {
     # palette_shift.generate_and_save_palette. An existing out_path's own
     # stored value always takes priority over this one.
     "keep_custom_on_regen": True,
-    # Same pattern, for whether a fresh generation considers fg/bg role
-    # demand at all -- see color_detector.compute_role_demand and
-    # palette_shift.generate_and_save_palette.
-    "consider_roles_on_regen": True,
+    # Same pattern, for whether a monochrome image gets a synthesized accent
+    # (+ a shading ramp off it) instead of a genuinely greyscale palette --
+    # see generate_palette's hallucinate param.
+    "hallucinate_on_monochrome": True,
+    # Same pattern, for whether case1/2 fg/bg pairs are forced to the same
+    # hue (contrast purely by luminance) -- see generate_palette's eco param
+    # / fgbg_pairing.apply_fgbg_pairing. Default OFF: a stylistic modifier
+    # (more color variety by default), same category as my_eyes/ying_yang.
+    "eco_contrast": False,
 }
 
 

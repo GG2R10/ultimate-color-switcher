@@ -260,74 +260,6 @@ def test_improve_contrast_increases_ratio_against_background():
     assert after >= 3.0 or after > before  # either it clears the bar, or it at least improved
 
 
-def test_reduce_contrast_decreases_ratio_against_background():
-    background = _entry(50, 0, 0)
-    high_contrast = _entry(95, 10, 10)  # far in lightness -> strong contrast against background
-    before = cm.contrast_ratio(high_contrast["rgb"], background["rgb"])
-    reduced = pg._reduce_contrast(high_contrast, background, max_ratio=3.0)
-    after = cm.contrast_ratio(reduced["rgb"], background["rgb"])
-    assert after <= before
-    assert after <= 3.0 or after < before
-
-
-def test_reduce_contrast_never_overshoots_past_backgrounds_lightness():
-    background = _entry(50, 0, 0)
-    high_contrast = _entry(95, 10, 10)
-    reduced = pg._reduce_contrast(high_contrast, background, max_ratio=3.0)
-    assert reduced["lab"][0] >= background["lab"][0]  # clamped AT background_l, never crossed past it
-
-
-def test_assign_roles_labels_natural_candidates_without_topping_up():
-    background = _entry(20, 0, 0)  # dark background, so a high-L color easily clears WCAG 4.5
-    chosen = [
-        _entry(25, 30, 20),   # close in lightness (ratio ~1.2) -> naturally background-safe
-        _entry(90, 30, 20),   # far in lightness (ratio ~10) -> naturally foreground-safe
-        _entry(85, 0, 0),     # also far (ratio ~8.9) -> naturally foreground-safe too, but not needed
-    ]
-    roles, out = pg._assign_roles(chosen, background, n_background_needed=1, n_foreground_needed=1)
-    assert roles[0] == "background"
-    assert roles[1] == "foreground"
-    assert roles[2] is None
-    # natural candidates already satisfied the demand -- nothing gets touched
-    assert out[0]["hex"] == chosen[0]["hex"]
-    assert out[1]["hex"] == chosen[1]["hex"]
-
-
-def test_assign_roles_tops_up_foreground_shortfall():
-    background = _entry(50, 0, 0)
-    chosen = [_entry(52, 10, 10), _entry(48, 10, 10)]  # both close in lightness, no natural fg candidate
-    roles, out = pg._assign_roles(chosen, background, n_background_needed=0, n_foreground_needed=1)
-    assert roles.count("foreground") == 1
-    i = roles.index("foreground")
-    ratio = cm.contrast_ratio(out[i]["rgb"], background["rgb"])
-    assert ratio >= pg._FOREGROUND_SAFE_MIN_RATIO - 0.5  # topped up to clear (or very near) the WCAG bar
-
-
-def test_assign_roles_tops_up_background_shortfall():
-    background = _entry(50, 0, 0)
-    chosen = [_entry(95, 10, 10), _entry(5, 10, 10)]  # both far in lightness, no natural bg candidate
-    roles, out = pg._assign_roles(chosen, background, n_background_needed=1, n_foreground_needed=0)
-    assert roles.count("background") == 1
-    i = roles.index("background")
-    ratio = cm.contrast_ratio(out[i]["rgb"], background["rgb"])
-    assert ratio <= pg._BACKGROUND_SAFE_MAX_RATIO + 0.5
-
-
-def test_assign_roles_best_effort_when_demand_exceeds_pool():
-    background = _entry(50, 0, 0)
-    chosen = [_entry(52, 10, 10)]  # only one color, can't cover both a bg AND fg slot
-    roles, out = pg._assign_roles(chosen, background, n_background_needed=1, n_foreground_needed=1)
-    assert roles.count(None) == 0  # the single color gets claimed by whichever ran first (background)
-    assert roles[0] == "background"
-
-
-def test_assign_roles_never_double_books_the_same_color():
-    background = _entry(50, 0, 0)
-    chosen = [_entry(90, 10, 10)]  # naturally foreground-safe
-    roles, out = pg._assign_roles(chosen, background, n_background_needed=1, n_foreground_needed=1)
-    assert roles.count("foreground") + roles.count("background") == 1  # never both
-
-
 def _make_test_image(path):
     img = Image.new("RGB", (80, 80), (10, 10, 10))
     pixels = img.load()
@@ -357,38 +289,42 @@ def test_generate_palette_end_to_end(tmp_path):
         int(entry["hex"], 16)  # valid hex
 
 
-def test_generate_palette_role_demand_defaults_produce_no_role_key(tmp_path):
-    """n_background_needed=n_foreground_needed=0 (the default) must stay
-    byte-identical in shape to before this feature existed -- no "role" key
-    on any entry at all, not even role=None."""
+def test_generate_palette_role_pairs_defaults_produce_no_role_key(tmp_path):
+    """role_pairs=None (the default) must stay byte-identical in shape to
+    before this feature existed -- no "role"/"pair_id" key on any entry
+    at all."""
     image_path = tmp_path / "wallpaper.png"
     _make_test_image(image_path)
     palette = pg.generate_palette(str(image_path), n_colors=4, sample_size=5000)
-    assert all("role" not in c for c in palette)
+    assert all("role" not in c and "pair_id" not in c for c in palette)
 
 
-def test_generate_palette_with_role_demand_tags_entries(tmp_path):
+def test_generate_palette_with_role_pairs_tags_entries(tmp_path):
     image_path = tmp_path / "wallpaper.png"
     _make_test_image(image_path)
 
     palette = pg.generate_palette(
         str(image_path), n_colors=4, sample_size=5000,
-        n_background_needed=1, n_foreground_needed=1,
+        role_pairs=[{"pair_id": "p1", "bg_l": 20.0, "fg_l": 80.0}],
     )
 
     roles = [c.get("role") for c in palette]
     assert roles.count("background") == 1
     assert roles.count("foreground") == 1
     assert roles.count(None) == 2
+    # the 2 paired entries share the same pair_id
+    paired = [c for c in palette if c.get("pair_id") == "p1"]
+    assert len(paired) == 2
+    assert "pair_id" not in palette[roles.index(None)]
 
 
-def test_generate_palette_role_demand_with_base_tags_base_too(tmp_path):
+def test_generate_palette_role_pairs_with_base_tags_base_too(tmp_path):
     image_path = tmp_path / "wallpaper.png"
     _make_test_image(image_path)
 
     effective, base = pg.generate_palette(
         str(image_path), n_colors=4, sample_size=5000,
-        n_background_needed=1, n_foreground_needed=0, with_base=True,
+        role_pairs=[{"pair_id": "p1", "bg_l": 20.0, "fg_l": 80.0}], with_base=True,
     )
     assert sum(1 for c in effective if c.get("role") == "background") == 1
     assert sum(1 for c in base if c.get("role") == "background") == 1
@@ -652,6 +588,63 @@ def test_generate_palette_my_eyes_boosts_every_chosen_color(tmp_path):
         _h1, s1, _l1 = cm.rgb_to_hsl(cm.hex_to_rgb(n["hex"]))
         _h2, s2, _l2 = cm.rgb_to_hsl(cm.hex_to_rgb(b["hex"]))
         assert s2 >= s1 - 1e-6  # never LESS saturated
+
+
+def test_invert_boost_saturation_recovers_the_pre_boost_chroma():
+    original = pg._make_color_entry(np.array([50.0, 20.0, -10.0]))
+    boosted = pg._boost_saturation(original, factor=1.5, max_chroma=132.0)
+    recovered = pg._invert_boost_saturation(boosted, factor=1.5, max_chroma=132.0)
+    assert recovered["lab"][1] == pytest.approx(original["lab"][1], abs=0.5)
+    assert recovered["lab"][2] == pytest.approx(original["lab"][2], abs=0.5)
+
+
+def test_invert_boost_saturation_then_forward_reproduces_the_boosted_color():
+    """The actual property debase_for_post relies on: boost(invert(x)) == x,
+    for any realistic (non-maxed) x -- not just invert(boost(x)) == original."""
+    picked = pg._make_color_entry(np.array([60.0, -30.0, 45.0]))
+    inverted = pg._invert_boost_saturation(picked, factor=1.5, max_chroma=132.0)
+    reboosted = pg._boost_saturation(inverted, factor=1.5, max_chroma=132.0)
+    assert reboosted["hex"] == picked["hex"]
+
+
+def test_debase_for_post_no_modifiers_returns_hex_unchanged():
+    assert pg.debase_for_post("abcdef", my_eyes=False, ying_yang=False) == "abcdef"
+
+
+def _assert_hex_close(a: str, b: str, tol: int = 1):
+    # A float Lab round-trip through 8-bit hex quantization can drift by
+    # +/-1 in a channel -- same tolerance this codebase already accepts for
+    # the analogous generate/apply_post_modifiers float round-trip (see
+    # [[palette-shift-design]]), not a real inaccuracy in the math itself.
+    ra, ga, ba = int(a[0:2], 16), int(a[2:4], 16), int(a[4:6], 16)
+    rb, gb, bb = int(b[0:2], 16), int(b[2:4], 16), int(b[4:6], 16)
+    assert max(abs(ra - rb), abs(ga - gb), abs(ba - bb)) <= tol, f"{a} vs {b}"
+
+
+def test_debase_for_post_ying_yang_then_forward_reproduces_picked_color():
+    picked_hex = "ffcc00"  # yellow
+    based_hex = pg.debase_for_post(picked_hex, ying_yang=True)
+    effective = pg.apply_post_modifiers([{"hex": based_hex}], ying_yang=True)[0]["hex"]
+    _assert_hex_close(effective, picked_hex)
+
+
+def test_debase_for_post_my_eyes_then_forward_reproduces_picked_color():
+    picked_hex = "8899aa"
+    based_hex = pg.debase_for_post(picked_hex, my_eyes=True, my_eyes_factor=1.5, my_eyes_max_chroma=132.0)
+    effective = pg.apply_post_modifiers(
+        [{"hex": based_hex}], my_eyes=True, my_eyes_factor=1.5, my_eyes_max_chroma=132.0,
+    )[0]["hex"]
+    _assert_hex_close(effective, picked_hex)
+
+
+def test_debase_for_post_both_modifiers_then_forward_reproduces_picked_color():
+    picked_hex = "33cc88"
+    based_hex = pg.debase_for_post(picked_hex, my_eyes=True, ying_yang=True,
+                                   my_eyes_factor=1.5, my_eyes_max_chroma=132.0)
+    effective = pg.apply_post_modifiers(
+        [{"hex": based_hex}], my_eyes=True, ying_yang=True, my_eyes_factor=1.5, my_eyes_max_chroma=132.0,
+    )[0]["hex"]
+    _assert_hex_close(effective, picked_hex)
 
 
 def test_complement_hue_rotates_180_keeps_sat_and_lightness():
@@ -988,6 +981,61 @@ def test_monochrome_accent_cycles_with_shuffle(tmp_path):
     assert p0[0]["hex"] != p1[0]["hex"]  # shuffle now varies the monochrome accent too
 
 
+def test_hallucinate_default_colors_the_whole_palette_not_just_primary(tmp_path):
+    # Real bug: an earlier version only special-cased primary for a
+    # monochrome image, leaving secondary/auxN to fall back to filter_clusters'
+    # relaxed-but-still-desaturated real clusters -- every color but primary
+    # came out flat grey. hallucinate=True (the default) must ramp the WHOLE
+    # palette off the synthesized accent instead.
+    image_path = tmp_path / "bw.png"
+    _make_grayscale_image(image_path)
+
+    palette = pg.generate_palette(str(image_path), n_colors=6, sample_size=3000)
+
+    assert len(palette) == 6
+    for entry in palette:
+        _hue, sat, _light = cm.rgb_to_hsl(cm.hex_to_rgb(entry["hex"]))
+        assert sat > 15, f"{entry['label']} ({entry['hex']}) came out desaturated: S={sat}"
+
+
+def test_hallucinate_default_ramps_off_primarys_own_hue(tmp_path):
+    # Not just "some saturation" -- every color should share primary's hue/
+    # chroma (a-b in Lab), only lightness varies, since it's a shading ramp.
+    image_path = tmp_path / "bw.png"
+    _make_grayscale_image(image_path)
+
+    palette = pg.generate_palette(str(image_path), n_colors=4, sample_size=3000, mode="balanced")
+    labs = [cm.rgb_to_lab(cm.hex_to_rgb(e["hex"])) for e in palette]
+    a0, b0 = labs[0][1], labs[0][2]
+    for a, b in [(l[1], l[2]) for l in labs[1:]]:
+        assert abs(a - a0) < 3 and abs(b - b0) < 3
+
+
+def test_hallucinate_off_gives_a_genuinely_greyscale_palette(tmp_path):
+    image_path = tmp_path / "bw.png"
+    _make_grayscale_image(image_path)
+
+    palette = pg.generate_palette(str(image_path), n_colors=2, sample_size=3000, hallucinate=False)
+
+    for entry in palette:
+        _hue, sat, _light = cm.rgb_to_hsl(cm.hex_to_rgb(entry["hex"]))
+        assert sat < 10, f"{entry['label']} ({entry['hex']}) unexpectedly saturated: S={sat}"
+
+
+def test_hallucinate_irrelevant_when_image_is_not_monochrome(tmp_path):
+    image_path = tmp_path / "color.png"
+    img = Image.new("RGB", (60, 60))
+    pixels = img.load()
+    for x in range(60):
+        for y in range(60):
+            pixels[x, y] = (220, 40, 40) if x < 30 else (40, 40, 220)
+    img.save(image_path)
+
+    p_on = pg.generate_palette(str(image_path), n_colors=4, sample_size=3000, hallucinate=True)
+    p_off = pg.generate_palette(str(image_path), n_colors=4, sample_size=3000, hallucinate=False)
+    assert [e["hex"] for e in p_on] == [e["hex"] for e in p_off]
+
+
 def _make_dominant_background_image(path):
     # A large saturated red background with one small, distinctly different
     # saturated patch -- the naive (no background-awareness) scorer would
@@ -1044,7 +1092,8 @@ def test_write_then_read_generation_settings_roundtrip(fake_project):
         "my_eyes_factor": 1.5,
         "my_eyes_max_chroma": 132.0,
         "keep_custom_on_regen": True,
-        "consider_roles_on_regen": True,
+        "hallucinate_on_monochrome": True,
+        "eco_contrast": False,
     }
 
 

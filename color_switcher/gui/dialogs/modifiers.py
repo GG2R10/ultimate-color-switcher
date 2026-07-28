@@ -59,7 +59,8 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         "overfetch": int(orig_gen.get("overfetch", 0)),
         "shuffle": int(orig_gen.get("shuffle", 0)),
         "keep_custom": bool(meta.get("keep_custom_on_regen", True)),
-        "consider_plane": bool(meta.get("consider_roles_on_regen", True)),
+        "eco": bool(meta.get("eco_contrast", False)),
+        "hallucinate": bool(meta.get("hallucinate_on_monochrome", True)),
     }
 
     def overrides():
@@ -69,7 +70,8 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
               # itself), so unlike mode/scoring/colors below they're always
               # safe to pass.
               "keep_custom": "on" if state["keep_custom"] else "off",
-              "consider_plane": "on" if state["consider_plane"] else "off"}
+              "eco": "on" if state["eco"] else "off",
+              "hallucinate": "on" if state["hallucinate"] else "off"}
         # Pass a selection override ONLY when it differs from what's stored, so
         # merely toggling my-eyes stays on the fast post-only path (no regen).
         if generated:
@@ -215,18 +217,33 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         keep_custom_row.connect("notify::active", on_keep_custom)
         sel_group.add(keep_custom_row)
 
-        consider_plane_row = Adw.SwitchRow(
-            title="Considerar roles foreground/background",
-            subtitle="Al regenerar, apuntar a la demanda de colores fg/bg ya tageados en esta paleta.",
+        eco_row = Adw.SwitchRow(
+            title="Modo eco (contraste solo por luminancia)",
+            subtitle="En las parejas foreground/background vinculadas que contrastan por luminancia, "
+                     "forzar el mismo tono en vez de dejar que cada una mantenga el suyo.",
         )
-        consider_plane_row.set_active(state["consider_plane"])
+        eco_row.set_active(state["eco"])
 
-        def on_consider_plane(row, _p):
-            state["consider_plane"] = row.get_active()
+        def on_eco(row, _p):
+            state["eco"] = row.get_active()
             refresh_preview()
 
-        consider_plane_row.connect("notify::active", on_consider_plane)
-        sel_group.add(consider_plane_row)
+        eco_row.connect("notify::active", on_eco)
+        sel_group.add(eco_row)
+
+        hallucinate_row = Adw.SwitchRow(
+            title="Alucinar acento en fondos monocromáticos",
+            subtitle="Si la imagen es monocromática, sintetizar un acento saturado + un ramp de "
+                     "shading a partir de él en vez de una paleta gris de verdad.",
+        )
+        hallucinate_row.set_active(state["hallucinate"])
+
+        def on_hallucinate(row, _p):
+            state["hallucinate"] = row.get_active()
+            refresh_preview()
+
+        hallucinate_row.connect("notify::active", on_hallucinate)
+        sel_group.add(hallucinate_row)
         page.add(sel_group)
     else:
         note = Adw.PreferencesGroup()

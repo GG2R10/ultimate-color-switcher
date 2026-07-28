@@ -9,6 +9,7 @@ already expects.
 
 import numpy as np
 
+from . import fgbg_pairing
 from .color_entry import build_clusters, load_image_samples
 from .scoring import score_cluster
 from .selection import (
@@ -25,7 +26,6 @@ from .selection import (
 from .transforms import (
     _MY_EYES_CHROMA_FACTOR,
     _MY_EYES_CHROMA_MAX,
-    _assign_roles,
     _boost_saturation,
     _complement_hue,
     _normalize_extreme_lightness,
@@ -52,8 +52,9 @@ def generate_palette(
     shading_direction: str = "dark",
     shading_min_l: float = 8.0,
     shading_max_l: float = 92.0,
-    n_background_needed: int = 0,
-    n_foreground_needed: int = 0,
+    role_pairs: list = None,
+    eco: bool = False,
+    hallucinate: bool = True,
     with_base: bool = False,
 ) -> list:
     """
@@ -121,19 +122,39 @@ def generate_palette(
     scheme (see _complement_hue). Applied after all selection/contrast logic,
     so it preserves the palette's internal contrast relationships.
 
-    n_background_needed/n_foreground_needed (see [[color-roles-design]]):
-    how many of the chosen colors should come out tagged "role":
-    "background"/"foreground" in the returned dicts, chosen by auto-labeling
-    each color's own WCAG contrast against the image's OWN background
-    reference (find_background_color -- unrelated to any user-tagged dotfile
-    color) and topping up any shortfall via improve_contrast/_reduce_contrast
-    (see _assign_roles). Both default to 0 -- the byte-identical, opt-in-only
-    default: no role key appears on any entry unless a role actually got
-    assigned.
+    role_pairs (see [[color-roles-design]]'s fg/bg pairing rework):
+    [{"pair_id", "bg_l", "fg_l"}, ...] -- explicit detected bg/fg pairs
+    (bg_l/fg_l the ORIGINAL detected colors' Lab L), resolved by the caller
+    (color_detector.compute_role_pairs / palette_shift's own tiered
+    resolution) from color_roles.json. When given, fgbg_pairing.
+    apply_fgbg_pairing reshapes that many pairs' worth of the chosen colors
+    into explicit "background"/"foreground" pairs (classified into 3 cases
+    by how bg_l/fg_l originally related, see fgbg_pairing's module
+    docstring) right after selection, before any post-modifier. None/empty
+    (the default) is a complete no-op -- no role/pairing key appears on any
+    entry. `eco` (--eco) restricts case1/2 pairs to the same hue (contrast
+    purely by luminance); irrelevant for case3 pairs and when role_pairs is
+    empty. A color tagged fg/bg with no pair at all is simply not considered
+    here -- the caller is responsible for warning about that separately.
 
     shading_direction/shading_min_l/shading_max_l: only used when
     mode="shading" -- see generate_shading_series. Direction is explicit
     ("dark", the default, or "light"), never auto-picked.
+
+    hallucinate: what to do when the image itself is monochrome (see
+    _is_monochrome) -- no real cluster has enough saturation to build a
+    primary/secondary/auxN from. True (the default): synthesize a saturated
+    accent for primary (see synthesize_accent_color) AND build the rest of
+    the palette as a shading ramp off THAT accent (same mechanism as
+    mode="shading", applied regardless of the requested mode) -- so the
+    whole palette carries the accent's hue instead of just primary. This is
+    the fix for a real bug: an earlier version only special-cased primary,
+    leaving secondary/auxN to fall back to filter_clusters' relaxed (but
+    still desaturated) real clusters, so every color BUT primary came out
+    flat grey. False: don't special-case a monochrome image at all --
+    primary/secondary/auxN are all selected normally from the real (grey)
+    clusters, producing a genuinely greyscale palette. Irrelevant (byte-
+    identical either way) when the image isn't monochrome.
 
     Returns [{"hex": "rrggbb", "label": "primary"|"secondary"|"auxN"|"shadeN"}, ...]
     — ready for guiless.apply_palette or palette_store.write_palette_csv.
@@ -159,8 +180,9 @@ def generate_palette(
 
     is_monochrome = not clusters or _is_monochrome(clusters)
     filtered = filter_clusters(clusters, min_needed=n_colors + overfetch) or clusters
+    hallucinating = is_monochrome and hallucinate
 
-    if is_monochrome:
+    if hallucinating:
         # No real hue anywhere in the image to build a "primary" from --
         # synthesize a saturated accent instead of settling for near-black
         # or near-white. Lean the accent's lightness away from the image's
@@ -181,7 +203,8 @@ def generate_palette(
     else:
         primary_raw = select_primary(filtered, skip=shuffle)
 
-    if mode == "shading":
+    build_shading_ramp = mode == "shading" or hallucinating
+    if build_shading_ramp:
         # Unlike the other modes, primary itself is NOT contrast-adjusted
         # here: improve_contrast() can push lightness all the way to its
         # 3/97 clamp when the natural cluster color sits close to the
@@ -190,14 +213,15 @@ def generate_palette(
         # already-extreme primary would leave that room artificially tiny
         # (or lopsided), making the whole ramp degenerate. Left as the
         # natural cluster color, primary's own lightness is what the ramp's
-        # room is measured from.
+        # room is measured from. Same rationale applies to a hallucinated
+        # accent, which is exactly what the rest of the palette ramps off.
         primary = primary_raw
     else:
         primary = improve_contrast(primary_raw, background) if background is not None else primary_raw
 
     chosen = [primary]
 
-    if mode == "shading":
+    if build_shading_ramp:
         if n_colors > 1:
             n_shades_needed = n_colors - 1
             shades = generate_shading_series(
@@ -230,8 +254,14 @@ def generate_palette(
     chosen = chosen[:n_colors]
 
     roles = [None] * len(chosen)
-    if (n_background_needed or n_foreground_needed) and background is not None:
-        roles, chosen = _assign_roles(chosen, background, n_background_needed, n_foreground_needed)
+    pair_ids = [None] * len(chosen)
+    if role_pairs:
+        chosen = fgbg_pairing.apply_fgbg_pairing(chosen, role_pairs, eco=eco)
+        for i, c in enumerate(chosen):
+            if c.get("role"):
+                roles[i] = c["role"]
+            if c.get("pair_id") is not None:
+                pair_ids[i] = c["pair_id"]
 
     n = len(chosen)
     if mode == "shading":
@@ -245,12 +275,21 @@ def generate_palette(
     def _finalize(entries):
         # Final safety pass: never emit a pure black/white -- normalize the
         # near-extremes into a usable band (see _normalize_extreme_lightness).
-        normed = [_normalize_extreme_lightness(c) for c in entries]
+        # Skipped for paired entries: fgbg_pairing already placed them
+        # carefully within its own safe Lab-L band to reproduce a SPECIFIC
+        # delta between the two, and normalize's independent per-color HSL
+        # pass could disturb that relationship.
+        normed = [
+            c if pair_ids[i] is not None else _normalize_extreme_lightness(c)
+            for i, c in enumerate(entries)
+        ]
         result = []
         for i, c in enumerate(normed):
             entry = {"hex": c["hex"], "label": labels[i]}
             if roles[i]:
                 entry["role"] = roles[i]
+            if pair_ids[i] is not None:
+                entry["pair_id"] = pair_ids[i]
             result.append(entry)
         return result
 

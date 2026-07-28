@@ -335,19 +335,33 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
     keep_custom_row.connect("notify::active", on_keep_custom_changed)
     group.add(keep_custom_row)
 
-    consider_plane_row = Adw.SwitchRow(
-        title="Considerar roles foreground/background",
-        subtitle="Apuntar a la demanda de colores fg/bg tageados (de la paleta existente, o de "
-                 "colores detectados) en vez de ignorar los roles por completo.",
+    eco_row = Adw.SwitchRow(
+        title="Modo eco (contraste solo por luminancia)",
+        subtitle="En las parejas foreground/background vinculadas que contrastan por luminancia, "
+                 "forzar el mismo tono en vez de dejar que cada una mantenga el suyo.",
     )
-    consider_plane_row.set_active(bool(settings.get("consider_roles_on_regen", True)))
+    eco_row.set_active(bool(settings.get("eco_contrast", False)))
 
-    def on_consider_plane_changed(row, _pspec=None):
-        settings["consider_roles_on_regen"] = row.get_active()
+    def on_eco_changed(row, _pspec=None):
+        settings["eco_contrast"] = row.get_active()
         pg.write_generation_settings(config, settings)
 
-    consider_plane_row.connect("notify::active", on_consider_plane_changed)
-    group.add(consider_plane_row)
+    eco_row.connect("notify::active", on_eco_changed)
+    group.add(eco_row)
+
+    hallucinate_row = Adw.SwitchRow(
+        title="Alucinar acento en fondos monocromáticos",
+        subtitle="Si la imagen fuente es monocromática, sintetizar un acento saturado + un ramp de "
+                 "shading a partir de él en vez de una paleta gris de verdad.",
+    )
+    hallucinate_row.set_active(bool(settings.get("hallucinate_on_monochrome", True)))
+
+    def on_hallucinate_changed(row, _pspec=None):
+        settings["hallucinate_on_monochrome"] = row.get_active()
+        pg.write_generation_settings(config, settings)
+
+    hallucinate_row.connect("notify::active", on_hallucinate_changed)
+    group.add(hallucinate_row)
 
     expander = Adw.ExpanderRow(
         title="Opciones avanzadas",

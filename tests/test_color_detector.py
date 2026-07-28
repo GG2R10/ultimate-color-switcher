@@ -76,20 +76,28 @@ def test_cycle_role_is_unmarked_background_foreground_unmarked():
     assert cd.cycle_role("foreground") is None
 
 
+def _role(role, pair=None):
+    return {"role": role, "pair": pair}
+
+
 def test_read_color_roles_missing_file_returns_empty(tmp_path):
     assert cd.read_color_roles(str(tmp_path / "color_roles.json")) == {}
 
 
 def test_write_read_color_roles_roundtrip(tmp_path):
     path = tmp_path / "color_roles.json"
-    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:112233": "foreground"})
-    assert cd.read_color_roles(str(path)) == {"hex:aabbcc": "background", "hex:112233": "foreground"}
+    cd.write_color_roles(str(path), {"hex:aabbcc": _role("background"), "hex:112233": _role("foreground")})
+    assert cd.read_color_roles(str(path)) == {
+        "hex:aabbcc": _role("background"), "hex:112233": _role("foreground"),
+    }
 
 
 def test_write_color_roles_drops_unmarked_and_invalid_entries(tmp_path):
     path = tmp_path / "color_roles.json"
-    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:ffffff": None, "hex:000000": "bogus"})
-    assert cd.read_color_roles(str(path)) == {"hex:aabbcc": "background"}
+    cd.write_color_roles(str(path), {
+        "hex:aabbcc": _role("background"), "hex:ffffff": None, "hex:000000": _role("bogus"),
+    })
+    assert cd.read_color_roles(str(path)) == {"hex:aabbcc": _role("background")}
 
 
 def test_read_color_roles_tolerates_malformed_json(tmp_path):
@@ -104,29 +112,151 @@ def test_read_color_roles_tolerates_non_dict_json(tmp_path):
     assert cd.read_color_roles(str(path)) == {}
 
 
+def test_read_color_roles_migrates_old_bare_string_shape(tmp_path):
+    # Old format: {"type:hex": "foreground"|"background"}, no pairing concept
+    # at all -- must upgrade transparently, never crash, never lose the role.
+    path = tmp_path / "color_roles.json"
+    path.write_text('{"hex:aabbcc": "background", "hex:112233": "foreground"}')
+    assert cd.read_color_roles(str(path)) == {
+        "hex:aabbcc": _role("background"), "hex:112233": _role("foreground"),
+    }
+
+
+def test_read_color_roles_nulls_dangling_or_invalid_pair(tmp_path):
+    path = tmp_path / "color_roles.json"
+    path.write_text(
+        '{"hex:aaaaaa": {"role": "foreground", "pair": "hex:bbbbbb"},'
+        ' "hex:cccccc": {"role": "background", "pair": "hex:dddddd"}}'
+        # aaaaaa's pair points at nothing -> nulled. cccccc's pair is on a
+        # background entry, which never carries a meaningful pair -> nulled.
+    )
+    roles = cd.read_color_roles(str(path))
+    assert roles["hex:aaaaaa"]["pair"] is None
+    assert roles["hex:cccccc"]["pair"] is None
+
+
+def test_pair_of_and_role_of_helpers():
+    roles = {
+        "hex:aaaaaa": _role("background"),
+        "hex:bbbbbb": _role("foreground", pair="hex:aaaaaa"),
+    }
+    assert cd.role_of(roles, "hex:aaaaaa") == "background"
+    assert cd.role_of(roles, "hex:zzzzzz") is None
+    assert cd.pair_of(roles, "hex:bbbbbb") == "hex:aaaaaa"
+    assert cd.pair_of(roles, "hex:aaaaaa") is None  # background: never meaningful
+
+
+def test_set_pair_links_and_unlinks():
+    roles = {"hex:aaaaaa": _role("background"), "hex:bbbbbb": _role("foreground")}
+    linked = cd.set_pair(roles, "hex:bbbbbb", "hex:aaaaaa")
+    assert linked["hex:bbbbbb"]["pair"] == "hex:aaaaaa"
+    assert roles["hex:bbbbbb"]["pair"] is None  # original untouched
+
+    unlinked = cd.set_pair(linked, "hex:bbbbbb", None)
+    assert unlinked["hex:bbbbbb"]["pair"] is None
+
+
+def test_set_pair_is_a_no_op_on_wrong_roles():
+    roles = {"hex:aaaaaa": _role("background"), "hex:bbbbbb": _role("foreground")}
+    # fg_key isn't foreground
+    assert cd.set_pair(roles, "hex:aaaaaa", "hex:bbbbbb")["hex:aaaaaa"]["pair"] is None
+    # bg_key isn't background
+    assert cd.set_pair(roles, "hex:bbbbbb", "hex:bbbbbb")["hex:bbbbbb"]["pair"] is None
+    # either key missing entirely
+    assert cd.set_pair(roles, "hex:zzzzzz", "hex:aaaaaa") == roles
+
+
+def test_backgrounds_used_as_pair_targets():
+    roles = {
+        "hex:aaaaaa": _role("background"),
+        "hex:bbbbbb": _role("foreground", pair="hex:aaaaaa"),
+        "hex:cccccc": _role("foreground", pair="hex:aaaaaa"),
+        "hex:dddddd": _role("foreground"),
+    }
+    assert cd.backgrounds_used_as_pair_targets(roles) == {"hex:aaaaaa"}
+
+
+def test_backgrounds_used_as_pair_targets_matches_hex_and_rgb_sibling():
+    # Real bug: a background detected in BOTH representations only ever
+    # gets ONE of them stored as some foreground's `pair` (whichever was
+    # picked as canonical, e.g. by the GUI's linking dropdown) -- the OTHER
+    # representation must still count as "used", not flagged as unpaired.
+    roles = {
+        "hex:aaaaaa": _role("background"),
+        "hex_from_rgb:aaaaaa": _role("background"),  # same real color, other representation
+        "hex:bbbbbb": _role("foreground", pair="hex:aaaaaa"),  # only points at ONE representation
+    }
+    assert cd.backgrounds_used_as_pair_targets(roles) == {"hex:aaaaaa", "hex_from_rgb:aaaaaa"}
+
+
+def test_clear_dangling_pairs_after_role_change_own_pair():
+    roles = {"hex:aaaaaa": _role("background"), "hex:bbbbbb": _role("foreground", pair="hex:aaaaaa")}
+    cleared = cd.clear_dangling_pairs_after_role_change(roles, "hex:bbbbbb", "background")
+    assert cleared["hex:bbbbbb"]["pair"] is None
+
+
+def test_clear_dangling_pairs_after_role_change_others_pointing_at_it():
+    roles = {
+        "hex:aaaaaa": _role("background"),
+        "hex:bbbbbb": _role("foreground", pair="hex:aaaaaa"),
+        "hex:cccccc": _role("foreground", pair="hex:aaaaaa"),
+    }
+    cleared = cd.clear_dangling_pairs_after_role_change(roles, "hex:aaaaaa", "foreground")
+    assert cleared["hex:bbbbbb"]["pair"] is None
+    assert cleared["hex:cccccc"]["pair"] is None
+
+
+def test_detected_id_for_role_key():
+    detected = [_detected(1, "hex", "aabbcc"), _detected(2, "hex", "ddeeff")]
+    assert cd.detected_id_for_role_key(detected, cd.role_key("hex", "aabbcc")) == 1
+    assert cd.detected_id_for_role_key(detected, cd.role_key("hex", "999999")) is None
+
+
 def test_rekey_roles_after_apply_carries_role_to_new_hex(tmp_path):
     path = tmp_path / "color_roles.json"
-    cd.write_color_roles(str(path), {"hex:aabbcc": "background"})
+    cd.write_color_roles(str(path), {"hex:aabbcc": _role("background")})
 
     detected = [{"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []}]
     new_palette = [{"id": 1, "hex": "112233"}]
     resolved = [{"old_id": 1, "new_id": 1}]
 
-    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
-    assert collisions == []
-    assert cd.read_color_roles(str(path)) == {"hex:112233": "background"}
+    role_collisions, pair_collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert role_collisions == [] and pair_collisions == []
+    assert cd.read_color_roles(str(path)) == {"hex:112233": _role("background")}
+
+
+def test_rekey_roles_after_apply_remaps_pair_when_bg_is_rekeyed(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {
+        "hex:aabbcc": _role("background"),
+        "hex:ffffff": _role("foreground", pair="hex:aabbcc"),
+    })
+
+    detected = [
+        {"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "ffffff", "count": 1, "files": []},
+    ]
+    new_palette = [{"id": 1, "hex": "112233"}, {"id": 2, "hex": "eeeeee"}]
+    resolved = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}]
+
+    role_collisions, pair_collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert role_collisions == [] and pair_collisions == []
+    roles = cd.read_color_roles(str(path))
+    assert roles["hex:eeeeee"]["pair"] == "hex:112233"
 
 
 def test_rekey_roles_after_apply_leaves_unrelated_roles_untouched(tmp_path):
     path = tmp_path / "color_roles.json"
-    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:ffffff": "foreground"})
+    cd.write_color_roles(str(path), {"hex:aabbcc": _role("background"), "hex:ffffff": _role("foreground")})
 
     detected = [{"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []}]
     new_palette = [{"id": 1, "hex": "112233"}]
     resolved = [{"old_id": 1, "new_id": 1}]
 
     cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
-    assert cd.read_color_roles(str(path)) == {"hex:112233": "background", "hex:ffffff": "foreground"}
+    assert cd.read_color_roles(str(path)) == {
+        "hex:112233": _role("background"), "hex:ffffff": _role("foreground"),
+    }
 
 
 def test_rekey_roles_after_apply_no_op_when_nothing_tagged(tmp_path):
@@ -135,26 +265,26 @@ def test_rekey_roles_after_apply_no_op_when_nothing_tagged(tmp_path):
     new_palette = [{"id": 1, "hex": "112233"}]
     resolved = [{"old_id": 1, "new_id": 1}]
 
-    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
-    assert collisions == []
+    role_collisions, pair_collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert role_collisions == [] and pair_collisions == []
     assert not path.exists()  # nothing to write, no file created
 
 
 def test_rekey_roles_after_apply_same_hex_is_a_no_op(tmp_path):
     path = tmp_path / "color_roles.json"
-    cd.write_color_roles(str(path), {"hex:aabbcc": "foreground"})
+    cd.write_color_roles(str(path), {"hex:aabbcc": _role("foreground")})
     detected = [{"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []}]
     new_palette = [{"id": 1, "hex": "aabbcc"}]  # mapped to itself, unchanged
     resolved = [{"old_id": 1, "new_id": 1}]
 
-    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
-    assert collisions == []
-    assert cd.read_color_roles(str(path)) == {"hex:aabbcc": "foreground"}
+    role_collisions, pair_collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert role_collisions == [] and pair_collisions == []
+    assert cd.read_color_roles(str(path)) == {"hex:aabbcc": _role("foreground")}
 
 
 def test_rekey_roles_after_apply_convergence_with_different_roles_is_left_unmarked(tmp_path):
     path = tmp_path / "color_roles.json"
-    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:ddeeff": "foreground"})
+    cd.write_color_roles(str(path), {"hex:aabbcc": _role("background"), "hex:ddeeff": _role("foreground")})
 
     detected = [
         {"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []},
@@ -163,17 +293,18 @@ def test_rekey_roles_after_apply_convergence_with_different_roles_is_left_unmark
     new_palette = [{"id": 1, "hex": "112233"}]
     resolved = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 1}]  # both converge on id 1
 
-    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
-    assert len(collisions) == 1
-    new_key, old_keys = collisions[0]
+    role_collisions, pair_collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert len(role_collisions) == 1
+    new_key, old_keys = role_collisions[0]
     assert new_key == "hex:112233"
     assert set(old_keys) == {"hex:aabbcc", "hex:ddeeff"}
+    assert pair_collisions == []
     assert cd.read_color_roles(str(path)) == {}  # left unmarked, not guessed
 
 
 def test_rekey_roles_after_apply_convergence_with_same_role_is_not_a_collision(tmp_path):
     path = tmp_path / "color_roles.json"
-    cd.write_color_roles(str(path), {"hex:aabbcc": "background", "hex:ddeeff": "background"})
+    cd.write_color_roles(str(path), {"hex:aabbcc": _role("background"), "hex:ddeeff": _role("background")})
 
     detected = [
         {"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []},
@@ -182,9 +313,33 @@ def test_rekey_roles_after_apply_convergence_with_same_role_is_not_a_collision(t
     new_palette = [{"id": 1, "hex": "112233"}]
     resolved = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 1}]
 
-    collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
-    assert collisions == []
-    assert cd.read_color_roles(str(path)) == {"hex:112233": "background"}
+    role_collisions, pair_collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert role_collisions == [] and pair_collisions == []
+    assert cd.read_color_roles(str(path)) == {"hex:112233": _role("background")}
+
+
+def test_rekey_roles_after_apply_pair_dangles_and_clears_when_bg_collides_away(tmp_path):
+    path = tmp_path / "color_roles.json"
+    cd.write_color_roles(str(path), {
+        "hex:aabbcc": _role("background"),
+        "hex:ddeeff": _role("foreground"),  # different role, will collide with aabbcc
+        "hex:ffffff": _role("foreground", pair="hex:aabbcc"),
+    })
+
+    detected = [
+        {"id": 1, "type": "hex", "color": "aabbcc", "count": 1, "files": []},
+        {"id": 2, "type": "hex", "color": "ddeeff", "count": 1, "files": []},
+        {"id": 3, "type": "hex", "color": "ffffff", "count": 1, "files": []},
+    ]
+    new_palette = [{"id": 1, "hex": "112233"}, {"id": 3, "hex": "eeeeee"}]
+    # ids 1 and 2 both converge onto new hex 112233 -- role collision there
+    resolved = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 1}, {"old_id": 3, "new_id": 3}]
+
+    role_collisions, pair_collisions = cd.rekey_roles_after_apply(str(path), detected, new_palette, resolved)
+    assert len(role_collisions) == 1
+    assert pair_collisions == [("hex:eeeeee", "hex:aabbcc")]
+    roles = cd.read_color_roles(str(path))
+    assert roles["hex:eeeeee"]["pair"] is None
 
 
 def test_grouped_by_hex_finds_siblings():
@@ -264,32 +419,113 @@ def _detected(id_, type_, color):
     return {"id": id_, "type": type_, "color": color}
 
 
-def test_compute_role_demand_filters_by_mapping_when_given():
-    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "222222"), _detected(3, "hex", "333333")]
+def test_compute_role_pairs_resolves_lab_l_from_hex():
+    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "eeeeee")]
     roles = {
-        cd.role_key("hex", "111111"): "background",
-        cd.role_key("hex", "222222"): "foreground",
-        cd.role_key("hex", "333333"): "foreground",  # tagged but NOT in the mapping below
+        cd.role_key("hex", "111111"): _role("background"),
+        cd.role_key("hex", "eeeeee"): _role("foreground", pair="hex:111111"),
+    }
+    pairs = cd.compute_role_pairs(detected, roles)
+    assert len(pairs) == 1
+    p = pairs[0]
+    assert p["bg_l"] < p["fg_l"]  # 111111 is dark, eeeeee is light
+
+
+def test_compute_role_pairs_filters_by_mapping_when_given():
+    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "eeeeee"), _detected(3, "hex", "ff0000")]
+    roles = {
+        cd.role_key("hex", "111111"): _role("background"),
+        cd.role_key("hex", "eeeeee"): _role("foreground", pair="hex:111111"),
+        cd.role_key("hex", "ff0000"): _role("foreground", pair="hex:111111"),  # not in the mapping below
     }
     mapping_entries = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}]
-    n_bg, n_fg = cd.compute_role_demand(detected, roles, mapping_entries)
-    assert (n_bg, n_fg) == (1, 1)  # id 3's tag doesn't count -- not mapped
+    pairs = cd.compute_role_pairs(detected, roles, mapping_entries)
+    assert len(pairs) == 1  # id 3's pair doesn't count -- not mapped
 
 
-def test_compute_role_demand_falls_back_to_unfiltered_roles_when_no_mapping():
-    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "222222")]
+def test_compute_role_pairs_falls_back_to_unfiltered_when_no_mapping():
+    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "eeeeee")]
     roles = {
-        cd.role_key("hex", "111111"): "background",
-        cd.role_key("hex", "222222"): "foreground",
+        cd.role_key("hex", "111111"): _role("background"),
+        cd.role_key("hex", "eeeeee"): _role("foreground", pair="hex:111111"),
     }
-    assert cd.compute_role_demand(detected, roles, mapping_entries=None) == (1, 1)
-    assert cd.compute_role_demand(detected, roles, mapping_entries=[]) == (1, 1)  # empty == no mapping
+    assert len(cd.compute_role_pairs(detected, roles, mapping_entries=None)) == 1
+    assert len(cd.compute_role_pairs(detected, roles, mapping_entries=[])) == 1
 
 
-def test_compute_role_demand_zero_when_nothing_tagged():
+def test_compute_role_pairs_ignores_tagged_but_unpaired():
+    detected = [_detected(1, "hex", "111111"), _detected(2, "hex", "eeeeee")]
+    roles = {
+        cd.role_key("hex", "111111"): _role("background"),
+        cd.role_key("hex", "eeeeee"): _role("foreground"),  # no pair set
+    }
+    assert cd.compute_role_pairs(detected, roles) == []
+
+
+def test_compute_role_pairs_empty_when_nothing_tagged():
     detected = [_detected(1, "hex", "111111")]
-    assert cd.compute_role_demand(detected, {}, mapping_entries=[{"old_id": 1, "new_id": 1}]) == (0, 0)
-    assert cd.compute_role_demand(detected, {}, mapping_entries=None) == (0, 0)
+    assert cd.compute_role_pairs(detected, {}) == []
+
+
+def test_compute_role_pairs_dedupes_hex_and_rgb_siblings():
+    # A real color detected as BOTH "hex" and "hex_from_rgb" gets tagged and
+    # paired on EACH representation independently (role/pairing follow "a
+    # group is one identity" in the GUI) -- must still count as ONE pair,
+    # not two, or generation would demand double the palette slots.
+    detected = [
+        _detected(1, "hex", "111111"),
+        _detected(2, "hex_from_rgb", "111111"),  # sibling of id 1
+        _detected(3, "hex", "eeeeee"),
+        _detected(4, "hex_from_rgb", "eeeeee"),  # sibling of id 3
+    ]
+    roles = {
+        cd.role_key("hex", "111111"): _role("background"),
+        cd.role_key("hex_from_rgb", "111111"): _role("background"),
+        cd.role_key("hex", "eeeeee"): _role("foreground", pair="hex:111111"),
+        cd.role_key("hex_from_rgb", "eeeeee"): _role("foreground", pair="hex_from_rgb:111111"),
+    }
+    pairs = cd.compute_role_pairs(detected, roles)
+    assert len(pairs) == 1
+
+
+def test_tagged_without_pair_flags_unpaired_fg_and_unused_bg():
+    roles = {
+        "hex:aaaaaa": _role("background"),  # never used as a pair target
+        "hex:bbbbbb": _role("background"),  # used
+        "hex:cccccc": _role("foreground", pair="hex:bbbbbb"),
+        "hex:dddddd": _role("foreground"),  # no pair at all
+    }
+    assert set(cd.tagged_without_pair(roles)) == {"hex:aaaaaa", "hex:dddddd"}
+
+
+def test_tagged_without_pair_empty_when_everything_is_paired():
+    roles = {
+        "hex:aaaaaa": _role("background"),
+        "hex:bbbbbb": _role("foreground", pair="hex:aaaaaa"),
+    }
+    assert cd.tagged_without_pair(roles) == []
+
+
+def test_tagged_without_pair_dedupes_hex_and_rgb_siblings():
+    roles = {
+        "hex:dddddd": _role("foreground"),  # unpaired
+        "hex_from_rgb:dddddd": _role("foreground"),  # same real color, also unpaired
+    }
+    assert len(cd.tagged_without_pair(roles)) == 1
+
+
+def test_tagged_without_pair_does_not_flag_paired_backgrounds_rgb_sibling():
+    # Reproduces the user's real report: a bg+fg pair, BOTH sides detected
+    # in hex and hex_from_rgb form, linked via the GUI (which only ever
+    # stores ONE representative key as the fg's `pair`) -- neither side
+    # should show up as "sin pareja", even the un-referenced sibling key.
+    roles = {
+        "hex:aaaaaa": _role("background"),
+        "hex_from_rgb:aaaaaa": _role("background"),
+        "hex:bbbbbb": _role("foreground", pair="hex:aaaaaa"),
+        "hex_from_rgb:bbbbbb": _role("foreground", pair="hex:aaaaaa"),
+    }
+    assert cd.tagged_without_pair(roles) == []
 
 
 def test_group_paths_by_top_level_collapses_nested_subfolders():

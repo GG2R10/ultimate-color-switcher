@@ -125,6 +125,8 @@ class ColorChip(Gtk.Box):
     role_button = Gtk.Template.Child()
     files_revealer = Gtk.Template.Child()
     files_box = Gtk.Template.Child()
+    pair_revealer = Gtk.Template.Child()
+    pair_box = Gtk.Template.Child()
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -266,3 +268,21 @@ class ColorChip(Gtk.Box):
         self.role_button.set_visible(callback is not None)
         if callback is not None:
             self.role_button.connect("clicked", lambda _b: callback())
+
+    def set_pair_section(self, widget=None):
+        """Show (and populate) or hide the expandable "Background -> color"
+        / "Foreground -> color" section below the chip -- `widget` is an
+        arbitrary caller-built widget (typically a label + Gtk.DropDown, or
+        several such rows for a background with multiple linked
+        foregrounds); None hides the section entirely. ColorChip stays dumb
+        about WHAT the section shows or does -- window_main.py owns the
+        actual linking UI/logic, same separation as set_role/
+        set_role_toggleable already have for the role badge itself."""
+        child = self.pair_box.get_first_child()
+        while child is not None:
+            nxt = child.get_next_sibling()
+            self.pair_box.remove(child)
+            child = nxt
+        if widget is not None:
+            self.pair_box.append(widget)
+        self.pair_revealer.set_reveal_child(widget is not None)

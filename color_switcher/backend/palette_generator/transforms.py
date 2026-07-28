@@ -30,94 +30,6 @@ def improve_contrast(color: dict, background: dict, min_ratio: float = 3.0,
     return _make_color_entry(np.array(lab), label=color.get("label"))
 
 
-def _reduce_contrast(color: dict, background: dict, max_ratio: float = 3.0,
-                     step: float = 5.0, max_iter: int = 12) -> dict:
-    """The inverse of improve_contrast: push `color`'s lightness TOWARD
-    `background`'s until the WCAG contrast ratio drops to max_ratio or below
-    (or max_iter runs out), clamped so it never overshoots past background's
-    own lightness. Used to synthesize a background-safe candidate (see
-    _assign_roles) when generation doesn't naturally have enough."""
-    lab = list(color["lab"])
-    background_l = background["lab"][0]
-    for _ in range(max_iter):
-        rgb = np.clip(cm.lab_to_rgb(np.array(lab)), 0, 255)
-        if cm.contrast_ratio(rgb, background["rgb"]) <= max_ratio:
-            break
-        if lab[0] >= background_l:
-            lab[0] = max(lab[0] - step, background_l)
-        else:
-            lab[0] = min(lab[0] + step, background_l)
-    return _make_color_entry(np.array(lab), label=color.get("label"))
-
-
-_BACKGROUND_SAFE_MAX_RATIO = 3.0   # WCAG: below this, a color reads as blending into the background
-_FOREGROUND_SAFE_MIN_RATIO = 4.5   # WCAG AA, normal text
-
-
-def _assign_roles(chosen: list, background_ref: dict, n_background_needed: int,
-                  n_foreground_needed: int) -> tuple:
-    """Auto-label each chosen color background-safe/foreground-safe by its
-    OWN WCAG contrast against the image's own background reference (NOT a
-    user-tagged dotfile color -- see [[color-roles-design]]), then top up any
-    shortfall via improve_contrast/_reduce_contrast (push lightness, keep
-    hue/chroma) so at least n_background_needed/n_foreground_needed
-    candidates satisfy each threshold, best-effort (fewer than requested if
-    the whole chosen set is exhausted).
-
-    Returns (roles, chosen): `roles` is a list of None/"background"/
-    "foreground" parallel to `chosen`; `chosen` itself may come back with
-    some entries REPLACED (the topped-up ones) -- same length/order,
-    otherwise untouched."""
-    chosen = list(chosen)
-    ratios = [
-        cm.contrast_ratio(np.clip(cm.lab_to_rgb(np.asarray(c["lab"])), 0, 255), background_ref["rgb"])
-        for c in chosen
-    ]
-    roles = [None] * len(chosen)
-
-    # Best-first order: for background, lowest ratio (safest blend) first;
-    # for foreground, highest ratio (clearest read) first. Reused for BOTH
-    # the natural-candidate pass and, if that falls short, the top-up pass --
-    # in the latter case whatever's left closest to its own threshold needs
-    # the smallest nudge.
-    bg_order = sorted(range(len(chosen)), key=lambda i: ratios[i])
-    fg_order = sorted(range(len(chosen)), key=lambda i: -ratios[i])
-
-    bg_assigned = 0
-    for i in bg_order:
-        if bg_assigned >= n_background_needed:
-            break
-        if ratios[i] < _BACKGROUND_SAFE_MAX_RATIO:
-            roles[i] = "background"
-            bg_assigned += 1
-
-    fg_assigned = 0
-    for i in fg_order:
-        if fg_assigned >= n_foreground_needed:
-            break
-        if ratios[i] >= _FOREGROUND_SAFE_MIN_RATIO and roles[i] is None:
-            roles[i] = "foreground"
-            fg_assigned += 1
-
-    if bg_assigned < n_background_needed:
-        for i in (i for i in bg_order if roles[i] is None):
-            if bg_assigned >= n_background_needed:
-                break
-            chosen[i] = _reduce_contrast(chosen[i], background_ref, max_ratio=_BACKGROUND_SAFE_MAX_RATIO)
-            roles[i] = "background"
-            bg_assigned += 1
-
-    if fg_assigned < n_foreground_needed:
-        for i in (i for i in fg_order if roles[i] is None):
-            if fg_assigned >= n_foreground_needed:
-                break
-            chosen[i] = improve_contrast(chosen[i], background_ref, min_ratio=_FOREGROUND_SAFE_MIN_RATIO)
-            roles[i] = "foreground"
-            fg_assigned += 1
-
-    return roles, chosen
-
-
 _MY_EYES_CHROMA_FACTOR = 1.5   # multiplicative CIELAB chroma (C*) boost
 _MY_EYES_CHROMA_MAX = 132.0    # cap on the resulting chroma
 
@@ -147,6 +59,47 @@ def _boost_saturation(color: dict, factor: float = _MY_EYES_CHROMA_FACTOR,
     new_chroma = min(chroma * factor, max_chroma)
     new_a, new_b = new_chroma * np.cos(hue), new_chroma * np.sin(hue)
     return _make_color_entry(np.array([light, new_a, new_b]), label=color.get("label"))
+
+
+def _invert_boost_saturation(color: dict, factor: float = _MY_EYES_CHROMA_FACTOR,
+                             max_chroma: float = _MY_EYES_CHROMA_MAX) -> dict:
+    """Best-effort inverse of _boost_saturation: given a color, compute the
+    BASE that would produce it after boosting -- used so a hand-picked color
+    (add_color/edit_color) shows up EXACTLY as picked even while my-eyes is
+    already active, instead of getting boosted again on top. Exact for any
+    realistic (non-maxed) chroma; not invertible past the cap (many bases
+    would map to the same clamped output), but a color a user just picked
+    is essentially never sitting exactly at that ceiling."""
+    lab = np.asarray(color["lab"], dtype=np.float64)
+    light, a, b = float(lab[0]), float(lab[1]), float(lab[2])
+    chroma = float(np.hypot(a, b))
+    hue = float(np.arctan2(b, a))
+    base_chroma = chroma / factor if factor else chroma
+    new_a, new_b = base_chroma * np.cos(hue), base_chroma * np.sin(hue)
+    return _make_color_entry(np.array([light, new_a, new_b]), label=color.get("label"))
+
+
+def debase_for_post(hex_value: str, my_eyes: bool = False, ying_yang: bool = False,
+                    my_eyes_factor: float = _MY_EYES_CHROMA_FACTOR,
+                    my_eyes_max_chroma: float = _MY_EYES_CHROMA_MAX) -> str:
+    """Given a hex color the user just explicitly picked (add_color/
+    edit_color) and the CURRENTLY ACTIVE post-modifiers, compute the BASE hex
+    that -- once apply_post_modifiers/derive_effective runs forward again --
+    reproduces EXACTLY the picked color. Without this, a hand-picked color
+    would get silently transformed on top of what was picked (e.g. picking
+    yellow while ying-yang is on would show up as blue) -- counter-intuitive,
+    and inconsistent with how a GENERATED color's base already works (always
+    pre-transform). Undoes in the REVERSE of apply_post_modifiers' forward
+    order (my-eyes then ying-yang) -- ying-yang first (self-inverse), then
+    my-eyes. Returns the hex unchanged if neither modifier is active."""
+    if not my_eyes and not ying_yang:
+        return hex_value.lstrip("#").lower()
+    entry = _make_color_entry(cm.rgb_to_lab(cm.hex_to_rgb(hex_value)))
+    if ying_yang:
+        entry = _complement_hue(entry)
+    if my_eyes:
+        entry = _invert_boost_saturation(entry, factor=my_eyes_factor, max_chroma=my_eyes_max_chroma)
+    return entry["hex"]
 
 
 def _complement_hue(color: dict) -> dict:

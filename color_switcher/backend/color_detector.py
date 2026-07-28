@@ -17,6 +17,8 @@ import re
 import os
 from collections import OrderedDict
 
+from . import color_math as cm
+
 
 def expand_path(path_str: str) -> str:
     """Expand ~ and $HOME in a path string."""
@@ -200,9 +202,21 @@ def cycle_role(current):
 
 
 def read_color_roles(path: str) -> dict:
-    """{"type:hex": "foreground"|"background", ...} -- a key's ABSENCE means
-    unmarked, so this file only ever records actual user decisions. Returns
-    {} if the file doesn't exist or is malformed (never raises)."""
+    """{"type:hex": {"role": "foreground"|"background", "pair": "type:hex"|None}, ...}
+    -- a key's ABSENCE means unmarked, so this file only ever records actual
+    user decisions. `pair` (the linked background a foreground contrasts
+    against) is only ever meaningful on a foreground entry; background
+    entries always carry `pair=None` -- the reverse lookup ("which
+    foregrounds point at this background") is derived by scanning (see
+    backgrounds_used_as_pair_targets) rather than stored redundantly, since
+    one background can be the pair target of many foregrounds.
+
+    Backward compatible with the OLDER shape (bare string values, no pairing
+    concept at all) -- a string value transparently upgrades to
+    {"role": value, "pair": None}, so an old file never crashes, never
+    silently loses its role tags, and never needs a separate migration step.
+
+    Returns {} if the file doesn't exist or is malformed (never raises)."""
     path = expand_path(path)
     if not os.path.isfile(path):
         return {}
@@ -213,28 +227,158 @@ def read_color_roles(path: str) -> dict:
         return {}
     if not isinstance(data, dict):
         return {}
-    return {k: v for k, v in data.items() if isinstance(k, str) and v in _ROLE_VALUES}
+
+    roles = {}
+    for k, v in data.items():
+        if not isinstance(k, str):
+            continue
+        if isinstance(v, str):
+            if v in _ROLE_VALUES:
+                roles[k] = {"role": v, "pair": None}
+        elif isinstance(v, dict):
+            role = v.get("role")
+            if role not in _ROLE_VALUES:
+                continue
+            pair = v.get("pair")
+            roles[k] = {"role": role, "pair": pair if isinstance(pair, str) else None}
+
+    # A `pair` only means something on a foreground entry, pointing at an
+    # existing background entry -- null out anything else (a background
+    # carrying a stray pair, a dangling pointer at a key that no longer
+    # exists or isn't background anymore) rather than let bad state through.
+    for entry in roles.values():
+        if entry["role"] != "foreground":
+            entry["pair"] = None
+            continue
+        target = entry["pair"]
+        if target is not None and (target not in roles or roles[target]["role"] != "background"):
+            entry["pair"] = None
+
+    return roles
 
 
 def write_color_roles(path: str, roles: dict) -> None:
-    """Persists only actual foreground/background entries -- anything else
-    (None, an unrecognized value) is dropped rather than written."""
+    """Persists only well-formed {"role": ..., "pair": ...} entries --
+    anything else (a malformed value, a dangling/invalid `pair`) is dropped
+    or nulled rather than written, same "never write inconsistent state"
+    spirit as the old bare-role filtering."""
     path = expand_path(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    cleaned = {k: v for k, v in roles.items() if v in _ROLE_VALUES}
+    cleaned = {}
+    for k, v in roles.items():
+        if not isinstance(v, dict):
+            continue
+        role = v.get("role")
+        if role not in _ROLE_VALUES:
+            continue
+        cleaned[k] = {"role": role, "pair": v.get("pair")}
+    for entry in cleaned.values():
+        if entry["role"] != "foreground":
+            entry["pair"] = None
+            continue
+        target = entry["pair"]
+        if target is not None and (target not in cleaned or cleaned[target]["role"] != "background"):
+            entry["pair"] = None
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cleaned, f, indent=2, sort_keys=True)
         f.write("\n")
 
 
+def role_of(roles: dict, key: str):
+    """The role ("foreground"|"background") currently tagged on `key`, or
+    None if unmarked. The one-line shim every caller migrating off the old
+    bare-string roles-dict shape should use instead of `roles.get(key)`."""
+    entry = roles.get(key)
+    return entry["role"] if entry else None
+
+
+def pair_of(roles: dict, key: str):
+    """The background key `key` (a foreground) is linked to, or None.
+    Meaningless (always None) on anything that isn't currently tagged
+    foreground."""
+    entry = roles.get(key)
+    return entry.get("pair") if entry else None
+
+
+def set_pair(roles: dict, fg_key: str, bg_key: str = None) -> dict:
+    """Link (or, bg_key=None, unlink) `fg_key` (must currently be tagged
+    foreground) to `bg_key` (must currently be tagged background). Returns a
+    NEW roles dict -- doesn't mutate `roles` in place, so the caller always
+    has something fresh to persist via write_color_roles. A no-op copy
+    (nothing changed) if the preconditions aren't met -- never raises, same
+    convention as the rest of this module."""
+    new_roles = {k: dict(v) for k, v in roles.items()}
+    fg_entry = new_roles.get(fg_key)
+    if fg_entry is None or fg_entry["role"] != "foreground":
+        return new_roles
+    if bg_key is not None:
+        bg_entry = new_roles.get(bg_key)
+        if bg_entry is None or bg_entry["role"] != "background":
+            return new_roles
+    fg_entry["pair"] = bg_key
+    return new_roles
+
+
+def backgrounds_used_as_pair_targets(roles: dict) -> set:
+    """Every background key that's currently the pair target of at least one
+    foreground -- the reverse lookup, derived by scanning rather than a
+    stored pointer (a background can be paired with many foregrounds).
+
+    Matched by HEX VALUE, not exact key: a real background color detected
+    in both a "hex" and "hex_from_rgb" representation only ever gets ONE of
+    them stored as some foreground's `pair` (whichever was picked as the
+    canonical option, e.g. in the GUI's linking dropdown) -- exact-key
+    matching would then incorrectly flag the OTHER, equally-real
+    representation as "unused" (see [[color-roles-design]]'s hex/rgb-sibling
+    dedup bugfix -- this is the same bug class, just one spot it was missed
+    in the first pass: this function returns background KEYS, but was
+    comparing raw stored `pair` VALUES against them 1:1)."""
+    paired_hexes = {
+        v["pair"].split(":", 1)[1] for v in roles.values()
+        if v["role"] == "foreground" and v.get("pair")
+    }
+    return {k for k, v in roles.items() if v["role"] == "background" and k.split(":", 1)[1] in paired_hexes}
+
+
+def clear_dangling_pairs_after_role_change(roles: dict, changed_key: str, new_role) -> dict:
+    """Call this right after changing `changed_key`'s role (e.g. via
+    cycle_role) to `new_role` -- keeps `pair` pointers consistent instead of
+    leaving them dangling:
+      - `changed_key` stops being a foreground -> its own `pair` (if any) no
+        longer means anything, clear it.
+      - `changed_key` stops being a background -> every OTHER foreground
+        that was pointing at it as `pair` now dangles, clear those too
+        (same "fix up what pointed at the removed thing" precedent as
+        mapping_store.drop_and_shift_new_id).
+    Returns a NEW roles dict; doesn't mutate `roles` in place."""
+    new_roles = {k: dict(v) for k, v in roles.items()}
+    if new_role != "foreground" and changed_key in new_roles:
+        new_roles[changed_key]["pair"] = None
+    if new_role != "background":
+        for entry in new_roles.values():
+            if entry["role"] == "foreground" and entry.get("pair") == changed_key:
+                entry["pair"] = None
+    return new_roles
+
+
+def detected_id_for_role_key(detected_colors: list, key: str):
+    """Reverse of role_key: the detected color's `id` for a given role_key,
+    or None if it's not currently among detected_colors (e.g. it was
+    tagged, then the color stopped being detected)."""
+    for c in detected_colors:
+        if role_key(c["type"], c["color"]) == key:
+            return c["id"]
+    return None
+
+
 def rekey_roles_after_apply(roles_path: str, detected_colors: list, new_palette: list,
-                            resolved_entries: list) -> list:
+                            resolved_entries: list) -> tuple:
     """Call this after a REAL apply (never for --test/dry-run) so a role tag
-    follows the color it was on, across the detect -> generate -> apply
-    cycle. Without this, a role tagged on an OLD hex would be silently
-    orphaned the moment that hex gets replaced in the files -- the very next
-    rescan won't find it anymore, and this cycle is the app's core recurring
-    workflow, not an edge case.
+    (and its pairing) follows the color it was on, across the detect ->
+    generate -> apply cycle. Without this, a role tagged on an OLD hex would
+    be silently orphaned the moment that hex gets replaced in the files --
+    the very next rescan won't find it anymore, and this cycle is the app's
+    core recurring workflow, not an edge case.
 
     detected_colors: the OLD colors the apply just used (id-keyed, same
     list `color_replacer.apply_mapping` was called with).
@@ -251,11 +395,18 @@ def rekey_roles_after_apply(roles_path: str, detected_colors: list, new_palette:
     (hex stays hex, hex_from_rgb stays hex_from_rgb) -- color_replacer
     substitutes in place, it doesn't change which representation a file uses.
 
-    Returns a list of (new_role_key, [old_role_key, ...]) for every
-    convergence where two OLD colors carrying DIFFERENT roles landed on the
-    SAME new color -- that new key is deliberately left unmarked rather than
-    guessed; the caller should warn about these, mirroring the project's
-    existing warn-rather-than-guess precedent for ambiguous merges."""
+    Returns (role_collisions, pair_collisions):
+      - role_collisions: [(new_role_key, [old_role_key, ...]), ...] for every
+        convergence where two OLD colors carrying DIFFERENT roles landed on
+        the SAME new color -- that new key is deliberately left unmarked
+        rather than guessed; the caller should warn about these, mirroring
+        the project's existing warn-rather-than-guess precedent for
+        ambiguous merges.
+      - pair_collisions: [(fg_new_key, dangling_old_bg_key), ...] for every
+        SURVIVING foreground whose paired background either collided away
+        (above) or no longer resolves to a background at all -- its `pair`
+        is cleared rather than left dangling, and reported separately since
+        it's a distinct kind of collision the caller should word differently."""
     detected_by_id = {c["id"]: c for c in detected_colors}
     palette_by_id = {p["id"]: p for p in new_palette}
 
@@ -271,52 +422,79 @@ def rekey_roles_after_apply(roles_path: str, detected_colors: list, new_palette:
             old_to_new[old_key] = new_key
 
     if not old_to_new:
-        return []
+        return [], []
 
     roles = read_color_roles(roles_path)
-    original_roles = dict(roles)
+    original_roles = {k: dict(v) for k, v in roles.items()}
     incoming = {}
     for old_key, new_key in old_to_new.items():
-        role = roles.get(old_key)
-        if role is None:
+        entry = roles.get(old_key)
+        if entry is None:
             continue
-        incoming.setdefault(new_key, []).append((old_key, role))
+        incoming.setdefault(new_key, []).append((old_key, entry))
 
     for old_key in old_to_new:
         roles.pop(old_key, None)
 
-    collisions = []
+    role_collisions = []
     for new_key, contributions in incoming.items():
-        distinct_roles = {role for _old_key, role in contributions}
+        distinct_roles = {entry["role"] for _old_key, entry in contributions}
         if len(distinct_roles) == 1:
-            roles[new_key] = distinct_roles.pop()
+            _old_key, entry = contributions[0]
+            roles[new_key] = dict(entry)
         else:
             roles.pop(new_key, None)
-            collisions.append((new_key, [k for k, _r in contributions]))
+            role_collisions.append((new_key, [k for k, _e in contributions]))
+
+    # Second pass: remap every SURVIVING foreground's `pair` through
+    # old_to_new (its background may itself have just been rekeyed), then
+    # null out anything that no longer resolves to an existing background --
+    # dangling either because that background collided away above, or
+    # because it simply isn't tagged background anymore.
+    pair_collisions = []
+    for key, entry in roles.items():
+        if entry["role"] != "foreground" or not entry.get("pair"):
+            continue
+        old_pair = entry["pair"]
+        remapped_pair = old_to_new.get(old_pair, old_pair)
+        target = roles.get(remapped_pair)
+        if target is not None and target["role"] == "background":
+            entry["pair"] = remapped_pair
+        else:
+            entry["pair"] = None
+            pair_collisions.append((key, old_pair))
 
     if roles != original_roles:
         write_color_roles(roles_path, roles)
-    return collisions
+    return role_collisions, pair_collisions
 
 
-def compute_role_demand(detected_colors: list, roles: dict, mapping_entries: list = None) -> tuple:
-    """How many background/foreground-tagged colors currently have real
-    demand for a fresh generation to aim for. Returns (n_background,
-    n_foreground). See [[color-roles-design]] Phase 5.
+def compute_role_pairs(detected_colors: list, roles: dict, mapping_entries: list = None) -> list:
+    """Resolve color_roles.json's explicit fg/bg links into the plain
+    [{"pair_id", "bg_l", "fg_l"}, ...] shape palette_generator.fgbg_pairing
+    expects (bg_l/fg_l the ORIGINAL detected colors' CIE Lab L) -- see
+    [[color-roles-design]]'s pairing rework. `pair_id` is a STRING, built
+    from fg_hex/bg_hex (the real color VALUES, not the role_keys) -- an
+    opaque identity the caller can use to trace a result back to its
+    source pair.
 
-    If `mapping_entries` is given and non-empty, counts only tagged colors
-    that are ALSO currently present in the mapping (by old_id) -- a color
-    tagged fg/bg but not mapped anywhere doesn't need a palette slot yet
-    (e.g. 20 detected, 15 tagged, only 10 actually used in the mapping ->
-    demand should reflect those 10, not all 15).
+    Same mapping-presence filter compute_role_demand used to have: if
+    `mapping_entries` is given and non-empty, only pairs where BOTH the
+    foreground and its linked background are currently present in the
+    mapping (by old_id) count -- a pair tagged but not mapped anywhere
+    doesn't need a palette slot yet. If `mapping_entries` is falsy (None or
+    empty -- no mapping built yet), every valid pair in `roles` counts,
+    unfiltered (same "deliberately generous" reasoning: a soft target for
+    generation, over-provisioning a few extra candidates is harmless).
 
-    If `mapping_entries` is falsy (None or empty -- no mapping built yet),
-    falls back to counting EVERY tagged entry in `roles` directly, unfiltered.
-    Deliberately generous rather than 0: this is a soft target for generation
-    (unlike keep_custom's hard positional constraint), so over-provisioning a
-    few extra fg/bg-safe candidates is harmless, while defaulting to 0 just
-    because no mapping exists yet would ignore roles the user tagged before
-    ever building one."""
+    Deduped by (fg_hex, bg_hex), NOT by role_key: a real color detected in
+    BOTH a "hex" and "hex_from_rgb" representation gets tagged/paired on
+    EACH representation independently (role/pairing follow "a group is one
+    identity" -- see window_main._on_group_role_clicked/
+    _on_group_pair_selected, which set the SAME role/pair on every sibling),
+    so without deduping here, one real user-intended pair would be counted
+    TWICE -- consuming twice the palette slots and demanding 2 generated
+    pairs for what the user experiences as 1."""
     if mapping_entries:
         present_ids = {e["old_id"] for e in mapping_entries}
         detected_by_id = {c["id"]: c for c in detected_colors}
@@ -325,13 +503,59 @@ def compute_role_demand(detected_colors: list, roles: dict, mapping_entries: lis
             c = detected_by_id.get(old_id)
             if c is not None:
                 keys_in_use.add(role_key(c["type"], c["color"]))
-        relevant = [roles[k] for k in keys_in_use if k in roles]
     else:
-        relevant = list(roles.values())
+        keys_in_use = None  # unfiltered
 
-    n_background = sum(1 for r in relevant if r == "background")
-    n_foreground = sum(1 for r in relevant if r == "foreground")
-    return n_background, n_foreground
+    hex_by_key = {role_key(c["type"], c["color"]): c["color"] for c in detected_colors}
+
+    pairs = []
+    seen = set()
+    for fg_key, entry in roles.items():
+        if entry["role"] != "foreground" or not entry.get("pair"):
+            continue
+        bg_key = entry["pair"]
+        if keys_in_use is not None and (fg_key not in keys_in_use or bg_key not in keys_in_use):
+            continue
+        fg_hex = hex_by_key.get(fg_key)
+        bg_hex = hex_by_key.get(bg_key)
+        if fg_hex is None or bg_hex is None:
+            continue  # tagged, but the color isn't currently detected at all
+        dedupe_key = (fg_hex, bg_hex)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        fg_l = float(cm.rgb_to_lab(cm.hex_to_rgb(fg_hex))[0])
+        bg_l = float(cm.rgb_to_lab(cm.hex_to_rgb(bg_hex))[0])
+        pairs.append({"pair_id": f"{fg_hex}::{bg_hex}", "bg_l": bg_l, "fg_l": fg_l})
+    return pairs
+
+
+def tagged_without_pair(roles: dict) -> list:
+    """Every role_key tagged foreground/background that ISN'T part of a
+    valid pair -- these are simply ignored by generation now (the pairing
+    system fully replaces the old flat count), so callers use this to warn
+    the user their tag currently does nothing.
+
+    Deduped by hex VALUE (not role_key): a real color detected in both a
+    "hex" and "hex_from_rgb" representation gets the same role/pairing
+    state on each representation independently (see compute_role_pairs'
+    docstring), so without deduping, one real unpaired color would be
+    counted twice in a caller's warning."""
+    paired_backgrounds = backgrounds_used_as_pair_targets(roles)
+    unpaired_keys = [
+        k for k, entry in roles.items()
+        if (entry["role"] == "background" and k not in paired_backgrounds)
+        or (entry["role"] == "foreground" and not entry.get("pair"))
+    ]
+    seen_hex = set()
+    deduped = []
+    for k in unpaired_keys:
+        hex_val = k.split(":", 1)[1]
+        if hex_val in seen_hex:
+            continue
+        seen_hex.add(hex_val)
+        deduped.append(k)
+    return deduped
 
 
 def generate_regex_for_color(hex_color: str) -> str:

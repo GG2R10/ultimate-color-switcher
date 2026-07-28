@@ -29,6 +29,7 @@ from .chip_builders import (
     build_group_chip as _build_group_chip,
     build_mapping_preview_row as _build_mapping_preview_row,
     build_palette_chip as _build_palette_chip,
+    build_swatch_circle as _build_swatch_circle,
     build_warning_row as _build_warning_row,
 )
 from .color_chip import ensure_base_styles
@@ -263,6 +264,14 @@ class MainWindow(Adw.ApplicationWindow):
                 shading_direction=settings.get("shading_direction", "dark"),
                 shading_min_luminance=settings.get("shading_min_luminance", 8.0),
                 shading_max_luminance=settings.get("shading_max_luminance", 92.0),
+                # Explicit overrides, not left as None: otherwise a target
+                # out_path that already exists would have its OWN stored
+                # keep_custom_on_regen/hallucinate_on_monochrome/eco_contrast
+                # win over whatever's configured in "Configurar generación de
+                # paleta…", silently ignoring it.
+                keep_custom="on" if settings.get("keep_custom_on_regen", True) else "off",
+                hallucinate="on" if settings.get("hallucinate_on_monochrome", True) else "off",
+                eco="on" if settings.get("eco_contrast", False) else "off",
             )
         except Exception as e:
             dialogs.toast(self.toast_overlay, f"No se pudo generar la paleta: {e}")
@@ -443,22 +452,197 @@ class MainWindow(Adw.ApplicationWindow):
         -- role_key is by VALUE (type+hex), so this works regardless of
         whether the group is currently in the mapping or not."""
         roles = color_detector.read_color_roles(self.config.color_roles_json)
-        return roles.get(color_detector.role_key(group[0]["type"], group[0]["color"]))
+        return color_detector.role_of(roles, color_detector.role_key(group[0]["type"], group[0]["color"]))
 
     def _on_group_role_clicked(self, group):
         """Cycles the WHOLE group's role atomically (every member, e.g. both
         the hex and hex_from_rgb sibling when auto-link is on) -- a group is
         one identity everywhere else in this app (adding it, removing it),
-        roles follow the same rule."""
+        roles follow the same rule. Any pairing that no longer makes sense
+        after the change (this group stops being a foreground/background, or
+        was the pair target of some other foreground) gets cleaned up too --
+        see clear_dangling_pairs_after_role_change."""
         roles = color_detector.read_color_roles(self.config.color_roles_json)
-        current = roles.get(color_detector.role_key(group[0]["type"], group[0]["color"]))
+        key = color_detector.role_key(group[0]["type"], group[0]["color"])
+        current = color_detector.role_of(roles, key)
         new_role = color_detector.cycle_role(current)
         for c in group:
-            key = color_detector.role_key(c["type"], c["color"])
+            k = color_detector.role_key(c["type"], c["color"])
+            roles = color_detector.clear_dangling_pairs_after_role_change(roles, k, new_role)
             if new_role is None:
-                roles.pop(key, None)
+                roles.pop(k, None)
             else:
-                roles[key] = new_role
+                roles[k] = {"role": new_role, "pair": None}
+        color_detector.write_color_roles(self.config.color_roles_json, roles)
+        self._refresh_all()
+
+    def _group_for_hex(self, hex_value):
+        """The currently-visible detected group whose representative color
+        is `hex_value` -- used to resolve a bare hex (e.g. from the
+        background side's "linked foregrounds" list) back into a full
+        group, so an unlink/relink action can route through
+        _on_group_pair_selected's "a group is one identity" treatment."""
+        for group in self._detected_groups_ordered():
+            if group[0]["color"] == hex_value:
+                return group
+        return None
+
+    def _build_pair_widget(self, group):
+        """The expandable "Background -> color"/"Foreground -> color"
+        section under a detected-color chip (see
+        chip_builders.build_group_chip's pair_widget param) -- None if
+        there's nothing to show for this group. A FOREGROUND-tagged group
+        gets an interactive selector (pairing lives on the foreground side
+        of color_roles.json, see color_detector.set_pair) with a small
+        swatch showing the current link at a glance. A BACKGROUND-tagged
+        group is ALSO interactive -- each currently-linked foreground shows
+        its own swatch + an unlink button, plus a "vincular otro
+        foreground" selector to add more (many-to-one: unlike the palette
+        side, one background can have several linked foregrounds
+        simultaneously, so this can't be a single-select dropdown the way
+        the foreground side's is).
+
+        Deduped/matched by hex VALUE throughout, never by exact role_key: a
+        real color detected in both a "hex" and "hex_from_rgb"
+        representation carries the SAME role/pairing on each independently
+        (see color_detector.compute_role_pairs' docstring) -- without this,
+        a background would show up twice in the dropdown, and a linked
+        foreground could appear duplicated (or get MISSED entirely, if its
+        stored `pair` happens to reference a different sibling
+        representation than this group's own)."""
+        roles = color_detector.read_color_roles(self.config.color_roles_json)
+        role = self._group_role(group)
+        own_hex = group[0]["color"]
+
+        if role == "foreground":
+            seen_hex = set()
+            backgrounds = []
+            for k, e in roles.items():
+                if e["role"] != "background":
+                    continue
+                hex_val = k.split(":", 1)[1]
+                if hex_val in seen_hex:
+                    continue
+                seen_hex.add(hex_val)
+                backgrounds.append((k, hex_val))
+
+            box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
+            box.append(Gtk.Label(label="Background →", css_classes=["dim-label", "caption"]))
+
+            key = color_detector.role_key(group[0]["type"], own_hex)
+            current_pair = color_detector.pair_of(roles, key)
+            current_pair_hex = current_pair.split(":", 1)[1] if current_pair else None
+            box.append(_build_swatch_circle(current_pair_hex, size=16))
+
+            options = ["(sin vincular)"] + [f"#{hex_val}" for _k, hex_val in backgrounds]
+            dropdown = Gtk.DropDown(model=Gtk.StringList.new(options))
+            selected = 0
+            for i, (_k, hex_val) in enumerate(backgrounds, start=1):
+                if hex_val == current_pair_hex:
+                    selected = i
+                    break
+            dropdown.set_selected(selected)
+
+            def on_selected(dd, _pspec, group=group, backgrounds=backgrounds):
+                idx = dd.get_selected()
+                bg_key = None if idx == 0 else backgrounds[idx - 1][0]
+                self._on_group_pair_selected(group, bg_key)
+
+            dropdown.connect("notify::selected", on_selected)
+            box.append(dropdown)
+            return box
+
+        if role == "background":
+            seen_hex = set()
+            linked_hexes = []
+            for k, e in roles.items():
+                if e["role"] != "foreground" or not e.get("pair"):
+                    continue
+                if e["pair"].split(":", 1)[1] != own_hex:
+                    continue
+                fg_hex = k.split(":", 1)[1]
+                if fg_hex in seen_hex:
+                    continue
+                seen_hex.add(fg_hex)
+                linked_hexes.append(fg_hex)
+
+            candidates = []
+            seen_candidate = set(linked_hexes)
+            for k, e in roles.items():
+                if e["role"] != "foreground":
+                    continue
+                hex_val = k.split(":", 1)[1]
+                if hex_val in seen_candidate:
+                    continue
+                seen_candidate.add(hex_val)
+                candidates.append(hex_val)
+
+            if not linked_hexes and not candidates:
+                return None
+
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            for fg_hex in linked_hexes:
+                row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
+                row.append(_build_swatch_circle(fg_hex, size=16))
+                row.append(Gtk.Label(label=f"Foreground → #{fg_hex}", xalign=0,
+                                     css_classes=["dim-label", "caption"], hexpand=True))
+                unlink_button = Gtk.Button(icon_name="edit-clear-symbolic", css_classes=["flat", "circular"],
+                                           tooltip_text="Desvincular", valign=Gtk.Align.CENTER)
+
+                def on_unlink(_b, fg_hex=fg_hex):
+                    fg_group = self._group_for_hex(fg_hex)
+                    if fg_group is not None:
+                        self._on_group_pair_selected(fg_group, None)
+
+                unlink_button.connect("clicked", on_unlink)
+                row.append(unlink_button)
+                box.append(row)
+
+            if candidates:
+                add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
+                add_row.append(Gtk.Label(label="+ Foreground →", css_classes=["dim-label", "caption"]))
+                options = ["(vincular otro foreground)"] + [f"#{h}" for h in candidates]
+                add_dropdown = Gtk.DropDown(model=Gtk.StringList.new(options))
+
+                bg_key = color_detector.role_key(group[0]["type"], own_hex)
+
+                def on_add_selected(dd, _pspec, candidates=candidates, bg_key=bg_key):
+                    idx = dd.get_selected()
+                    if idx == 0:
+                        return
+                    fg_group = self._group_for_hex(candidates[idx - 1])
+                    if fg_group is not None:
+                        self._on_group_pair_selected(fg_group, bg_key)
+
+                add_dropdown.connect("notify::selected", on_add_selected)
+                add_row.append(add_dropdown)
+                box.append(add_row)
+
+            return box
+
+        return None
+
+    def _on_group_pair_selected(self, fg_group, bg_key):
+        """Link (or, bg_key=None, unlink) every member of a foreground-
+        tagged detected group to a background detected color chosen from
+        the pairing dropdown -- same "a group is one identity" treatment
+        _on_group_role_clicked already gives roles. If the chosen
+        background isn't currently in the mapping, add its WHOLE group
+        (every detected color sharing its hex value, hex AND hex_from_rgb
+        alike -- same "a group is one identity" precedent
+        _add_group_to_mapping already follows) first, so the link actually
+        affects generation instead of being inert metadata (see
+        [[color-roles-design]]'s pairing rework)."""
+        roles = color_detector.read_color_roles(self.config.color_roles_json)
+        if bg_key is not None and self.mapping is not None:
+            bg_hex = bg_key.split(":", 1)[1]
+            present_ids = {e["old_id"] for e in self.mapping.entries}
+            for c in self.detected_colors:
+                if c["color"] == bg_hex and c["id"] not in present_ids:
+                    self.mapping.add_or_update(c["id"], None)
+        for c in fg_group:
+            fg_key = color_detector.role_key(c["type"], c["color"])
+            roles = color_detector.set_pair(roles, fg_key, bg_key)
         color_detector.write_color_roles(self.config.color_roles_json, roles)
         self._refresh_all()
 
@@ -468,6 +652,57 @@ class MainWindow(Adw.ApplicationWindow):
         only the role changes, never the hex/origin."""
         new_role = color_detector.cycle_role(entry.get("role"))
         palette_shift.set_role(self.new_palette_path, entry["id"], new_role)
+        self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
+        self._refresh_all()
+
+    def _build_palette_pair_widget(self, entry):
+        """The "Pareja -> color" selector under a palette-color chip (see
+        chip_builders.build_palette_chip's pair_widget param) -- None if
+        this color has no role (pairing only makes sense between two
+        role-tagged colors). Unlike the detected side (many-to-one, `pair`
+        lives only on the foreground entry), palette-side pairing
+        (palette_shift.set_pair) is strictly 1-to-1 and symmetric --
+        linking either side to a new partner drops whatever it was
+        previously linked to (see palette_shift._clear_pairing). So both
+        foreground AND background palette chips get the SAME interactive
+        selector here, listing every OTHER currently role-tagged color of
+        the OPPOSITE role."""
+        role = entry.get("role")
+        if role is None:
+            return None
+        opposite = "background" if role == "foreground" else "foreground"
+        candidates = [e for e in self.new_palette if e.get("role") == opposite]
+
+        box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
+        box.append(Gtk.Label(label="Pareja →", css_classes=["dim-label", "caption"]))
+
+        current_pair_id = entry.get("paired_id")
+        current_pair_hex = next((c["hex"] for c in candidates if c["id"] == current_pair_id), None)
+        box.append(_build_swatch_circle(current_pair_hex, size=16))
+
+        options = ["(sin vincular)"] + [f"#{c['hex']} (id {c['id']})" for c in candidates]
+        dropdown = Gtk.DropDown(model=Gtk.StringList.new(options))
+        selected = 0
+        for i, c in enumerate(candidates, start=1):
+            if c["id"] == current_pair_id:
+                selected = i
+                break
+        dropdown.set_selected(selected)
+
+        def on_selected(dd, _pspec, entry=entry, candidates=candidates):
+            idx = dd.get_selected()
+            other_id = None if idx == 0 else candidates[idx - 1]["id"]
+            self._on_palette_pair_selected(entry, other_id)
+
+        dropdown.connect("notify::selected", on_selected)
+        box.append(dropdown)
+        return box
+
+    def _on_palette_pair_selected(self, entry, other_id):
+        """Link (or, other_id=None, unlink) a palette color to another
+        role-tagged palette color of the opposite role, chosen from the
+        pairing dropdown -- see palette_shift.set_pair."""
+        palette_shift.set_pair(self.new_palette_path, entry["id"], other_id)
         self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
         self._refresh_all()
 
@@ -563,6 +798,7 @@ class MainWindow(Adw.ApplicationWindow):
         for group in groups:
             chip = _build_group_chip(
                 group, role=self._group_role(group), role_cb=self._on_group_role_clicked,
+                pair_widget=self._build_pair_widget(group),
             )
             chip.set_addable(lambda g=group: self._add_group_to_mapping(g))
             row = Gtk.ListBoxRow(child=chip)
@@ -605,6 +841,7 @@ class MainWindow(Adw.ApplicationWindow):
                 for group in groups_here:
                     chip = _build_group_chip(
                         group, role=self._group_role(group), role_cb=self._on_group_role_clicked,
+                        pair_widget=self._build_pair_widget(group),
                     )
                     chip.set_addable(lambda g=group: self._add_group_to_mapping(g))
                     row = Gtk.ListBoxRow(child=chip)
@@ -634,7 +871,8 @@ class MainWindow(Adw.ApplicationWindow):
             if not self._palette_entry_matches_filter(entry):
                 continue
             chip = _build_palette_chip(entry, usage_count=usage_counts.get(entry["id"], 0),
-                                       role_cb=self._on_palette_role_clicked)
+                                       role_cb=self._on_palette_role_clicked,
+                                       pair_widget=self._build_palette_pair_widget(entry))
             chip.set_editable(lambda e=entry: self._on_palette_edit(e))
             chip.set_deletable(lambda e=entry: self._on_palette_delete(e))
             row = Gtk.ListBoxRow(child=chip)
@@ -686,6 +924,7 @@ class MainWindow(Adw.ApplicationWindow):
                 group_members, number=idx, warning=warning,
                 removable_cb=(lambda ids=tuple(group_old_ids): self._remove_group(ids)),
                 role=self._group_role(group_members), role_cb=self._on_group_role_clicked,
+                pair_widget=self._build_pair_widget(group_members),
             )
             old_row = Gtk.ListBoxRow(child=old_chip)
             old_row.group_ids = tuple(group_old_ids)
@@ -702,7 +941,8 @@ class MainWindow(Adw.ApplicationWindow):
 
             if new_id is not None and new_id in palette_by_id:
                 new_chip = _build_palette_chip(palette_by_id[new_id], number=idx, warning=warning,
-                                               role_cb=self._on_palette_role_clicked)
+                                               role_cb=self._on_palette_role_clicked,
+                                               pair_widget=self._build_palette_pair_widget(palette_by_id[new_id]))
                 new_hex = palette_by_id[new_id]["hex"]
             else:
                 new_chip = _build_empty_target_chip(idx, warning=warning)
@@ -750,6 +990,28 @@ class MainWindow(Adw.ApplicationWindow):
                     f"El color detectado id {m['old_id']} está marcado como {m['detected_role']}, pero se "
                     f"está mapeando a un color de paleta (id {m['new_id']}) marcado como {m['palette_role']}. "
                     "Puede generar mal contraste."
+                )
+                self.warnings_box.append(_build_warning_row(text))
+                added_any = True
+
+            pair_mismatches = conflicts.find_pair_mismatches(
+                self.detected_colors, self.new_palette, resolved, detected_roles
+            )
+            for m in pair_mismatches:
+                text = (
+                    f"Los colores detectados id {m['fg_old_id']} (foreground) e id {m['bg_old_id']} "
+                    f"(background) están vinculados como pareja, pero se mapean a colores de paleta "
+                    f"(id {m['fg_new_id']} / id {m['bg_new_id']}) que no están vinculados entre sí. "
+                    "Puede generar mal contraste."
+                )
+                self.warnings_box.append(_build_warning_row(text))
+                added_any = True
+
+            unpaired = color_detector.tagged_without_pair(detected_roles)
+            if unpaired:
+                text = (
+                    f"{len(unpaired)} color(es) detectado(s) están marcados foreground/background pero "
+                    "sin pareja vinculada: no se toman en cuenta para la generación."
                 )
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
@@ -901,7 +1163,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return
 
             dialogs.toast(self.toast_overlay, f"Backup en: {self.config.backup_dir}")
-            role_collisions = color_detector.rekey_roles_after_apply(
+            role_collisions, pair_collisions = color_detector.rekey_roles_after_apply(
                 self.config.color_roles_json, self.detected_colors, self.new_palette, entries
             )
             if role_collisions:
@@ -909,6 +1171,12 @@ class MainWindow(Adw.ApplicationWindow):
                 dialogs.toast(
                     self.toast_overlay,
                     f"{len(role_collisions)} color(es) nuevo(s) quedaron sin rol asignado por convergencia: {new_keys}.",
+                )
+            if pair_collisions:
+                fg_keys = ", ".join(k for k, _old in pair_collisions)
+                dialogs.toast(
+                    self.toast_overlay,
+                    f"{len(pair_collisions)} color(es) perdieron su vínculo bg/fg tras el apply: {fg_keys}.",
                 )
             # Files on disk just changed -- the old mapping's ids point at
             # colors that no longer exist, so re-scan and start fresh.

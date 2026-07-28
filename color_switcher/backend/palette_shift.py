@@ -33,6 +33,7 @@ adjusts the mapping (see mapping_store.drop_and_shift_new_id).
 import os
 
 from . import color_detector
+from . import color_math as cm
 from . import mapping_store
 from . import palette_generator
 from . import palette_store
@@ -46,8 +47,8 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
                                 my_eyes_factor=palette_generator._MY_EYES_CHROMA_FACTOR,
                                 my_eyes_max_chroma=palette_generator._MY_EYES_CHROMA_MAX,
                                 shading_direction="dark", shading_min_luminance=8.0,
-                                shading_max_luminance=92.0, keep_custom=None, consider_plane=None,
-                                mapping_path=None):
+                                shading_max_luminance=92.0, keep_custom=None, eco=None,
+                                hallucinate=None, mapping_path=None):
     """Shared by the CLI (`palette generate` / `automatic --from-image`) and
     the GUI ("Generar paleta desde imagen…") -- the one place that turns an
     image + generation params into a saved palette CSV with full #ucs-meta.
@@ -81,16 +82,45 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
     palette_generation settings (same "last used becomes the new remembered
     default" pattern resolve_shuffle_index already uses for last_shuffle).
 
-    consider_plane (on|off|toggle|None): whether generation aims for a fg/bg
-    role demand at all -- same resolution shape as keep_custom (out_path's
-    own stored consider_roles_on_regen if it exists, else the project's
-    remembered default). The demand itself (see
-    color_detector.compute_role_demand) is resolved separately, in priority
-    order: (1) out_path's own current role tags if it already exists --
-    [[color-roles-design]] Phase 5's tier 1; (2) detected colors tagged in
+    Foreground/background PAIRING (see [[color-roles-design]]'s pairing
+    rework) is ALWAYS resolved and considered -- there's no on/off flag for
+    it anymore (the old count-based "consider fg/bg roles at all" mechanism,
+    `consider_plane`, was fully retired: a color tagged fg/bg with no
+    explicit pair simply does nothing now, which is warned about in
+    `warnings` rather than gated behind a flag). The actual pairs are
+    resolved in priority order: (1) detected colors explicitly linked in
     color_roles.json AND present in `mapping_path`'s mapping (default:
-    config.mapping_csv); (3) if there's no mapping at all, every tagged entry
-    in color_roles.json, unfiltered."""
+    config.mapping_csv), or every valid pair in color_roles.json unfiltered
+    if there's no mapping at all -- see color_detector.compute_role_pairs;
+    (2) out_path's own current pairing, ONLY as a fallback when (1) comes up
+    empty (e.g. a pairing set purely by hand via palette_shift.set_pair,
+    with no color_roles.json backing at all for tier 1 to ever see) -- see
+    _role_pairs_from_entries. Tier 1 used to be preferred UNCONDITIONALLY
+    over the detected side whenever out_path already existed, but that self-
+    reinforces: it recomputes a floating-point Lab-L target from out_path's
+    OWN current hex values, so a deterministic regeneration (e.g. `mode=
+    "shading"` against the same wallpaper) just reads back whatever delta
+    the PREVIOUS run happened to produce instead of the real originally-
+    detected one, drifting away from it forever once anything nudges it off.
+    Re-deriving from color_roles.json first avoids that drift.
+
+    eco (on|off|toggle|None): whether case1/2 pairs are forced to the same
+    hue (contrast purely by luminance) -- same resolution shape as
+    keep_custom (out_path's own stored eco_contrast if it exists, else the
+    project's remembered default). See
+    palette_generator.generate_palette's eco param.
+
+    hallucinate (on|off|toggle|None): whether a monochrome source image gets
+    a synthesized accent (+ a shading ramp off it) instead of a genuinely
+    greyscale palette -- see palette_generator.generate_palette's
+    hallucinate param. Same resolution shape as keep_custom/eco (out_path's
+    own stored hallucinate_on_monochrome if it exists, else the project's
+    remembered default).
+
+    Raises ShiftError if the image doesn't have enough real color diversity to
+    produce as many colors as generation needs (see
+    _check_generated_enough_colors) -- most likely with hallucinate=off
+    against a flat/near-monochrome image."""
     if not out_path:
         out_path = config.generated_palette_csv
     if not out_path.endswith(".csv"):
@@ -105,39 +135,46 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
         else gen_settings.get("keep_custom_on_regen", True)
     )
     resolved_keep_custom = _resolve_bool(stored_keep_custom, keep_custom)
-    stored_consider_plane = (
-        existing_meta.get("consider_roles_on_regen", True) if existing_entries
-        else gen_settings.get("consider_roles_on_regen", True)
+    stored_hallucinate = (
+        existing_meta.get("hallucinate_on_monochrome", True) if existing_entries
+        else gen_settings.get("hallucinate_on_monochrome", True)
     )
-    resolved_consider_plane = _resolve_bool(stored_consider_plane, consider_plane)
+    resolved_hallucinate = _resolve_bool(stored_hallucinate, hallucinate)
+    stored_eco = (
+        existing_meta.get("eco_contrast", False) if existing_entries
+        else gen_settings.get("eco_contrast", False)
+    )
+    resolved_eco = _resolve_bool(stored_eco, eco)
     gen_settings["keep_custom_on_regen"] = resolved_keep_custom
-    gen_settings["consider_roles_on_regen"] = resolved_consider_plane
+    gen_settings["hallucinate_on_monochrome"] = resolved_hallucinate
+    gen_settings["eco_contrast"] = resolved_eco
     palette_generator.write_generation_settings(config, gen_settings)
 
     old_base = reconstruct_base(existing_entries, existing_meta) if existing_entries else []
     warnings = []
     n_gen_needed, custom_in_range, custom_trailing = _plan_regen_merge(
-        old_base, n_colors, resolved_keep_custom, warnings, consider_plane=resolved_consider_plane,
+        old_base, n_colors, resolved_keep_custom, warnings,
     )
 
-    if resolved_consider_plane:
-        if existing_entries:
-            # Tier 1: out_path already exists -- its own current tags are
-            # the most accurate source, no need to touch color_roles.json.
-            n_bg_needed, n_fg_needed = _role_demand_from_entries(existing_entries)
-        else:
-            # Tiers 2/3: a brand new out_path has nothing of its own to read.
-            detected_colors = color_detector.read_detected_csv(config.detected_palette_csv)
-            roles = color_detector.read_color_roles(config.color_roles_json)
-            _old_p, _new_p, mapping_entries = mapping_store.read_mapping_csv(
-                mapping_path or config.mapping_csv, project_dir=config.project_dir,
-            )
-            n_bg_needed, n_fg_needed = color_detector.compute_role_demand(
-                detected_colors, roles, mapping_entries,
-            )
-        _check_role_demand_fits(n_colors, n_bg_needed, n_fg_needed)
-    else:
-        n_bg_needed, n_fg_needed = 0, 0
+    # Prefer re-deriving from the detected side (color_roles.json) --
+    # the TRUE, non-drifting reference for the luminance target -- and only
+    # fall back to out_path's own current pairing (tier 1) when nothing is
+    # derivable from the detected side at all (see docstring above).
+    detected_colors = color_detector.read_detected_csv(config.detected_palette_csv)
+    roles = color_detector.read_color_roles(config.color_roles_json)
+    _old_p, _new_p, mapping_entries = mapping_store.read_mapping_csv(
+        mapping_path or config.mapping_csv, project_dir=config.project_dir,
+    )
+    role_pairs = color_detector.compute_role_pairs(detected_colors, roles, mapping_entries)
+    unpaired = color_detector.tagged_without_pair(roles)
+    if unpaired:
+        warnings.append(
+            f"{len(unpaired)} color(es) marcado(s) foreground/background sin pareja vinculada "
+            "no se toman en cuenta para la generación."
+        )
+    if existing_entries and not role_pairs:
+        role_pairs = _role_pairs_from_entries(existing_entries)
+    _check_role_pairs_fit(n_colors, len(role_pairs))
 
     weights = palette_generator.resolve_scoring_weights(
         scoring, custom_percentages=custom_scoring_values, config=config,
@@ -152,9 +189,12 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
         shuffle=resolved_shuffle, overfetch=overfetch, ying_yang=False,
         shading_direction=shading_direction, shading_min_l=shading_min_luminance,
         shading_max_l=shading_max_luminance,
-        n_background_needed=n_bg_needed, n_foreground_needed=n_fg_needed, with_base=True,
+        role_pairs=role_pairs, eco=resolved_eco,
+        hallucinate=resolved_hallucinate, with_base=True,
     )
-    fresh_gen = [{"hex": c["hex"], "label": c["label"], "origin": "gen", "role": c.get("role")}
+    _check_generated_enough_colors(base_colors, n_gen_needed, resolved_hallucinate)
+    fresh_gen = [{"hex": c["hex"], "label": c["label"], "origin": "gen",
+                 "role": c.get("role"), "pair_id": c.get("pair_id")}
                 for c in base_colors]
     merged_base = _merge_regen_base(fresh_gen, n_colors, custom_in_range, custom_trailing, resolved_keep_custom)
 
@@ -183,7 +223,8 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
         },
         "post": post,
         "keep_custom_on_regen": resolved_keep_custom,
-        "consider_roles_on_regen": resolved_consider_plane,
+        "hallucinate_on_monochrome": resolved_hallucinate,
+        "eco_contrast": resolved_eco,
         "base": merged_base,
     })
     palette_store.write_palette_csv(out_path, entries, meta=meta)
@@ -236,45 +277,79 @@ def _norm_hex(h):
     return h.lstrip("#").lower()
 
 
+def _pair_ids_from_entries(entries):
+    """Per-entry-index stable-for-THIS-load `pair_id`, derived from the
+    CSV's own numeric `paired_id` cross-reference: `min(id,partner)::
+    max(id,partner)`. This is what lets derive_effective's group-by-pair_id
+    step find the same 2 entries again later even if some OTHER entry gets
+    removed/reordered in between -- a raw stored numeric cross-reference
+    would go stale the moment ids shift, which is exactly the "new_id
+    treated too loosely" bug class this project has hit before."""
+    by_id = {e["id"] for e in entries}
+    pair_ids = [None] * len(entries)
+    for i, e in enumerate(entries):
+        partner_id = e.get("paired_id")
+        if not partner_id or partner_id not in by_id:
+            continue
+        a, b = e["id"], partner_id
+        pair_ids[i] = f"{min(a, b)}::{max(a, b)}"
+    return pair_ids
+
+
 def reconstruct_base(entries, meta):
-    """The full ordered base (one entry per color, with origin and role),
+    """The full ordered base (one entry per color, with origin/role/pair_id),
     robust to the formats a palette file can be in:
       - new: meta['base'] covers every row (len matches) -> used directly.
       - older: meta['base'] held only gen colors, customs were separate literal
         rows -> gen bases come from meta['base'], custom bases from the row hex.
       - legacy: no meta['base'] at all -> every row is its own base.
-    Always aligned 1:1 with `entries` by position. Role, like label, is pure
-    user metadata a post-mod transform never touches -- carried through
-    verbatim rather than defaulted (unlike origin, which always has a value)."""
+    Always aligned 1:1 with `entries` by position. Role/pair_id, like label,
+    are pure user metadata a post-mod transform never touches -- carried
+    through verbatim rather than defaulted (unlike origin, which always has
+    a value). pair_id prefers the stored base's own value (the authoritative
+    pre-post-mod source), falling back to reconstructing one from the row's
+    numeric paired_id (see _pair_ids_from_entries) for an older/legacy file
+    that never stored it on base."""
     stored = list(meta.get("base") or [])
+    entry_pair_ids = _pair_ids_from_entries(entries)
     if stored and len(stored) == len(entries):
         return [
             {"hex": _norm_hex(b["hex"]), "label": b.get("label", ""),
              "origin": b.get("origin") or (entries[i].get("origin") or "gen"),
-             "role": b.get("role") or entries[i].get("role")}
+             "role": b.get("role") or entries[i].get("role"),
+             "pair_id": b.get("pair_id") or entry_pair_ids[i]}
             for i, b in enumerate(stored)
         ]
     base = []
     gi = 0
-    for e in entries:
+    for i, e in enumerate(entries):
         if e.get("origin") == "custom":
             base.append({"hex": _norm_hex(e["hex"]), "label": e.get("label", ""),
-                        "origin": "custom", "role": e.get("role")})
+                        "origin": "custom", "role": e.get("role"), "pair_id": entry_pair_ids[i]})
         elif gi < len(stored):
             base.append({"hex": _norm_hex(stored[gi]["hex"]),
                          "label": stored[gi].get("label", e.get("label", "")), "origin": "gen",
-                         "role": stored[gi].get("role") or e.get("role")})
+                         "role": stored[gi].get("role") or e.get("role"),
+                         "pair_id": stored[gi].get("pair_id") or entry_pair_ids[i]})
             gi += 1
         else:
             base.append({"hex": _norm_hex(e["hex"]), "label": e.get("label", ""),
-                        "origin": "gen", "role": e.get("role")})
+                        "origin": "gen", "role": e.get("role"), "pair_id": entry_pair_ids[i]})
     return base
 
 
 def derive_effective(base, post):
     """The effective (to-apply) rows for a base under the active post-mods:
-    apply_post_modifiers to EVERY color (gen and custom), order preserved, ids
-    renumbered 1..N, origin and role carried through."""
+    apply_post_modifiers to EVERY color (gen and custom), order preserved,
+    ids renumbered 1..N, origin/role carried through.
+
+    pair_id (a stable per-color identity shared by both sides of a pair --
+    see palette_generator.fgbg_pairing) is resolved into a concrete
+    `paired_id` (the OTHER row's final 1-based id) fresh on EVERY call, by
+    grouping base entries that share the same pair_id -- never trusting a
+    previously-written numeric cross-reference, so a delete/edit elsewhere
+    can never leave a stale paired_id behind. A pair_id surviving on only
+    ONE row (its partner got discarded) simply doesn't get a paired_id."""
     modded = palette_generator.apply_post_modifiers(
         [{"hex": b["hex"], "label": b.get("label", "")} for b in base],
         my_eyes=bool(post.get("my_eyes")), ying_yang=bool(post.get("ying_yang")),
@@ -289,6 +364,18 @@ def derive_effective(base, post):
         if b.get("role"):
             row["role"] = b["role"]
         rows.append(row)
+
+    by_pair_id = {}
+    for i, b in enumerate(base):
+        pid = b.get("pair_id")
+        if pid is not None:
+            by_pair_id.setdefault(pid, []).append(i)
+    for indices in by_pair_id.values():
+        if len(indices) == 2:
+            i, j = indices
+            rows[i]["paired_id"] = rows[j]["id"]
+            rows[j]["paired_id"] = rows[i]["id"]
+
     return rows
 
 
@@ -351,13 +438,50 @@ def _find_index(base, entries, target):
 _UNSET = object()
 
 
+def _debased_hex(hex_value, meta):
+    """A hand-picked hex, converted to what BASE must store so the active
+    post-modifiers reproduce it exactly as picked once derive_effective runs
+    forward again -- see palette_generator.debase_for_post. Without this, a
+    custom color would visibly show up transformed on top of what was
+    picked (e.g. picking yellow while ying-yang is active would render as
+    blue), and inconsistently with how a generated color's base already
+    works (always pre-transform)."""
+    post = _post_of(meta)
+    return palette_generator.debase_for_post(
+        hex_value, my_eyes=bool(post.get("my_eyes")), ying_yang=bool(post.get("ying_yang")),
+        my_eyes_factor=post.get("my_eyes_factor", palette_generator._MY_EYES_CHROMA_FACTOR),
+        my_eyes_max_chroma=post.get("my_eyes_max_chroma", palette_generator._MY_EYES_CHROMA_MAX),
+    )
+
+
+def _clear_pairing(base, idx):
+    """Clear base[idx]'s own pair_id AND null out whichever OTHER entry was
+    sharing it (its partner) -- call this right before an operation
+    invalidates base[idx]'s side of a pairing (role changed away from
+    fg/bg, or the color is about to be removed entirely). A pair_id
+    surviving on only one side is harmless (derive_effective just won't
+    emit a paired_id for it) but this keeps state tidy instead of leaving
+    stale, never-again-matching metadata around -- same "fix up what
+    pointed at the thing being changed" spirit as
+    mapping_store.drop_and_shift_new_id / color_detector.
+    clear_dangling_pairs_after_role_change."""
+    pair_id = base[idx].get("pair_id")
+    if pair_id is None:
+        return
+    for i, b in enumerate(base):
+        if i != idx and b.get("pair_id") == pair_id:
+            base[i] = dict(b, pair_id=None)
+    base[idx] = dict(base[idx], pair_id=None)
+
+
 def add_color(path, hex_value, label="", role=None):
     """Append a user-chosen color (origin custom) to a palette, rejecting a
     duplicate. Returns the new effective row entry."""
     entries, meta, base = _load(path)
     if _has_dup(base, hex_value):
         raise PaletteEditError(f"El color #{_norm_hex(hex_value)} ya existe en la paleta.")
-    base.append({"hex": _norm_hex(hex_value), "label": label, "origin": "custom", "role": role})
+    base.append({"hex": _debased_hex(hex_value, meta), "label": label, "origin": "custom",
+                "role": role, "pair_id": None})
     rows = _write_derived(path, base, meta)
     return rows[-1]
 
@@ -367,7 +491,9 @@ def edit_color(path, target, new_hex, role=_UNSET):
     duplicate. `role` left at its default keeps the slot's existing role
     (None explicitly clears it back to unmarked). Returns the 1-based id of
     the edited slot (unchanged: an edit keeps its position, so any mapping to
-    it stays valid)."""
+    it stays valid). Changing the role away from what it was clears this
+    slot's pairing (and its partner's) -- see _clear_pairing; the hex itself
+    changing doesn't, by itself, invalidate an existing pairing."""
     entries, meta, base = _load(path)
     if not base:
         raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
@@ -376,9 +502,12 @@ def edit_color(path, target, new_hex, role=_UNSET):
         raise PaletteEditError(f"No se encontró el color {target!r} en la paleta.")
     if _has_dup(base, new_hex, exclude_index=idx):
         raise PaletteEditError(f"El color #{_norm_hex(new_hex)} ya existe en la paleta.")
-    new_role = base[idx].get("role") if role is _UNSET else role
-    base[idx] = {"hex": _norm_hex(new_hex), "label": base[idx].get("label", ""),
-                "origin": "custom", "role": new_role}
+    old_role = base[idx].get("role")
+    new_role = old_role if role is _UNSET else role
+    if new_role != old_role:
+        _clear_pairing(base, idx)
+    base[idx] = {"hex": _debased_hex(new_hex, meta), "label": base[idx].get("label", ""),
+                "origin": "custom", "role": new_role, "pair_id": base[idx].get("pair_id")}
     _write_derived(path, base, meta)
     return idx + 1
 
@@ -387,30 +516,70 @@ def set_role(path, target, role):
     """Set (or clear, role=None) a color's role WITHOUT touching its
     hex/label/origin -- unlike edit_color, this never marks a gen color
     custom (used by the GUI's role toggle button, which only ever changes
-    the role, never the color value itself). Returns the 1-based id of the
-    affected slot."""
+    the role, never the color value itself). Changing the role away from
+    what it was clears this slot's pairing (and its partner's) -- see
+    _clear_pairing. Returns the 1-based id of the affected slot."""
     entries, meta, base = _load(path)
     if not base:
         raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
     idx = _find_index(base, entries, target)
     if idx is None:
         raise PaletteEditError(f"No se encontró el color {target!r} en la paleta.")
+    if role != base[idx].get("role"):
+        _clear_pairing(base, idx)
     base[idx] = dict(base[idx], role=role)
     _write_derived(path, base, meta)
     return idx + 1
+
+
+def set_pair(path, target_a, target_b=None):
+    """Manually link (or, target_b=None, unlink) two palette colors as an
+    explicit fg/bg pair -- symmetric to set_role: touches ONLY pair_id on
+    both sides, never hex/label/origin/role. Doesn't validate that the two
+    colors' roles are actually foreground/background (that's
+    conflicts.find_pair_mismatches's job -- a warning, not a block), same
+    "simplicity over cleverness" spirit as this module's other manual
+    editing tools. Whatever pairing `target_a` (and, if linking, `target_b`)
+    already had is dropped first (see _clear_pairing) before the new link is
+    made. Returns the 1-based id of `target_a`'s slot."""
+    entries, meta, base = _load(path)
+    if not base:
+        raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
+    idx_a = _find_index(base, entries, target_a)
+    if idx_a is None:
+        raise PaletteEditError(f"No se encontró el color {target_a!r} en la paleta.")
+
+    _clear_pairing(base, idx_a)
+
+    if target_b is not None:
+        idx_b = _find_index(base, entries, target_b)
+        if idx_b is None:
+            raise PaletteEditError(f"No se encontró el color {target_b!r} en la paleta.")
+        if idx_b == idx_a:
+            raise PaletteEditError("Un color no puede ser su propia pareja.")
+        _clear_pairing(base, idx_b)
+        id_a, id_b = entries[idx_a]["id"], entries[idx_b]["id"]
+        pair_id = f"{min(id_a, id_b)}::{max(id_a, id_b)}"
+        base[idx_a] = dict(base[idx_a], pair_id=pair_id)
+        base[idx_b] = dict(base[idx_b], pair_id=pair_id)
+
+    _write_derived(path, base, meta)
+    return idx_a + 1
 
 
 def delete_color(path, target):
     """Remove a color (by id or hex). Returns the 1-based id it had, so the
     caller can adjust a mapping (unassign that new_id, shift higher ones down --
     see mapping_store.drop_and_shift_new_id). Renumbers the palette to stay
-    contiguous, which guiless's positional matching relies on."""
+    contiguous, which guiless's positional matching relies on. If this color
+    was paired, its partner's pairing is cleared too (see _clear_pairing)."""
     entries, meta, base = _load(path)
     if not base:
         raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
     idx = _find_index(base, entries, target)
     if idx is None:
         raise PaletteEditError(f"No se encontró el color {target!r} en la paleta.")
+    _clear_pairing(base, idx)
     del base[idx]
     _write_derived(path, base, meta)
     return idx + 1
@@ -425,7 +594,7 @@ _SELECTION_KEYS = ("mode", "scoring", "custom_scoring_values", "weighted_contras
                    "shading_min_luminance", "shading_max_luminance")
 
 
-def _plan_regen_merge(old_base, n_colors, keep_custom, warnings, consider_plane=False):
+def _plan_regen_merge(old_base, n_colors, keep_custom, warnings):
     """Shared by _regenerate (palette shift) and generate_and_save_palette
     (palette generate/automatic --from-image, when out_path already has
     content): given an existing base (possibly empty -- a brand new out_path
@@ -433,13 +602,7 @@ def _plan_regen_merge(old_base, n_colors, keep_custom, warnings, consider_plane=
     regen plan and append the right discard/role-loss warnings (a list,
     mutated in place). Raises ShiftError if keep_custom is on and there's no
     room. Returns (n_gen_needed, custom_in_range, custom_trailing) -- the
-    last two keyed by ORIGINAL position, for _merge_regen_base.
-
-    consider_plane: when True, a lost role tag isn't actually a loss -- the
-    DEMAND it represented gets read from old_base and re-satisfied by a new
-    color elsewhere in the regenerated palette (see _regenerate/
-    generate_and_save_palette), so the usual "you lost this role" warning
-    would be a false alarm and is skipped."""
+    last two keyed by ORIGINAL position, for _merge_regen_base."""
     custom_by_pos = {i: b for i, b in enumerate(old_base) if b.get("origin") == "custom"}
     n_custom = len(custom_by_pos)
     # Only customs that landed WITHIN the requested n_colors (edited in
@@ -462,23 +625,26 @@ def _plan_regen_merge(old_base, n_colors, keep_custom, warnings, consider_plane=
             f"Se descartan {n_custom} color(es) agregados/editados a mano: una regeneración "
             "reemplaza los colores. Los modificadores simples (--my-eyes/--ying-yang) no los borran."
         )
-    # A role survives regeneration LITERALLY only when its color does
-    # (keep_custom AND it's one of the preserved custom slots) -- everything
-    # else that had a role is about to get a brand new hex. Only actually a
-    # LOSS when consider_plane is off, though: when it's on, the demand those
-    # tags represented gets re-satisfied by a new color elsewhere (see
-    # _regenerate/generate_and_save_palette), so warning here would be a
-    # false alarm.
-    if not consider_plane:
-        n_roled_lost = sum(
-            1 for i, b in enumerate(old_base)
-            if b.get("role") and not (keep_custom and i in custom_by_pos)
+    # A PAIRED color's role/pairing is NOT actually lost on a regeneration:
+    # tier 1 (_role_pairs_from_entries/_role_demand_from_entries-equivalent)
+    # always reads the CURRENT pairing from old_base BEFORE regenerating and
+    # feeds it back in as role_pairs, so the same relationship gets
+    # reproduced on fresh colors elsewhere in the new palette (only the
+    # specific hex values change -- expected of any regeneration). Warning
+    # about this would be a false alarm. A role with NO pairing, though,
+    # genuinely has no fallback -- it's plain metadata nothing re-derives --
+    # so losing it (when its color isn't preserved by keep_custom) really
+    # is a total, unrecoverable loss worth flagging.
+    n_roled_lost = sum(
+        1 for i, b in enumerate(old_base)
+        if b.get("role") and not b.get("pair_id") and not (keep_custom and i in custom_by_pos)
+    )
+    if n_roled_lost:
+        warnings.append(
+            f"Se pierde el rol foreground/background (sin pareja vinculada) asignado a "
+            f"{n_roled_lost} color(es) de esta paleta: una regeneración reemplaza los colores, "
+            "así que quedan sin marcar de nuevo."
         )
-        if n_roled_lost:
-            warnings.append(
-                f"Se pierde el rol foreground/background asignado a {n_roled_lost} color(es) de esta "
-                "paleta: una regeneración reemplaza los colores, así que quedan sin marcar de nuevo."
-            )
 
     n_gen_needed = (n_colors - n_custom_in_range) if keep_custom else n_colors
     return n_gen_needed, custom_in_range, custom_trailing
@@ -503,28 +669,68 @@ def _merge_regen_base(fresh_gen, n_colors, custom_in_range, custom_trailing, kee
     return merged
 
 
-def _role_demand_from_entries(entries: list) -> tuple:
-    """Tier 1 of the demand resolution (see [[color-roles-design]] Phase 5):
-    an EXISTING palette's own already-tagged colors are the most accurate
-    source -- no need to touch color_roles.json/the mapping at all when
-    regenerating something that already carries its own role tags."""
-    n_background = sum(1 for e in entries if e.get("role") == "background")
-    n_foreground = sum(1 for e in entries if e.get("role") == "foreground")
-    return n_background, n_foreground
+def _role_pairs_from_entries(entries: list) -> list:
+    """Tier 1 of the pairing resolution (see [[color-roles-design]]'s
+    pairing rework): an EXISTING palette's own already-paired colors are the
+    most accurate source -- no need to touch color_roles.json/the mapping
+    at all when regenerating something that already carries its own
+    pairing. Computes each entry's own Lab L directly from its hex (mirrors
+    compute_role_pairs on the detected side). `pair_id` here is just
+    `"{fg_id}::{bg_id}"` -- ephemeral, only used to seed this one
+    generate_palette call; a fresh pairing gets its OWN pair_id from
+    fgbg_pairing regardless."""
+    by_id = {e["id"]: e for e in entries}
+    pairs = []
+    seen = set()
+    for e in entries:
+        if e.get("role") != "foreground" or not e.get("paired_id"):
+            continue
+        bg = by_id.get(e["paired_id"])
+        if bg is None or bg.get("role") != "background":
+            continue
+        pair_key = (e["id"], bg["id"])
+        if pair_key in seen:
+            continue
+        seen.add(pair_key)
+        fg_l = float(cm.rgb_to_lab(cm.hex_to_rgb(e["hex"]))[0])
+        bg_l = float(cm.rgb_to_lab(cm.hex_to_rgb(bg["hex"]))[0])
+        pairs.append({"pair_id": f"{e['id']}::{bg['id']}", "bg_l": bg_l, "fg_l": fg_l})
+    return pairs
 
 
-def _check_role_demand_fits(n_colors: int, n_background_needed: int, n_foreground_needed: int) -> None:
-    """A color can only carry ONE role, so satisfying the demand needs at
-    least that many DISTINCT chosen colors -- same shape of hard constraint
-    as keep_custom's budget check, same treatment: refuse outright rather
-    than silently under-cover or guess which role wins."""
-    total_needed = n_background_needed + n_foreground_needed
+def _check_role_pairs_fit(n_colors: int, n_pairs: int) -> None:
+    """Each pair needs 2 DISTINCT colors (one background, one foreground) --
+    same shape of hard constraint as keep_custom's budget check: refuse
+    outright rather than silently under-cover."""
+    total_needed = n_pairs * 2
     if total_needed > n_colors:
         raise ShiftError(
-            f"Considerar roles fg/bg está activado y hace falta al menos {total_needed} color(es) "
-            f"({n_background_needed} background + {n_foreground_needed} foreground), pero pediste "
-            f"{n_colors} en total. Pedí al menos {total_needed} colores (--colors), desactivá "
-            "--consider-plane para esta generación, o creá una paleta nueva desde cero."
+            f"Hay {n_pairs} pareja(s) foreground/background vinculada(s) (hacen falta al menos "
+            f"{total_needed} color(es)), pero pediste {n_colors} en total. Pedí al menos "
+            f"{total_needed} colores (--colors), desvinculá alguna pareja, o creá una paleta "
+            "nueva desde cero."
+        )
+
+
+def _check_generated_enough_colors(base_colors: list, n_gen_needed: int, hallucinate: bool) -> None:
+    """generate_palette can return FEWER colors than requested when the image's
+    real clusters run out (select_auxiliaries/select_secondary just have
+    nothing left to pick from) -- most likely with hallucinate=off against a
+    flat/near-monochrome image, but possible any time real color diversity is
+    scarce. Without this check, `_merge_regen_base` would index past the end
+    of a too-short `fresh_gen` (an opaque IndexError) when keep_custom is on,
+    or silently hand back fewer colors than asked for when it's off. Same
+    treatment as the other "not enough room" checks here: refuse outright with
+    a clean, actionable message instead of either failure mode."""
+    if len(base_colors) < n_gen_needed:
+        hint = (
+            "activá --hallucinate para que sintetice un acento en vez de depender de los "
+            "colores reales de la imagen, "
+        ) if not hallucinate else ""
+        raise ShiftError(
+            f"La imagen no tiene suficiente diversidad de color real para generar {n_gen_needed} "
+            f"color(es) -- sólo se pudieron obtener {len(base_colors)}. Pedí menos colores "
+            f"(--colors), {hint}o probá con otra imagen."
         )
 
 
@@ -533,7 +739,7 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
                   mode=None, scoring=None, custom_scoring_values=None,
                   weighted_contrast=None, shuffle=None, overfetch=None, colors=None,
                   shading_direction=None, shading_min_luminance=None, shading_max_luminance=None,
-                  keep_custom=None, consider_plane=None, write=True) -> dict:
+                  keep_custom=None, eco=None, hallucinate=None, mapping_path=None, write=True) -> dict:
     """Compute (and, unless write=False, persist) the shifted palette.
 
     Boolean modifiers (my_eyes, ying_yang) take on|off|toggle|None.
@@ -544,10 +750,14 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
     stored base) -- a concrete value or None ("keep stored"). Everything else
     (selection modifiers, including the luminance bounds) also takes a
     concrete value or None ("keep stored"), but DOES trigger a regenerate.
-    keep_custom/consider_plane (on|off|toggle|None) are stored per-palette
-    REGEN POLICIES, not post-modifiers -- neither triggers a regenerate by
-    itself, but they control what a regenerate does with hand-added/edited
-    colors and fg/bg role demand respectively (see _regenerate).
+    keep_custom/eco/hallucinate (on|off|toggle|None) are stored per-palette
+    REGEN POLICIES, not post-modifiers -- none of them triggers a regenerate
+    by itself, but they control what a regenerate does with hand-added/
+    edited colors, fg/bg pair hue (--eco), and a monochrome source image
+    respectively (see _regenerate). fg/bg PAIRING itself is always resolved
+    on a regenerate (no flag) -- see _regenerate's own docstring.
+    mapping_path (default: config.mapping_csv) is only used for that
+    pairing resolution (which detected colors currently have real demand).
 
     Returns {"entries", "meta", "regenerated": bool, "warnings": [str]}.
     Raises ShiftError for the clean user-facing failures."""
@@ -564,7 +774,8 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
                                else post.get("my_eyes_max_chroma")),
     }
     resolved_keep_custom = _resolve_bool(meta.get("keep_custom_on_regen", True), keep_custom)
-    resolved_consider_plane = _resolve_bool(meta.get("consider_roles_on_regen", True), consider_plane)
+    resolved_eco = _resolve_bool(meta.get("eco_contrast", False), eco)
+    resolved_hallucinate = _resolve_bool(meta.get("hallucinate_on_monochrome", True), hallucinate)
     selection = {"mode": mode, "scoring": scoring, "custom_scoring_values": custom_scoring_values,
                  "weighted_contrast": weighted_contrast, "shuffle": shuffle,
                  "overfetch": overfetch, "colors": colors,
@@ -576,14 +787,16 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
 
     if wants_regen:
         new_entries, new_meta = _regenerate(meta, entries, new_post, selection, config, warnings,
-                                            resolved_keep_custom, resolved_consider_plane)
+                                            resolved_keep_custom, resolved_eco,
+                                            resolved_hallucinate, mapping_path)
     else:
         base = reconstruct_base(entries, meta)
         new_entries = derive_effective(base, new_post)
         new_meta = dict(meta)
         new_meta["post"] = new_post
         new_meta["keep_custom_on_regen"] = resolved_keep_custom
-        new_meta["consider_roles_on_regen"] = resolved_consider_plane
+        new_meta["eco_contrast"] = resolved_eco
+        new_meta["hallucinate_on_monochrome"] = resolved_hallucinate
         new_meta["base"] = base
 
     if write:
@@ -591,7 +804,17 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
     return {"entries": new_entries, "meta": new_meta, "regenerated": wants_regen, "warnings": warnings}
 
 
-def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custom, consider_plane):
+def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custom, eco,
+                hallucinate, mapping_path=None):
+    """fg/bg pairing (see [[color-roles-design]]'s pairing rework) is ALWAYS
+    resolved here, preferring color_roles.json (the TRUE, non-drifting
+    reference) whenever it has something to say, falling back to `entries`'
+    own current pairing (tier 1) only when nothing is derivable from the
+    detected side at all (e.g. a pairing set purely by hand via set_pair,
+    with no color_roles.json backing to ever see) -- see
+    generate_and_save_palette's docstring for why tier 1 can't be preferred
+    unconditionally anymore (it self-reinforces a drifted luminance target
+    across repeated deterministic regenerations)."""
     if not meta.get("generated"):
         raise ShiftError(
             "Esta paleta es creada (no tiene imagen): no admite modificadores de selección "
@@ -639,16 +862,24 @@ def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custo
 
     old_base = reconstruct_base(entries, meta)
     n_gen_needed, custom_in_range, custom_trailing = _plan_regen_merge(
-        old_base, n_colors, keep_custom, warnings, consider_plane=consider_plane,
+        old_base, n_colors, keep_custom, warnings,
     )
 
-    # Tier 1 of the demand resolution (see [[color-roles-design]] Phase 5):
-    # a shift always regenerates an EXISTING palette, so its own current
-    # role tags are always the most accurate source -- no need to fall back
-    # to color_roles.json/the mapping here at all.
-    n_bg_needed, n_fg_needed = _role_demand_from_entries(entries) if consider_plane else (0, 0)
-    if consider_plane:
-        _check_role_demand_fits(n_colors, n_bg_needed, n_fg_needed)
+    detected_colors = color_detector.read_detected_csv(config.detected_palette_csv)
+    roles = color_detector.read_color_roles(config.color_roles_json)
+    _old_p, _new_p, mapping_entries = mapping_store.read_mapping_csv(
+        mapping_path or config.mapping_csv, project_dir=config.project_dir,
+    )
+    role_pairs = color_detector.compute_role_pairs(detected_colors, roles, mapping_entries)
+    unpaired = color_detector.tagged_without_pair(roles)
+    if unpaired:
+        warnings.append(
+            f"{len(unpaired)} color(es) marcado(s) foreground/background sin pareja vinculada "
+            "no se toman en cuenta para la generación."
+        )
+    if not role_pairs:
+        role_pairs = _role_pairs_from_entries(entries)
+    _check_role_pairs_fit(n_colors, len(role_pairs))
 
     _unused_effective, gen_base = palette_generator.generate_palette(
         expand_path(image), n_colors=n_gen_needed, sample_size=resolved["sample_size"],
@@ -657,9 +888,12 @@ def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custo
         overfetch=resolved["overfetch"], ying_yang=False,
         shading_direction=resolved["shading_direction"], shading_min_l=resolved["shading_min_luminance"],
         shading_max_l=resolved["shading_max_luminance"],
-        n_background_needed=n_bg_needed, n_foreground_needed=n_fg_needed, with_base=True,
+        role_pairs=role_pairs, eco=eco,
+        hallucinate=hallucinate, with_base=True,
     )
-    fresh_gen = [{"hex": c["hex"], "label": c["label"], "origin": "gen", "role": c.get("role")} for c in gen_base]
+    _check_generated_enough_colors(gen_base, n_gen_needed, hallucinate)
+    fresh_gen = [{"hex": c["hex"], "label": c["label"], "origin": "gen",
+                 "role": c.get("role"), "pair_id": c.get("pair_id")} for c in gen_base]
     merged_base = _merge_regen_base(fresh_gen, n_colors, custom_in_range, custom_trailing, keep_custom)
 
     new_entries = derive_effective(merged_base, new_post)
@@ -675,6 +909,7 @@ def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custo
     }
     new_meta["post"] = new_post
     new_meta["keep_custom_on_regen"] = keep_custom
-    new_meta["consider_roles_on_regen"] = consider_plane
+    new_meta["eco_contrast"] = eco
+    new_meta["hallucinate_on_monochrome"] = hallucinate
     new_meta["base"] = merged_base
     return new_entries, new_meta
