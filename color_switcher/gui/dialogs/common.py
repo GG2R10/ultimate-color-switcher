@@ -97,6 +97,34 @@ def ask_confirm(parent: Gtk.Widget, heading: str, body: str, ok_label: str, on_c
     dialog.present(parent)
 
 
+def ask_choice(parent: Gtk.Widget, heading: str, body: str, choices: list, on_choice,
+               extra_child: Gtk.Widget = None):
+    """Generic N-way Adw.AlertDialog (ask_confirm generalized past a single
+    ok/cancel) -- used for the "usar la paleta existente / regenerar" reuse
+    prompt, and any future 3+-way confirm. choices: [(response_id, label,
+    appearance_or_None), ...]; appearance is an Adw.ResponseAppearance.* or
+    None for the default look. A "cancel" response is always added and never
+    calls on_choice. extra_child, if given, is shown inside the dialog body
+    (e.g. a small image preview)."""
+    dialog = Adw.AlertDialog.new(heading, body)
+    if extra_child is not None:
+        dialog.set_extra_child(extra_child)
+    dialog.add_response("cancel", "Cancelar")
+    for response_id, label, appearance in choices:
+        dialog.add_response(response_id, label)
+        if appearance is not None:
+            dialog.set_response_appearance(response_id, appearance)
+    dialog.set_default_response(choices[0][0] if choices else "cancel")
+    dialog.set_close_response("cancel")
+
+    def _on_response(_d, response):
+        if response != "cancel":
+            on_choice(response)
+
+    dialog.connect("response", _on_response)
+    dialog.present(parent)
+
+
 def prompt_text(parent: Gtk.Widget, heading: str, body: str, placeholder: str, ok_label: str, on_submit):
     """Generic single-line text prompt (used for palette filenames / labels)."""
     dialog = Adw.AlertDialog.new(heading, body)

@@ -17,6 +17,7 @@ using `dialogs.whatever(...)` exactly as before this split -- window_main.py
 never needed to change."""
 
 from .common import (
+    ask_choice,
     ask_confirm,
     pick_image_file,
     pick_import_palette_file,
@@ -54,6 +55,7 @@ from .scanned_files import (
 )
 
 __all__ = [
+    "ask_choice",
     "ask_confirm",
     "pick_image_file",
     "pick_import_palette_file",

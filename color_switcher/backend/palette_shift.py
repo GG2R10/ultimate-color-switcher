@@ -67,11 +67,20 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
     shading_direction/shading_min_luminance/shading_max_luminance: only used
     when mode="shading" -- see palette_generator.generate_shading_series.
 
+    out_path (None by default): each wallpaper image gets its own persistent
+    palette slot -- see palette_store.default_generated_path_for_image (the
+    same image always resolves to the same default filename) and
+    find_palettes_for_image (how callers detect "a palette for this image
+    already exists," by provenance, before deciding whether to regenerate at
+    all -- see CLI's --regenerate / the GUI's reuse-or-regenerate dialog).
+    This function itself never checks for an existing palette by image --
+    that decision is the caller's; it always (over)writes out_path.
+
     keep_custom (on|off|toggle|None): if out_path ALREADY exists as a palette
     (e.g. a repeated `automatic --from-image` wallpaper-switch hook always
-    targeting the same default generated.csv), this decides whether hand-
-    added/edited colors already there survive this fresh generation instead
-    of being silently overwritten -- same on/off/toggle/keep-current
+    targeting the same image, hence the same resolved out_path), this decides
+    whether hand-added/edited colors already there survive this fresh
+    generation instead of being silently overwritten -- same on/off/toggle/keep-current
     semantics and same positional-overlay mechanism as palette_shift's own
     regeneration (see _plan_regen_merge/_merge_regen_base). The "current"
     value resolved against is out_path's OWN stored keep_custom_on_regen if
@@ -108,7 +117,7 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
     necessarily the same slot a previous generation used), any of
     `mapping_path`'s existing entries whose old_id is one of these detected
     fg/bg colors get REWRITTEN to point at wherever the pair actually
-    landed this time -- see _pending_mapping_updates/_apply_mapping_updates.
+    landed this time -- see _pending_mapping_updates/mapping_store.apply_mapping_updates_for_palette.
     Otherwise "the detected foreground/background maps to the generated
     foreground/background" would silently break on every regeneration.
 
@@ -130,7 +139,11 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
     _check_generated_enough_colors) -- most likely with hallucinate=off
     against a flat/near-monochrome image."""
     if not out_path:
-        out_path = config.generated_palette_csv
+        # Each wallpaper gets its own persistent palette slot -- see
+        # palette_store.find_palettes_for_image, which is how callers detect
+        # "a palette for this image already exists" (by provenance, not by
+        # this filename) before ever reaching this default.
+        out_path = palette_store.default_generated_path_for_image(config.palettes_created_dir, image)
     if not out_path.endswith(".csv"):
         out_path += ".csv"
     if not os.path.isabs(out_path):
@@ -170,9 +183,7 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
     # derivable from the detected side at all (see docstring above).
     detected_colors = color_detector.read_detected_csv(config.detected_palette_csv)
     roles = color_detector.read_color_roles(config.color_roles_json)
-    _old_p, _new_p, mapping_entries = mapping_store.read_mapping_csv(
-        mapping_path or config.mapping_csv, project_dir=config.project_dir,
-    )
+    mapping_entries = mapping_store.resolve_mapping_entries_for_palette(config, out_path, mapping_path)
     role_pairs = color_detector.compute_role_pairs(detected_colors, roles, mapping_entries)
     unpaired = color_detector.tagged_without_pair(roles)
     if unpaired:
@@ -236,8 +247,9 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
         "base": merged_base,
     })
     palette_store.write_palette_csv(out_path, entries, meta=meta)
-    _apply_mapping_updates(mapping_path or config.mapping_csv, config,
-                            _pending_mapping_updates(role_pairs, merged_base))
+    mapping_store.apply_mapping_updates_for_palette(
+        config, out_path, _pending_mapping_updates(role_pairs, merged_base), mapping_path,
+    )
     return entries, out_path, warnings
 
 
@@ -742,19 +754,6 @@ def _pending_mapping_updates(role_pairs: list, base: list) -> list:
     return updates
 
 
-def _apply_mapping_updates(mapping_path: str, config, updates: list) -> None:
-    """Persist `_pending_mapping_updates`' output to the mapping file, if
-    any. Loads fresh from disk (never reuses a caller's possibly-stale
-    in-memory MappingStore) so this is safe to call right after a write
-    that a long-lived GUI object hasn't seen yet."""
-    if not updates:
-        return
-    store = mapping_store.MappingStore(mapping_path, project_dir=config.project_dir).load()
-    for old_id, new_id in updates:
-        store.add_or_update(old_id, new_id, persist=False)
-    store.save()
-
-
 def _check_role_pairs_fit(n_colors: int, n_pairs: int) -> None:
     """Each pair needs 2 DISTINCT colors (one background, one foreground) --
     same shape of hard constraint as keep_custom's budget check: refuse
@@ -846,7 +845,7 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
     if wants_regen:
         new_entries, new_meta, mapping_updates = _regenerate(
             meta, entries, new_post, selection, config, warnings,
-            resolved_keep_custom, resolved_eco, resolved_hallucinate, mapping_path,
+            resolved_keep_custom, resolved_eco, resolved_hallucinate, palette_path, mapping_path,
         )
     else:
         base = reconstruct_base(entries, meta)
@@ -863,12 +862,12 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
         # Only rewire the mapping once the regenerated pair is actually
         # persisted -- never on a dry-run preview (write=False, e.g. the
         # Modificadores dialog's live preview before the user confirms).
-        _apply_mapping_updates(mapping_path or config.mapping_csv, config, mapping_updates)
+        mapping_store.apply_mapping_updates_for_palette(config, palette_path, mapping_updates, mapping_path)
     return {"entries": new_entries, "meta": new_meta, "regenerated": wants_regen, "warnings": warnings}
 
 
 def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custom, eco,
-                hallucinate, mapping_path=None):
+                hallucinate, palette_path, mapping_path=None):
     """fg/bg pairing (see [[color-roles-design]]'s pairing rework) is ALWAYS
     resolved here, preferring color_roles.json (the TRUE, non-drifting
     reference) whenever it has something to say, falling back to `entries`'
@@ -934,9 +933,7 @@ def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custo
 
     detected_colors = color_detector.read_detected_csv(config.detected_palette_csv)
     roles = color_detector.read_color_roles(config.color_roles_json)
-    _old_p, _new_p, mapping_entries = mapping_store.read_mapping_csv(
-        mapping_path or config.mapping_csv, project_dir=config.project_dir,
-    )
+    mapping_entries = mapping_store.resolve_mapping_entries_for_palette(config, palette_path, mapping_path)
     role_pairs = color_detector.compute_role_pairs(detected_colors, roles, mapping_entries)
     unpaired = color_detector.tagged_without_pair(roles)
     if unpaired:

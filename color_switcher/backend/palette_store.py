@@ -21,6 +21,7 @@ line whose first comma-field isn't a numeric id, so a palette with no header
 still loads fine and is treated as a plain hand-created palette.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -226,6 +227,54 @@ def has_custom_edits(entries: list) -> bool:
     """True if any color was hand-added/edited on top of a generated palette
     (origin="custom") — the signal for the warn-before-regenerate gate."""
     return any(e.get("origin") == "custom" for e in entries)
+
+
+def find_palettes_for_image(directory: str, image_path: str) -> list:
+    """Every *.csv under `directory` whose #ucs-meta says it was GENERATED
+    from this exact image -- matched by PROVENANCE (meta["image"], compared
+    as an absolute path), never by filename. A palette can be freely renamed
+    and still be found this way; conversely a filename that merely LOOKS
+    like it matches an image is never mistaken for a real match. Returns an
+    empty list if the directory doesn't exist or nothing matches."""
+    directory = expand_path(directory)
+    if not os.path.isdir(directory):
+        return []
+    target = os.path.abspath(expand_path(image_path))
+    matches = []
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith(".csv"):
+            continue
+        path = os.path.join(directory, name)
+        meta = read_palette_meta(path)
+        if not meta.get("generated") or not meta.get("image"):
+            continue
+        if os.path.abspath(expand_path(meta["image"])) == target:
+            matches.append(path)
+    return matches
+
+
+def _slugify_image_basename(image_path: str) -> str:
+    """A short, filesystem-friendly, purely COSMETIC slug of an image's
+    basename -- for human-readable filenames only. Never used to decide
+    whether a palette already exists for an image (find_palettes_for_image,
+    by provenance, is the actual source of truth for that)."""
+    base = os.path.splitext(os.path.basename(image_path))[0]
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", base).strip("-").lower()
+    return slug or "wallpaper"
+
+
+def default_generated_path_for_image(palettes_created_dir: str, image_path: str) -> str:
+    """Deterministic default out_path for a FRESH generation against this
+    image: generated-<slug-of-image-basename>-<sha1(abspath(image))[:8]>.csv
+    -- the same image always proposes the same filename (so a later
+    --regenerate with no explicit --out naturally lands back on this same
+    file), while remaining legible at a glance in a file browser. This
+    REPLACES the old "always overwrite one canonical generated.csv" default
+    -- each wallpaper now gets its own persistent slot."""
+    abs_image = os.path.abspath(expand_path(image_path))
+    digest = hashlib.sha1(abs_image.encode("utf-8")).hexdigest()[:8]
+    filename = f"generated-{_slugify_image_basename(image_path)}-{digest}.csv"
+    return os.path.join(expand_path(palettes_created_dir), filename)
 
 
 def list_palettes(directory: str) -> list:

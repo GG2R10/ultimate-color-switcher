@@ -30,12 +30,23 @@ class Config:
 
     @property
     def mapping_csv(self) -> str:
-        """Canonical, single mapping file -- always overwritten in place
-        (like detected_palette_csv), rather than one timestamped file per
-        session. Ids in the mapping refer to detected_palette_csv's rows by
-        position/occurrence, not by literal color, so there's no benefit to
-        keeping multiple stale mapping files around."""
+        """LEGACY, single mapping file -- superseded by mapping_registry_json
+        (one mapping PER palette + an active pointer, see
+        mapping_store.MappingRegistry). Kept only as the one-time migration
+        source (mapping_store.migrate_legacy_mapping_csv_if_needed) and for
+        any external script/escape hatch that still wants a single standalone
+        file (`mapping new --out <file>`, `apply --mapping <file>`) -- no
+        current flow reads/writes this path as its own default anymore."""
         return os.path.join(self.mappings_dir, "mapping.csv")
+
+    @property
+    def mapping_registry_json(self) -> str:
+        """The current canonical mapping storage: one JSON file holding a
+        MappingStore section per target palette, plus an `active` pointer --
+        see mapping_store.MappingRegistry. Replaces the single mapping_csv;
+        switching which palette you're working on no longer clobbers a
+        different palette's already-tuned mapping."""
+        return os.path.join(self.mappings_dir, "mappings.json")
 
     @property
     def generated_palette_csv(self) -> str:

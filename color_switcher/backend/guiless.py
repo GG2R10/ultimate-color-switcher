@@ -4,21 +4,18 @@ guiless.py — Apply a color palette without going through the GUI.
 
 Given a fresh palette (in the order the caller wants it applied) and an
 existing, persistent mapping (built previously in the GUI or `mapping new`),
-assigns each DISTINCT target slot the mapping actually uses (its stored
-new_id — 1=primary, 2=secondary, ... by the same convention
-palette_generator/palette_store use) to the next color of the palette, IN
-THE ORDER THOSE ROLES WERE FIRST ADDED TO THE MAPPING (insertion order —
-this is the original spec, see ROADMAP.md's "GUIless mode" decision #4; it
-is NOT the numeric order of the new_id values themselves, which may not
-match the order the roles were actually assigned in). What matters is how
-many distinct roles the mapping needs, and in what order they first
-appeared, not the highest new_id number it happens to reference or its
-numeric value relative to the others — a mapping that only ever touched
-"primary" (1) and "aux1" (3), skipping "secondary", still only needs a
-2-color palette, applied in whichever of those two the user assigned first.
+resolves each mapping entry's new_id against the palette via
+mapping_store.resolve_apply_targets — the SAME resolver every apply path in
+this app uses (GUI, `apply`/`test`, `palette shift --apply`). A new_id's own
+numeric VALUE is the target position (new_id=3 means "the 3rd color of the
+palette"); when the palette is too small for the highest new_id referenced,
+the mapping's DISTINCT new_id values are compacted onto dense positions in
+ASCENDING VALUE order (never insertion order — see resolve_apply_targets'
+docstring for why this superseded the previous insertion-order design,
+formerly ROADMAP.md's "GUIless mode" decision #4).
 
-If the palette has fewer colors than distinct roles needed, nothing is
-applied — there is no color to assign to the missing role(s), and this is
+If the palette has fewer colors than distinct new_id values needed, nothing
+is applied — there is no color to assign to the missing slot(s), and this is
 never overridden (regenerate a palette with enough colors instead). If the
 palette has MORE colors than needed, the extra ones are simply unused; the
 caller must pass yolo=True after confirming with the user. Real mapping
@@ -67,7 +64,12 @@ def apply_palette(
             already-loaded list of {"hex": "...", "label": "..."} dicts.
         mapping_path: path to a saved mapping CSV (has #old_palette= /
             #new_palette= headers pointing at the detected CSV it was built
-            against).
+            against) -- OR an already-loaded mapping_store.MappingStore
+            instance (mirrors palette_source's own path-or-already-loaded
+            flexibility), e.g. one resolved via mapping_store.MappingRegistry
+            .for_palette/.for_active. This module stays deliberately agnostic
+            of the registry itself -- callers resolve however they need
+            (standalone file or registry section) and hand the result here.
         backup_dir: where color_replacer.backup_files should mirror originals.
         dry_run: simulate without touching files or creating a backup.
         force: skip the case-1/convergence conflict check only (pass after the
@@ -83,48 +85,38 @@ def apply_palette(
 
     Returns a dict with "status" in
         {"empty_mapping", "insufficient_palette", "needs_confirmation",
-         "conflicts", "applied"}.
+         "conflicts", "applied"}. On "applied", "reorder_warning" is a string
+        (mapping_store.resolve_apply_targets' tier="compacted" warning) when
+        the palette was too small for the mapping's highest new_id and had to
+        be compacted, else None.
     """
-    old_palette_path, _new_palette_path, entries = mapping_store.read_mapping_csv(
-        mapping_path, project_dir=project_dir
-    )
+    if isinstance(mapping_path, mapping_store.MappingStore):
+        old_palette_path, entries = mapping_path.old_palette, mapping_path.resolved_entries()
+    else:
+        old_palette_path, _new_palette_path, entries = mapping_store.read_mapping_csv(
+            mapping_path, project_dir=project_dir
+        )
     if not entries:
         return {"status": "empty_mapping"}
 
     detected_colors = color_detector.read_detected_csv(old_palette_path)
     palette = _load_palette(palette_source)
 
-    n_palette = len(palette)
-    # Distinct roles, in the order they were FIRST added to the mapping --
-    # NOT sorted by new_id value. The mapping's own file order already IS the
-    # priority order (see module docstring); a role's new_id is an opaque
-    # label, not a claim about its position.
-    distinct_slots = []
-    _seen_slots = set()
-    for e in entries:
-        if e["new_id"] not in _seen_slots:
-            _seen_slots.add(e["new_id"])
-            distinct_slots.append(e["new_id"])
-    n_needed = len(distinct_slots)
-
-    if n_needed > n_palette:
-        return {"status": "insufficient_palette", "needed": n_needed, "available": n_palette}
-
-    surplus_palette_count = n_palette - n_needed
-    if surplus_palette_count and not yolo:
-        return {"status": "needs_confirmation", "surplus_palette_count": surplus_palette_count}
-
-    # Compact the mapping's distinct roles (whatever numbers they happened
-    # to be saved under) onto 1..n_needed, in that first-added order, then
-    # pair each with the palette color at that position.
-    slot_remap = {old_slot: i + 1 for i, old_slot in enumerate(distinct_slots)}
     assigned_palette = [
         {"id": i + 1, "hex": c["hex"].lstrip("#").lower(), "label": c.get("label", "")}
         for i, c in enumerate(palette)
     ]
-    resolved_entries = [
-        {"old_id": e["old_id"], "new_id": slot_remap[e["new_id"]]} for e in entries
-    ]
+
+    resolution = mapping_store.resolve_apply_targets(entries, assigned_palette)
+    if resolution["tier"] == "blocked":
+        return {"status": "insufficient_palette",
+                "needed": resolution["needed"], "available": resolution["available"]}
+
+    surplus_palette_count = resolution["available"] - resolution["needed"]
+    if surplus_palette_count and not yolo:
+        return {"status": "needs_confirmation", "surplus_palette_count": surplus_palette_count}
+
+    resolved_entries = resolution["final_entries"]
 
     siblings = conflicts.find_case2_siblings(detected_colors)
     collisions = conflicts.find_case1_collisions(detected_colors, assigned_palette, resolved_entries)
@@ -143,10 +135,23 @@ def apply_palette(
         role_collisions, pair_collisions = color_detector.rekey_roles_after_apply(
             roles_path, detected_colors, assigned_palette, resolved_entries
         )
+        # The colors just replaced no longer exist in the files BY DESIGN --
+        # re-stamp this mapping's identity to the NEW colors now actually
+        # there, so the post-apply drift refresh doesn't mistake "I just
+        # replaced this" for real drift and flag it orphaned.
+        if isinstance(mapping_path, mapping_store.MappingStore):
+            applied_store = mapping_path
+        else:
+            applied_store = mapping_store.MappingStore(mapping_path, project_dir=project_dir).load()
+        applied_store.entries = mapping_store.stamp_applied_entries(
+            applied_store.entries, resolved_entries, assigned_palette, detected_colors,
+        )
+        applied_store.save()
     return {
         "status": "applied",
         "results": results,
         "stale_mapping_warning": bool(collisions or convergence) and force,
+        "reorder_warning": resolution["warning"],
         "role_collisions": role_collisions,
         "pair_collisions": pair_collisions,
     }

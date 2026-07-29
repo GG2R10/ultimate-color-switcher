@@ -12,6 +12,7 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 
 from .. import color_math as cm
+from ..color_detector import expand_path
 from ..kmeans import kmeans as _kmeans
 
 
@@ -23,6 +24,12 @@ class ImageLoadError(ValueError):
 
 def load_image_samples(image_path: str, sample_size: int = 40000, seed: int = 42):
     """Random sample of the image's visible pixels, as an (n, 3) float64 RGB array."""
+    # Expand ~/$VAR ourselves -- the shell only does this for an UNQUOTED or
+    # double-quoted argument; a single-quoted `--from-image '~/wallpapers/x.jpg'`
+    # (or any path coming from a source other than an interactive shell, e.g.
+    # a saved script/hook) reaches us with a literal "~", which os.path.exists
+    # would never resolve on its own.
+    image_path = expand_path(image_path)
     if not os.path.exists(image_path):
         raise ImageLoadError(f"No existe la imagen: {image_path}")
     if os.path.isdir(image_path):

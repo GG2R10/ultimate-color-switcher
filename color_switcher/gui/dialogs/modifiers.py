@@ -11,7 +11,7 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gtk
+from gi.repository import Adw, Gtk, Pango
 
 from ...backend import color_detector as cd
 from ...backend import palette_generator as pg
@@ -88,7 +88,12 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         return ov
 
     preview_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-    warn_label = Gtk.Label(wrap=True, xalign=0, visible=False,
+    # max_width_chars forces the label to size from wrap-ability instead of
+    # its full unwrapped text (same overflow bug fixed in
+    # chip_builders.build_warning_row -- wrap=True alone doesn't stop a long
+    # joined warning string from overflowing the dialog).
+    warn_label = Gtk.Label(wrap=True, wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=1,
+                           xalign=0, visible=False,
                            css_classes=["dim-label"], margin_start=12, margin_end=12)
 
     def refresh_preview():

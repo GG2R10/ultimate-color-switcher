@@ -10,7 +10,7 @@ event wiring rather than widget construction.
 import gi
 
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk
+from gi.repository import Gtk, Pango
 
 from ..backend import color_detector
 
@@ -125,8 +125,15 @@ def build_mapping_preview_row(old_hex, new_hex, warning=None) -> Gtk.Box:
 
 def build_warning_row(text, action_label=None, action_cb=None) -> Gtk.Box:
     box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8, css_classes=["warning-row"])
-    icon = Gtk.Image(icon_name="dialog-warning-symbolic")
-    label = Gtk.Label(label=text, xalign=0, hexpand=True, wrap=True)
+    icon = Gtk.Image(icon_name="dialog-warning-symbolic", valign=Gtk.Align.START)
+    # wrap=True alone isn't enough -- without max_width_chars, GtkLabel's
+    # NATURAL width is still the full unwrapped text, so a long enough
+    # warning overflows the row/window instead of actually wrapping (the
+    # bug the user hit: long conflict messages got cut off). max_width_chars
+    # forces the label to size from wrap-ability instead, and hexpand=True
+    # still lets it fill whatever width the row actually has.
+    label = Gtk.Label(label=text, xalign=0, yalign=0, hexpand=True, wrap=True,
+                      wrap_mode=Pango.WrapMode.WORD_CHAR, max_width_chars=1)
     box.append(icon)
     box.append(label)
     if action_label and action_cb:

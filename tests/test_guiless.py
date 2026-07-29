@@ -111,9 +111,10 @@ def test_distinct_roles_counted_not_max_slot_number(fake_project, monkeypatch):
     """A mapping that only ever used roles 1 and 3 (skipping 2 -- e.g.
     primary and aux1, never secondary) needs a 2-color palette, not a
     3-color one, and the 2 colors given fill roles 1 and 3 in ascending
-    order without any surplus/deficit confirmation. Two DISTINCT detected
-    colors, each its own role -- no duplicates/convergence involved, to
-    isolate the slot-compaction behavior on its own."""
+    VALUE order (1 then 3) without any surplus/deficit confirmation -- this
+    also gets a "compacted" tier + reorder_warning since 2 < max_new_id(3).
+    Two DISTINCT detected colors, each its own role -- no duplicates/
+    convergence involved, to isolate the slot-compaction behavior on its own."""
     monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
     fp = fake_project.make_file("app/style.css", "#111111 #222222")
     config = fake_project.load_config()
@@ -132,6 +133,7 @@ def test_distinct_roles_counted_not_max_slot_number(fake_project, monkeypatch):
         [{"hex": "#aaaaaa"}, {"hex": "#bbbbbb"}], store.path, config.backup_dir, dry_run=False
     )
     assert result["status"] == "applied"
+    assert result["reorder_warning"] is not None
 
     content = open(fp).read().lower()
     assert "111111" not in content and "222222" not in content
@@ -239,14 +241,12 @@ def test_multiple_old_ids_sharing_a_slot_all_get_that_slot_color(fake_project, m
 
 
 def test_slot_assignment_uses_stored_new_id_not_row_position(fake_project, monkeypatch):
-    """Each entry's OWN stored new_id decides its role -- not the row's
-    position in the file. Rank-compaction order is a separate concern (see
-    test_slot_compaction_uses_insertion_order_not_numeric_new_id_order); here
-    both entries' new_ids already happen to be in ascending insertion order
-    (2 then 1 is NOT ascending though -- so this also incidentally exercises
-    that first_id, inserted first while targeting new_id=2, gets rank 1 (the
-    first color), since 2 is the first NEW_ID VALUE ever seen -- see the other
-    test for why that's insertion order, not sorted order)."""
+    """Each entry's OWN stored new_id decides its target position -- not the
+    row's position in the mapping file, nor insertion order. first_id targets
+    new_id=2 and second_id targets new_id=1; since the palette has exactly
+    2 colors (== max_new_id), this resolves at tier "exact" -- new_id IS the
+    palette position, directly: first_id -> the 2nd palette color, second_id
+    -> the 1st, regardless of which was inserted into the mapping first."""
     monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
     fp = fake_project.make_file("app/style.css", "#111111 #222222")
     config = fake_project.load_config()
@@ -264,25 +264,26 @@ def test_slot_assignment_uses_stored_new_id_not_row_position(fake_project, monke
     palette_json = [{"hex": "#aaaaaa"}, {"hex": "#bbbbbb"}]
     result = guiless.apply_palette(palette_json, store.path, config.backup_dir, dry_run=False)
     assert result["status"] == "applied"
+    assert result["reorder_warning"] is None  # tier "exact" -- no reorder happened
 
     # positional: "#111111 #222222" -> first_id's color is at position 0
     positions = open(fp).read().lower().split()
-    assert positions == ["#aaaaaa", "#bbbbbb"]  # first_id (inserted 1st) -> rank 1 -> aaaaaa
+    assert positions == ["#bbbbbb", "#aaaaaa"]  # first_id -> new_id=2 -> 2nd palette color
 
 
-def test_slot_compaction_uses_insertion_order_not_numeric_new_id_order(fake_project, monkeypatch):
-    """Distinct roles are compacted onto the fresh palette in the order they
-    were FIRST ADDED to the mapping -- NOT sorted by the numeric value of
-    new_id. This is the ORIGINAL documented spec (ROADMAP.md's "GUIless mode"
-    decision #4: pairing happens in insertion order of the mapping), which an
-    earlier implementation of this function had drifted from by sorting
-    numerically instead.
+def test_slot_compaction_uses_ascending_value_order_not_insertion_order(fake_project, monkeypatch):
+    """Distinct new_id values are compacted onto the fresh palette in
+    ASCENDING NUMERIC VALUE order -- NOT the order they were first added to
+    the mapping. This supersedes a previous decision (formerly ROADMAP.md's
+    "GUIless mode" decision #4, which mandated insertion order) -- confirmed
+    explicitly this session: new_id must mean the same thing (a literal
+    target position) on every apply path, not an opaque "role label" only on
+    `automatic`.
 
     A mapping built with new_id=99, then 2, then 4 (in that literal insertion
-    order) must apply the fresh palette's 1st/2nd/3rd colors in that SAME
-    insertion order, even though 99 > 4 > 2 numerically -- e.g. a corrupted or
-    hand-edited new_id value must not silently swap which detected color gets
-    which target color just because of its numeric size."""
+    order) must apply the fresh palette's colors by ASCENDING VALUE: 2 (the
+    smallest) -> the palette's 1st color, 4 -> the 2nd, 99 (the largest) ->
+    the 3rd -- regardless of which entry was inserted into the mapping first."""
     monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
     fp = fake_project.make_file("app/style.css", "#111111 #222222 #333333")
     config = fake_project.load_config()
@@ -294,19 +295,20 @@ def test_slot_compaction_uses_insertion_order_not_numeric_new_id_order(fake_proj
     store = mapping_store.MappingStore(
         mapping_path, old_palette=config.detected_palette_csv, new_palette="unused.csv"
     )
-    store.add_or_update(id_a, 99)  # inserted 1st -> must get the palette's 1st color
-    store.add_or_update(id_b, 2)   # inserted 2nd -> must get the palette's 2nd color
-    store.add_or_update(id_c, 4)   # inserted 3rd -> must get the palette's 3rd color
+    store.add_or_update(id_a, 99)  # inserted 1st, but largest value -> gets the 3rd color
+    store.add_or_update(id_b, 2)   # inserted 2nd, but smallest value -> gets the 1st color
+    store.add_or_update(id_c, 4)   # inserted 3rd, middle value -> gets the 2nd color
 
     result = guiless.apply_palette(
         [{"hex": "#aaaaaa"}, {"hex": "#bbbbbb"}, {"hex": "#cccccc"}],
         store.path, config.backup_dir, dry_run=False,
     )
     assert result["status"] == "applied"
+    assert result["reorder_warning"] is not None  # 3 colors < max_new_id(99) -> tier "compacted"
 
     # positional: "#111111 #222222 #333333" -> id_a/id_b/id_c's colors are at 0/1/2
     positions = open(fp).read().lower().split()
-    assert positions == ["#aaaaaa", "#bbbbbb", "#cccccc"]
+    assert positions == ["#cccccc", "#aaaaaa", "#bbbbbb"]
 
 
 def test_accepts_a_palette_csv_path_instead_of_json(fake_project, monkeypatch, tmp_path):
@@ -323,3 +325,33 @@ def test_accepts_a_palette_csv_path_instead_of_json(fake_project, monkeypatch, t
 
     content = open(fp).read().lower()
     assert "aaaaaa" in content and "bbbbbb" in content and "cccccc" in content
+
+
+def test_apply_does_not_leave_its_own_mapping_looking_orphaned(fake_project, monkeypatch, tmp_path):
+    """Real bug report (via `ucs automatic --from-image ...`): a mapping
+    already identity-stamped from a PRIOR detection (e.g. built/applied once
+    via the GUI) must not be mistaken for drift/orphaned right after THIS
+    apply replaces those very colors -- that's the expected, intended result
+    of applying, not an external change. See mapping_store.stamp_applied_entries."""
+    config, detected, store, fp = _setup(fake_project, monkeypatch)
+    # Stamp identities as they were BEFORE this apply (mirrors a real prior
+    # detection cycle, e.g. the mapping's own creation via the GUI).
+    stamped, _drift = mapping_store.refresh_identity_stamps(store.entries, detected)
+    store.entries = stamped
+    store.save()
+
+    palette_csv = tmp_path / "generated.csv"
+    palette_store.write_palette_csv(str(palette_csv), [
+        {"id": 1, "hex": "aaaaaa", "label": "primary"},
+        {"id": 2, "hex": "bbbbbb", "label": "secondary"},
+        {"id": 3, "hex": "cccccc", "label": "aux1"},
+    ])
+
+    result = guiless.apply_palette(str(palette_csv), store.path, config.backup_dir, dry_run=False)
+    assert result["status"] == "applied"
+
+    reloaded = mapping_store.MappingStore(store.path).load()
+    fresh = detect_diff.detect_with_route(config)["colors"]
+    drift = mapping_store.detect_drift(reloaded.entries, fresh)
+    assert drift["orphaned"] == []
+    assert drift["driftable"] == []

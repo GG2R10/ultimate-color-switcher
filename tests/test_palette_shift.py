@@ -665,6 +665,27 @@ def test_shift_dry_run_does_not_rewire_mapping(gen_palette):
 # generate_and_save_palette + keep_custom (palette generate / automatic --from-image)
 # --------------------------------------------------------------------------- #
 
+def test_generate_no_out_path_defaults_to_a_per_image_slot_not_canonical_generated_csv(tmp_path, fake_project):
+    """Regression guard for the "one palette per wallpaper" rework: omitting
+    out_path must NOT land on the old single canonical config.generated_palette_csv
+    -- it lands on a deterministic, per-image path under palettes_created_dir
+    (see palette_store.default_generated_path_for_image), and running it again
+    for the SAME image lands on that SAME file (so a later --regenerate finds it)."""
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    config = fake_project.load_config()
+
+    entries, saved_path, _warnings = palette_shift.generate_and_save_palette(
+        config, str(img), 4, 3000, "contrast", False,
+    )
+    assert saved_path != config.generated_palette_csv
+    assert saved_path.startswith(config.palettes_created_dir)
+    assert saved_path == palette_store.default_generated_path_for_image(config.palettes_created_dir, str(img))
+
+    matches = palette_store.find_palettes_for_image(config.palettes_created_dir, str(img))
+    assert matches == [saved_path]
+
+
 def test_generate_fresh_out_path_defaults_keep_custom_true(tmp_path, fake_project):
     img = tmp_path / "wall.png"
     _make_image(img)
@@ -805,12 +826,15 @@ def test_generate_role_pairs_tier2_filters_by_mapping(tmp_path, fake_project):
         cd.role_key("hex", "eeeeee"): {"role": "foreground", "pair": "hex:111111"},
         cd.role_key("hex", "ff0000"): {"role": "foreground", "pair": "hex:111111"},  # NOT in the mapping below
     })
-    store = ms.MappingStore(config.mapping_csv, old_palette=config.detected_palette_csv,
-                            new_palette="", project_dir=config.project_dir)
+    out = tmp_path / "fresh.csv"
+    # The mapping consulted for "which detected colors are actually in use" is
+    # THIS target palette's own registry section (see
+    # mapping_store.resolve_mapping_entries_for_palette) -- not a global one.
+    registry = ms.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    store = registry.for_palette(str(out), old_palette=config.detected_palette_csv)
     store.add_or_update(1, 1)
     store.add_or_update(2, 2)
 
-    out = tmp_path / "fresh.csv"
     entries, _saved_path, _warnings = palette_shift.generate_and_save_palette(
         config, str(img), 4, 3000, "contrast", False, str(out),
     )
@@ -841,8 +865,8 @@ def test_generate_rewires_mapping_to_follow_the_generated_pair(tmp_path, fake_pr
         cd.role_key("hex", "eeeeee"): {"role": "foreground", "pair": "hex:111111"},
     })
     out = tmp_path / "fresh.csv"
-    store = ms.MappingStore(config.mapping_csv, old_palette=config.detected_palette_csv,
-                            new_palette=str(out), project_dir=config.project_dir)
+    registry = ms.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    store = registry.for_palette(str(out), old_palette=config.detected_palette_csv)
     store.add_or_update(1, 1)
     store.add_or_update(2, 2)
 
@@ -852,7 +876,7 @@ def test_generate_rewires_mapping_to_follow_the_generated_pair(tmp_path, fake_pr
     fg_id = next(e["id"] for e in entries if e.get("role") == "foreground")
     bg_id = next(e["id"] for e in entries if e.get("role") == "background")
 
-    _o, _n, after = ms.read_mapping_csv(config.mapping_csv, project_dir=config.project_dir)
+    after = registry.for_palette(str(out), set_active=False).entries
     by_old = {e["old_id"]: e["new_id"] for e in after}
     assert by_old[2] == fg_id
     assert by_old[1] == bg_id

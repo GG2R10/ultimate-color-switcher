@@ -52,6 +52,7 @@ class MainWindow(Adw.ApplicationWindow):
     palette_role_filter = Gtk.Template.Child()
     add_color_button = Gtk.Template.Child()
     mapping_new_listbox = Gtk.Template.Child()
+    mapping_palette_header = Gtk.Template.Child()
     palette_image_button = Gtk.Template.Child()
     palette_image_picture = Gtk.Template.Child()
     palette_image_placeholder = Gtk.Template.Child()
@@ -73,6 +74,8 @@ class MainWindow(Adw.ApplicationWindow):
         self.new_palette_path = None
         self.new_palette = []
         self.mapping = None
+        self.registry = None
+        self._mapping_drift = {"ok": [], "driftable": [], "orphaned": []}
         self.active_group_ids = frozenset()
         self._welcomed = False  # welcome dialog shows once per session, before anything else
         self.auto_link_siblings = True
@@ -233,12 +236,45 @@ class MainWindow(Adw.ApplicationWindow):
         dialogs.pick_image_file(self, self._on_generate_palette_image_picked)
 
     def _on_generate_palette_image_picked(self, image_path):
+        # "One persistent palette per wallpaper": before generating anything,
+        # check if this exact image (by provenance, not filename) already has
+        # a saved palette -- if so, offer to reuse it (recommended) instead of
+        # silently regenerating/overwriting it.
+        existing = palette_store.find_palettes_for_image(self.config.palettes_created_dir, image_path)
+        if existing:
+            self._ask_reuse_or_regenerate(image_path, existing[0])
+            return
         dialogs.prompt_text(
             self, "Generar paleta", "¿Cuántos colores generar?", "6", "Generar",
             lambda text: self._on_generate_palette_count(image_path, text),
         )
 
-    def _on_generate_palette_count(self, image_path, count_text):
+    def _ask_reuse_or_regenerate(self, image_path, existing_path):
+        n = len(palette_store.read_palette_csv(existing_path))
+        body = (
+            f"Ya existe una paleta generada para esta imagen ({n} color(es)), en:\n{existing_path}\n\n"
+            "¿Usar la que ya está (recomendado) o regenerarla desde cero?"
+        )
+        dialogs.ask_choice(
+            self, "Paleta ya existente", body,
+            [("use", "Usar la existente", Adw.ResponseAppearance.SUGGESTED),
+             ("regenerate", "Regenerar", Adw.ResponseAppearance.DESTRUCTIVE)],
+            lambda choice: self._on_reuse_or_regenerate_choice(choice, image_path, existing_path),
+        )
+
+    def _on_reuse_or_regenerate_choice(self, choice, image_path, existing_path):
+        if choice == "use":
+            entries = palette_store.read_palette_csv(existing_path)
+            self._set_new_palette(existing_path, entries)
+            dialogs.toast(self.toast_overlay, f"Usando la paleta existente: {len(entries)} color(es).")
+            return
+        n_colors = len(palette_store.read_palette_csv(existing_path)) or 6
+        dialogs.prompt_text(
+            self, "Regenerar paleta", "¿Cuántos colores generar?", str(n_colors), "Regenerar",
+            lambda text: self._on_generate_palette_count(image_path, text, out_path=existing_path),
+        )
+
+    def _on_generate_palette_count(self, image_path, count_text, out_path=None):
         try:
             n_colors = max(1, int(count_text.strip()))
         except ValueError:
@@ -255,7 +291,7 @@ class MainWindow(Adw.ApplicationWindow):
             # never drift out of sync on what a "generated palette" looks like.
             entries, path, warnings = palette_shift.generate_and_save_palette(
                 self.config, image_path, n_colors, 40000, settings["mode"], settings["saturate"],
-                scoring=settings["scoring"], custom_scoring_values=settings.get("custom_percentages"),
+                out_path, scoring=settings["scoring"], custom_scoring_values=settings.get("custom_percentages"),
                 weighted_contrast=settings.get("weighted_contrast", True),
                 shuffle=shuffle_arg, overfetch=int(settings.get("overfetch", 0)),
                 ying_yang=settings.get("ying_yang", False),
@@ -339,28 +375,15 @@ class MainWindow(Adw.ApplicationWindow):
         self._start_detection()
 
     def _set_new_palette(self, path, entries):
-        if self.mapping is not None and self.mapping.new_palette and self.mapping.new_palette != path:
-            # Switching to a genuinely different target palette -- old
-            # new_id assignments pointed at the PREVIOUS palette's ids, so
-            # they're meaningless here. Keep the old_id selections (what to
-            # replace), just clear who they're assigned to.
-            for e in self.mapping.entries:
-                e["new_id"] = None
-        elif self.mapping is not None and self.mapping.new_palette == path:
-            # Same target (e.g. a repeated "Generar paleta desde imagen…" or
-            # a Modificadores regen on the same out_path): the backend can
-            # itself have just rewritten specific old_id->new_id links (to
-            # follow a freshly generated fg/bg pair to wherever it actually
-            # landed -- see palette_shift._apply_mapping_updates). Reload
-            # from disk first, or the blind self.mapping.save() below would
-            # clobber that with this now-stale in-memory copy.
-            self.mapping.load()
-
+        """Switch which palette the window is working on. Each palette has
+        its OWN persistent mapping section (see mapping_store.MappingRegistry)
+        -- so unlike before this rework, switching away and back never wipes
+        or clobbers a different palette's already-tuned mapping; for_palette
+        loads-or-creates exactly the right section and marks it active."""
         self.new_palette_path = path
         self.new_palette = entries
-        if self.mapping is not None:
-            self.mapping.new_palette = path
-            self.mapping.save()
+        if self.registry is not None:
+            self.mapping = self.registry.for_palette(path, old_palette=self.config.detected_palette_csv)
         self._refresh_all()
 
     # --------------------------------------------------------------- detection
@@ -413,14 +436,33 @@ class MainWindow(Adw.ApplicationWindow):
         self.siblings = conflicts.find_case2_siblings(colors)
         self.active_group_ids = frozenset()
 
-        # Continue the canonical mapping.csv instead of discarding it --
-        # otherwise the first save from THIS session (e.g. picking a
-        # palette) would wipe out everything built in a previous session,
-        # breaking `automatic`'s whole "build once, reuse later" workflow.
-        self.mapping = mapping_store.MappingStore(
-            self.config.mapping_csv, old_palette=self.config.detected_palette_csv,
-            new_palette=self.new_palette_path or "", project_dir=self.config.project_dir,
-        ).load()
+        # Continue whatever's currently active in the mapping registry (one
+        # section PER palette, see mapping_store.MappingRegistry) instead of
+        # discarding it -- otherwise the first save from THIS session (e.g.
+        # picking a palette) would wipe out everything built in a previous
+        # session, breaking `automatic`'s whole "build once, reuse later"
+        # workflow.
+        self.registry = mapping_store.MappingRegistry(
+            self.config.mapping_registry_json, project_dir=self.config.project_dir,
+        )
+        self.mapping = self.registry.for_active()
+        # Refresh/add the ACTIVE palette's detected-color identity stamps
+        # against this fresh scan ONLY -- every OTHER (inactive) palette's
+        # mapping is, by definition, "orphaned" against whatever's currently
+        # applied (only one wallpaper's colors can physically be in the files
+        # at a time), which isn't real, actionable drift; checking/warning
+        # about all of them here was pure noise (real bug report: switching
+        # wallpapers falsely warned about every OTHER previously-used
+        # palette). Inactive mappings get correctly re-stamped automatically
+        # the next time THEY become active (see stamp_applied_entries), not
+        # checked continuously in the background. driftable entries here are
+        # re-linkable with one click, orphaned ones are flagged only (see
+        # mapping_store.refresh_identity_stamps).
+        new_entries, self._mapping_drift = mapping_store.refresh_identity_stamps(
+            self.mapping.entries, colors
+        )
+        self.mapping.entries = new_entries
+        self.mapping.save()
 
         if self.mapping.new_palette and not self.new_palette_path:
             self.new_palette_path = self.mapping.new_palette
@@ -746,6 +788,16 @@ class MainWindow(Adw.ApplicationWindow):
         self.mapping.link(sibling_id, link_to_old_id=source_old_id)
         self._refresh_all()
 
+    def _on_relink_drift(self):
+        """One or more detected colors drifted to a different id on the last
+        rescan -- explicit, user-triggered re-link (never automatic, see
+        mapping_store.refresh_identity_stamps' docstring). Resolves every
+        pending drift finding as one atomic batch (a rank-swap between two
+        colors, the common case, can only be fixed correctly all at once)."""
+        self.mapping.apply_drift_relinks(self._mapping_drift["driftable"])
+        self._mapping_drift["driftable"] = []
+        self._refresh_all()
+
     # ------------------------------------------------------------ row builders
 
     @staticmethod
@@ -767,6 +819,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.apply_button.set_sensitive(bool(self.mapping and self.mapping.resolved_entries()))
 
     def _refresh_wallpaper_panel(self):
+        self.mapping_palette_header.set_label(
+            f"Mapping de la paleta: {self.new_palette_path or '(ninguna)'}"
+        )
         image_path = None
         if self.new_palette_path:
             meta = palette_store.read_palette_meta(self.new_palette_path)
@@ -1016,6 +1071,27 @@ class MainWindow(Adw.ApplicationWindow):
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
 
+            for d in self._mapping_drift.get("driftable", []):
+                text = (
+                    f"El color detectado id {d['old_id']} (#{d['hex']}) parece haberse movido al "
+                    f"id {d['correct_old_id']} en el último escaneo."
+                )
+                # The button resolves EVERY pending drift finding at once (not
+                # just this row) -- they were all computed from the same scan,
+                # and the most common case (two colors trading rank) can only
+                # be fixed correctly as one atomic batch, never one at a time
+                # (see mapping_store.apply_drift_relinks).
+                self.warnings_box.append(_build_warning_row(text, "Re-vincular", self._on_relink_drift))
+                added_any = True
+
+            for d in self._mapping_drift.get("orphaned", []):
+                text = (
+                    f"El color mapeado id {d['old_id']} (#{d['hex']}) ya no aparece en tus archivos "
+                    "escaneados."
+                )
+                self.warnings_box.append(_build_warning_row(text))
+                added_any = True
+
             unpaired = color_detector.tagged_without_pair(detected_roles)
             if unpaired:
                 text = (
@@ -1150,6 +1226,25 @@ class MainWindow(Adw.ApplicationWindow):
             return
 
         entries = self.mapping.resolved_entries()
+        # Resolve entries against the current palette via the one shared
+        # resolver every apply path uses (mapping_store.resolve_apply_targets).
+        # Unlike CLI, the GUI is interactive -- a tier="blocked" refuses
+        # outright (this used to be a silent data-loss bug: apply_mapping just
+        # dropped any replacement whose new_id wasn't in the palette, with no
+        # warning at all) and a tier="compacted" is folded into the same
+        # confirm dialog used for collisions/convergence below, requiring an
+        # explicit click before applying with the (possibly reordered) entries.
+        resolution = mapping_store.resolve_apply_targets(entries, self.new_palette)
+        if resolution["tier"] == "blocked":
+            dialogs.toast(
+                self.toast_overlay,
+                f"No se puede aplicar: la paleta tiene {resolution['available']} color(es), pero "
+                f"el mapping necesita al menos {resolution['needed']} (ids distintos usados).",
+            )
+            return
+        entries = resolution["final_entries"]
+        reorder_warning = resolution["warning"] if resolution["tier"] == "compacted" else None
+
         collisions = conflicts.find_case1_collisions(self.detected_colors, self.new_palette, entries)
         convergence = conflicts.find_target_convergence(
             self.detected_colors, self.new_palette, entries, sibling_groups=self.siblings
@@ -1187,6 +1282,15 @@ class MainWindow(Adw.ApplicationWindow):
                     self.toast_overlay,
                     f"{len(pair_collisions)} color(es) perdieron su vínculo bg/fg tras el apply: {fg_keys}.",
                 )
+            # The colors just replaced no longer exist in the files BY
+            # DESIGN -- re-stamp this mapping's identity to the NEW colors
+            # now actually there, so the drift refresh inside
+            # _finish_detection below doesn't mistake "I just replaced this"
+            # for real drift and flag it orphaned.
+            self.mapping.entries = mapping_store.stamp_applied_entries(
+                self.mapping.entries, entries, self.new_palette, self.detected_colors,
+            )
+            self.mapping.save()
             # Files on disk just changed -- the old mapping's ids point at
             # colors that no longer exist, so re-scan and start fresh.
             self._finish_detection(detect_diff.run_detect(self.config), persist=True)
@@ -1196,8 +1300,10 @@ class MainWindow(Adw.ApplicationWindow):
                 names = ", ".join(a["label"] for a in started)
                 dialogs.toast(self.toast_overlay, f"Reiniciando: {names}")
 
-        if (collisions or convergence) and not dry_run:
+        if (collisions or convergence or reorder_warning) and not dry_run:
             parts = []
+            if reorder_warning:
+                parts.append(reorder_warning)
             if collisions:
                 names = ", ".join(f"id {c['old_id']}" for c in collisions)
                 parts.append(f"{len(collisions)} color(es) ({names}) ya existen en la paleta detectada.")

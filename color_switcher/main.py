@@ -37,6 +37,41 @@ from .backend import (
 from .backend.config import load_config, read_files_to_replace, to_home_relative, write_files_to_replace
 
 
+def _report_mapping_drift(config, detected_colors, persist=False):
+    """Compare the ACTIVE palette's identity-stamped mapping entries (see
+    mapping_store.refresh_identity_stamps) against a fresh detected_colors
+    scan and print a summary. Deliberately scoped to the ACTIVE mapping
+    ONLY -- every OTHER (inactive) palette's mapping is, by definition,
+    "orphaned" against whatever palette IS currently applied (only one
+    wallpaper's colors can physically be in the files at any given time),
+    which isn't real, actionable drift -- it's the routine, permanent state
+    of every mapping that isn't the one currently in use. Checking/warning
+    about ALL of them on every detection was pure noise (real bug report:
+    switching wallpapers printed a false "N colores huérfanos" for every
+    OTHER previously-used palette). Inactive mappings get correctly
+    re-stamped automatically the next time THEY become active again (see
+    stamp_applied_entries) -- not checked continuously in the background.
+    persist=True (only right after a REAL apply, where files on disk
+    actually changed under us) also writes the refreshed stamp back;
+    persist=False (e.g. a bare `ucs detect`) never touches the file -- it
+    just reports."""
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    store = registry.for_active()
+    if not store.entries:
+        return
+    new_entries, drift = mapping_store.refresh_identity_stamps(store.entries, detected_colors)
+    if persist:
+        store.entries = new_entries
+        store.save()
+    if drift["driftable"]:
+        print(f"⚠ {len(drift['driftable'])} color(es) mapeados cambiaron de id en el último escaneo "
+              "(el color real sigue existiendo, solo se movió de posición). Ejecutá "
+              "'ucs mapping relink' para corregirlos.")
+    if drift["orphaned"]:
+        print(f"⚠ {len(drift['orphaned'])} color(es) mapeados ya no aparecen en tus archivos escaneados. "
+              "Revisalos a mano ('ucs mapping show').")
+
+
 def cmd_detect(args, config):
     result = detect_diff.detect_with_route(config, save=not args.dry_run)
     route = result["route"]
@@ -64,6 +99,8 @@ def cmd_detect(args, config):
 
     if not args.dry_run:
         print(f"\nGuardado en: {config.detected_palette_csv}")
+
+    _report_mapping_drift(config, result["colors"], persist=False)
 
 
 def cmd_config_files_list(args, config):
@@ -223,7 +260,7 @@ def cmd_palette_create(args, config):
     palette_store.write_palette_csv(path, entries)
     print(f"Paleta creada: {path} ({len(entries)} colores)")
     _print_palette(entries)
-    _maybe_apply_after_edit(args, config, path)
+    _maybe_apply_after_edit(args, config, path, target_palette=path)
 
 
 def cmd_palette_list(args, config):
@@ -248,7 +285,8 @@ def cmd_palette_show(args, config):
     display = [{"id": i + 1, **e} for i, e in enumerate(entries)]
     print(f"{label} ({len(entries)} colores):")
     _print_palette(display)
-    _maybe_apply_after_edit(args, config, resolved, mapping_path=args.mapping)
+    _maybe_apply_after_edit(args, config, resolved, mapping_path=args.mapping,
+                            target_palette=resolved if isinstance(resolved, str) else None)
 
 
 def cmd_palette_add_color(args, config):
@@ -261,7 +299,7 @@ def cmd_palette_add_color(args, config):
     print(" ".join(c for c in cells if c))
     print("Paleta actual:")
     _print_palette(palette_store.read_palette_csv(path))
-    _maybe_apply_after_edit(args, config, path, mapping_path=args.mapping)
+    _maybe_apply_after_edit(args, config, path, mapping_path=args.mapping, target_palette=path)
 
 
 def _resolve_target_palette(palette_arg, config, mapping_path=None):
@@ -279,8 +317,11 @@ def _resolve_target_palette(palette_arg, config, mapping_path=None):
         return palette_arg
     if palette_arg:
         return _resolve_path(palette_arg, config.palettes_created_dir, config.project_dir)
-    mapping_path = mapping_path or config.mapping_csv
-    _old, new_p, _entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
+    if mapping_path:
+        _old, new_p, _entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
+    else:
+        registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+        new_p = registry.active_palette_path()
     if not new_p:
         raise palette_shift.PaletteEditError(
             "No se indicó paleta y el mapping no referencia ninguna (#new_palette=). "
@@ -290,27 +331,34 @@ def _resolve_target_palette(palette_arg, config, mapping_path=None):
 
 
 def _adjust_mapping_after_palette_delete(config, mapping_path, palette_path, deleted_id):
-    """If the palette a color was just deleted from is the one `mapping_path`
-    applies, unassign entries that pointed at it and shift the rest, so the
-    mapping stays aligned (see mapping_store.drop_and_shift_new_id)."""
-    old_p, new_p, entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
-    if not entries or not new_p:
+    """If the palette a color was just deleted from is the one this mapping
+    applies to, unassign entries that pointed at it and shift the rest, so
+    the mapping stays aligned (see mapping_store.drop_and_shift_new_id).
+    mapping_path=None resolves the currently-active mapping via the registry
+    (see mapping_store.MappingRegistry) -- an explicit --mapping (a
+    standalone file) always wins."""
+    if mapping_path:
+        store = mapping_store.MappingStore(mapping_path, project_dir=config.project_dir).load()
+    else:
+        registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+        store = registry.for_active()
+    if not store.entries or not store.new_palette:
         return
-    same = (os.path.abspath(color_detector.expand_path(new_p))
+    same = (os.path.abspath(color_detector.expand_path(store.new_palette))
             == os.path.abspath(color_detector.expand_path(palette_path)))
     if not same:
         return
-    adjusted = mapping_store.drop_and_shift_new_id(entries, deleted_id)
-    dropped = sum(1 for e, a in zip(entries, adjusted)
+    adjusted = mapping_store.drop_and_shift_new_id(store.entries, deleted_id)
+    dropped = sum(1 for e, a in zip(store.entries, adjusted)
                   if e["new_id"] is not None and a["new_id"] is None)
-    mapping_store.write_mapping_csv(mapping_path, old_p, new_p, adjusted, project_dir=config.project_dir)
+    store.entries = adjusted
+    store.save()
     if dropped:
         print(f"⚠ {dropped} asignación(es) del mapping apuntaban a ese color y quedaron sin asignar.")
 
 
 def cmd_palette_edit(args, config):
-    mapping_path = args.mapping or config.mapping_csv
-    path = _resolve_target_palette(args.palette, config, mapping_path=mapping_path)
+    path = _resolve_target_palette(args.palette, config, mapping_path=args.mapping)
     if args.role is not None:
         new_id = palette_shift.edit_color(path, args.target, args.new_hex, role=_role_arg_to_value(args.role))
     else:
@@ -320,17 +368,16 @@ def cmd_palette_edit(args, config):
         palette_shift.set_pair(path, new_id, link_target)
     print(f"Editado en {path}:")
     _print_palette(palette_store.read_palette_csv(path))
-    _maybe_apply_after_edit(args, config, path, mapping_path=mapping_path)
+    _maybe_apply_after_edit(args, config, path, mapping_path=args.mapping, target_palette=path)
 
 
 def cmd_palette_remove(args, config):
-    mapping_path = args.mapping or config.mapping_csv
-    path = _resolve_target_palette(args.palette, config, mapping_path=mapping_path)
+    path = _resolve_target_palette(args.palette, config, mapping_path=args.mapping)
     deleted_id = palette_shift.delete_color(path, args.target)
-    _adjust_mapping_after_palette_delete(config, mapping_path, path, deleted_id)
+    _adjust_mapping_after_palette_delete(config, args.mapping, path, deleted_id)
     print(f"Borrado el color {deleted_id} de {path}:")
     _print_palette(palette_store.read_palette_csv(path))
-    _maybe_apply_after_edit(args, config, path, mapping_path=mapping_path)
+    _maybe_apply_after_edit(args, config, path, mapping_path=args.mapping, target_palette=path)
 
 
 def _parse_on_off(raw: str) -> bool:
@@ -344,37 +391,86 @@ def _parse_on_off(raw: str) -> bool:
     raise argparse.ArgumentTypeError(f"valor debe ser 'on' u 'off', se recibió {raw!r}")
 
 
-def cmd_palette_generate(args, config):
-    mapping_path = args.mapping or config.mapping_csv
-    n_colors = args.colors
-    if n_colors is None:
-        # No --colors given -- infer it from how many distinct roles the
-        # mapping actually needs, same convenience `automatic --from-image`
-        # already had, so you don't have to know/remember that number.
-        _old_p, _new_p, mapping_entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
-        n_colors = len({e["new_id"] for e in mapping_entries}) if mapping_entries else 6
+def _mapping_fallback_colors(config, mapping_path):
+    """How many colors a fresh generation should ask for when the caller
+    didn't pass --colors: the number of distinct roles the mapping actually
+    needs (same convenience both `palette generate` and `automatic
+    --from-image` already had), or 6 if there's no mapping to consult.
+    mapping_path=None consults the currently-active mapping (see
+    mapping_store.MappingRegistry) -- an explicit --mapping always wins."""
+    if mapping_path:
+        _old_p, _new_p, entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
+    else:
+        registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+        entries = registry.for_active().entries
+    return len({e["new_id"] for e in entries}) if entries else 6
 
-    entries, out_path, warnings = palette_shift.generate_and_save_palette(
-        config, args.image, n_colors, args.sample_size, args.mode, args.my_eyes, args.out,
+
+def _resolve_generate_target(config, image, explicit_out, regenerate, requested_colors, fallback_colors):
+    """Decide whether to reuse an already-generated palette for this image or
+    actually (re)generate one -- the "one persistent palette per wallpaper"
+    model (see palette_store.find_palettes_for_image/
+    default_generated_path_for_image). An explicit --out always means
+    "regenerate at this exact path" (matches the old, still-supported
+    escape hatch for callers that want a one-off file, never auto-reused).
+
+    Returns (out_path, n_colors, reused_path_or_None):
+      - reused_path is not None => don't call generate_and_save_palette at
+        all, just read/use that existing file as-is.
+      - otherwise, out_path/n_colors are ready to pass straight through."""
+    existing = [] if explicit_out else palette_store.find_palettes_for_image(config.palettes_created_dir, image)
+
+    if existing and not regenerate:
+        return existing[0], None, existing[0]
+
+    if existing and regenerate:
+        out_path = explicit_out or existing[0]
+        n_colors = requested_colors
+        if n_colors is None:
+            n_colors = len(palette_store.read_palette_csv(existing[0])) or fallback_colors
+        return out_path, n_colors, None
+
+    n_colors = requested_colors if requested_colors is not None else fallback_colors
+    return explicit_out, n_colors, None
+
+
+def cmd_palette_generate(args, config):
+    fallback_colors = _mapping_fallback_colors(config, args.mapping)
+    out_path, n_colors, reused_path = _resolve_generate_target(
+        config, args.image, args.out, args.regenerate, args.colors, fallback_colors,
+    )
+
+    if reused_path:
+        entries = palette_store.read_palette_csv(reused_path)
+        print(f"Ya existe una paleta generada para esta imagen: {reused_path} ({len(entries)} color(es)) "
+              "-- se usa esa. Pasá --regenerate para forzar una nueva generación.")
+        print(f"\nGuardada en: {reused_path}")
+        if not args.apply:
+            print(f"Para aplicarla: ucs palette show {reused_path} --apply")
+        _maybe_apply_after_edit(args, config, entries, mapping_path=args.mapping, target_palette=reused_path)
+        return
+
+    entries, saved_path, warnings = palette_shift.generate_and_save_palette(
+        config, args.image, n_colors, args.sample_size, args.mode, args.my_eyes, out_path,
         scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
         weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
         ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
         shading_direction=args.shading_direction,
         shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
         keep_custom=args.keep_custom, eco=args.eco, hallucinate=args.hallucinate,
-        mapping_path=mapping_path,
+        mapping_path=args.mapping,
     )
     for w in warnings:
         print(f"⚠ {w}")
 
     print(f"Paleta generada desde {args.image} ({n_colors} color(es)):")
     _print_palette(entries)
-    print(f"\nGuardada en: {out_path}")
+    print(f"\nGuardada en: {saved_path}")
     if not args.apply:
-        print(f"Para aplicarla: ucs palette show {out_path} --apply")
+        print(f"Para aplicarla: ucs palette show {saved_path} --apply")
     # entries is already the in-memory, just-computed list -- guiless accepts
     # it directly, no need to round-trip it back through the file we just wrote.
-    _maybe_apply_after_edit(args, config, entries, mapping_path=mapping_path)
+    _maybe_apply_after_edit(args, config, entries, mapping_path=args.mapping, target_palette=saved_path)
 
 
 def _resolve_detected_csv(args, config):
@@ -394,17 +490,23 @@ def cmd_mapping_new(args, config):
         print(f"Paleta objetivo vacía o no encontrada: {target_palette}")
         sys.exit(1)
 
-    out_path = args.out
-    if not out_path:
-        out_path = config.mapping_csv
-    else:
+    if args.out:
+        # Explicit --out: a standalone export file, the original escape hatch
+        # -- never auto-discovered/reused later, unlike the registry-backed
+        # default below.
+        out_path = args.out
         if not out_path.endswith(".csv"):
             out_path += ".csv"
         if not os.path.isabs(out_path):
             out_path = os.path.join(config.mappings_dir, out_path)
-    store = mapping_store.MappingStore(
-        out_path, old_palette=detected_path, new_palette=target_palette, project_dir=config.project_dir
-    )
+        store = mapping_store.MappingStore(
+            out_path, old_palette=detected_path, new_palette=target_palette, project_dir=config.project_dir
+        )
+        location = out_path
+    else:
+        registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+        store = registry.for_palette(target_palette, old_palette=detected_path)
+        location = f"{target_palette}  (registro: {config.mapping_registry_json})"
 
     siblings = conflicts.find_case2_siblings(detected_colors)
     color_by_id = {c["id"]: c for c in detected_colors}
@@ -423,7 +525,7 @@ def cmd_mapping_new(args, config):
     for p in new_palette:
         print(f"  ID {p['id']:>3} | #{p['hex']} | {p['label']}")
 
-    print(f"\nIngresá pares 'old_id new_id' (ENTER vacío para terminar). Mapping: {out_path}")
+    print(f"\nIngresá pares 'old_id new_id' (ENTER vacío para terminar). Mapping: {location}")
     while True:
         try:
             line = input("> ").strip()
@@ -457,11 +559,27 @@ def cmd_mapping_new(args, config):
         print("No se guardó ningún mapping (vacío).")
         return
 
-    print(f"\nMapping guardado: {out_path} ({len(store.resolved_entries())} entradas)")
+    print(f"\nMapping guardado: {location} ({len(store.resolved_entries())} entradas)")
+
+
+def _resolve_mapping_store_for_show(args, config):
+    """`mapping show`/`mapping relink` share the same 3-way resolution: an
+    explicit standalone `path`/`--mapping` always wins; else `--palette`
+    resolves that specific palette's own registry section (read-only, never
+    changes what's active); else the currently-active mapping."""
+    explicit = getattr(args, "path", None) or getattr(args, "mapping", None)
+    if explicit:
+        return mapping_store.MappingStore(explicit, project_dir=config.project_dir).load()
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    if getattr(args, "palette", None):
+        target = _resolve_path(args.palette, config.palettes_created_dir, config.project_dir)
+        return registry.for_palette(target, set_active=False)
+    return registry.for_active()
 
 
 def cmd_mapping_show(args, config):
-    old_p, new_p, entries = mapping_store.read_mapping_csv(args.path, project_dir=config.project_dir)
+    store = _resolve_mapping_store_for_show(args, config)
+    old_p, new_p, entries = store.old_palette, store.new_palette, store.entries
     print(f"old_palette: {old_p}")
     print(f"new_palette: {new_p}")
     detected_colors = color_detector.read_detected_csv(old_p) if old_p else []
@@ -482,31 +600,103 @@ def cmd_mapping_show(args, config):
             print(f"  old_id {c['old_id']} -> #{c['new_hex']} colisiona con id(s) {c['conflict_with_ids']}")
 
 
-def _apply_or_test(args, config, mode):
-    mapping_path = args.mapping or config.mapping_csv
-    old_p, new_p, entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
+def cmd_mapping_relink(args, config):
+    store = _resolve_mapping_store_for_show(args, config)
+    entries = store.entries
     if not entries:
-        print(f"Mapping vacío o no encontrado: {mapping_path}")
+        print("Mapping vacío o no encontrado.")
+        return
+
+    detected_path = store.old_palette or config.detected_palette_csv
+    detected_colors = color_detector.read_detected_csv(detected_path)
+    drift = mapping_store.detect_drift(entries, detected_colors)
+
+    if not drift["driftable"] and not drift["orphaned"]:
+        print("Nada para re-vincular: el mapping está al día con los colores detectados.")
+        return
+
+    if drift["driftable"]:
+        print(f"{len(drift['driftable'])} color(es) para re-vincular (el color real sigue existiendo, "
+              "solo se movió de id):")
+        for d in drift["driftable"]:
+            print(f"  old_id {d['old_id']} -> {d['correct_old_id']}  (#{d['hex']}, {d['type']})")
+    if drift["orphaned"]:
+        print(f"\n{len(drift['orphaned'])} color(es) huérfano(s) -- ya no existen, no se auto-resuelven:")
+        for d in drift["orphaned"]:
+            print(f"  old_id {d['old_id']}  (#{d['hex']}, {d['type']}) -- corregilo a mano.")
+
+    if not drift["driftable"]:
+        return
+
+    if not args.yes:
+        try:
+            answer = input(f"\n¿Re-vincular {len(drift['driftable'])} entrada(s)? (y/N): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in ("y", "yes", "s", "si", "sí"):
+            print("Cancelado.")
+            return
+
+    relinked = store.apply_drift_relinks(drift["driftable"])
+    print(f"\n{relinked} entrada(s) re-vinculada(s).")
+
+
+def cmd_mapping_list(args, config):
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    sections = registry.all_sections()
+    if not sections:
+        print("No hay ningún mapping todavía.")
+        return
+    active = registry.active_palette_path()
+    for palette_path, store in sections:
+        marker = "  (activo)" if palette_path == active else ""
+        print(f"  {palette_path}{marker} -- {len(store.resolved_entries())} entrada(s)")
+
+
+def _print_reorder_banner(warning: str) -> None:
+    """An unmissable, visually distinct banner for tier="compacted" applies --
+    deliberately louder than an ordinary "⚠ ..." line, since this is
+    specifically the "your mapping's assignment order changed and may break
+    a previously-tuned theme" risk resolve_apply_targets exists to surface."""
+    bar = "=" * 70
+    print(f"\n{bar}\n¡ATENCIÓN! REASIGNACIÓN DE MAPPING\n{bar}")
+    print(warning)
+    print(f"{bar}\n")
+
+
+def _apply_or_test(args, config, mode):
+    if args.mapping:
+        store = mapping_store.MappingStore(args.mapping, project_dir=config.project_dir).load()
+    else:
+        registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+        store = registry.for_active()
+    new_p, entries = store.new_palette, store.entries
+    if not entries:
+        print(f"Mapping vacío o no encontrado: {args.mapping or '(ningún mapping activo)'}")
         sys.exit(1)
 
-    detected_path = old_p or config.detected_palette_csv
+    detected_path = store.old_palette or config.detected_palette_csv
     detected_colors = color_detector.read_detected_csv(detected_path)
     new_palette = palette_store.read_palette_csv(new_p) if new_p else []
 
-    # A new_id the mapping references but the palette doesn't have (stale
-    # after the palette was edited/regenerated with fewer/renumbered colors,
-    # a missing #new_palette= file, or plain hand-edited corruption) must be
-    # a hard error here -- unlike guiless.apply_palette's positional
-    # compaction, this path matches new_id directly against the palette's own
-    # ids, so silently ignoring the mismatch would either drop that
-    # replacement outright or (if the palette file is simply missing) report
-    # a misleadingly "successful" 0-replacements run.
-    missing_new_ids = sorted({e["new_id"] for e in entries} - {p["id"] for p in new_palette})
-    if missing_new_ids:
-        print(f"⚠ El mapping referencia color(es) de paleta que no existen: id(s) {missing_new_ids}. "
-              f"La paleta {new_p or '(no definida)'} tiene {len(new_palette)} color(es). "
-              "Revisá el mapping ('ucs mapping show <mapping>') o regenerá/reimportá la paleta.")
+    # Resolve entries against the palette via the one shared resolver every
+    # apply path in this app uses (see mapping_store.resolve_apply_targets).
+    # tier "blocked": not even enough colors for the mapping's distinct new_id
+    # values -- a hard error, same as before. tier "compacted": the palette is
+    # smaller than the mapping's highest new_id but big enough for its
+    # distinct values -- unlike the GUI, a CLI apply/automatic run must not
+    # block on this (a wallpaper-switch hook can't stop to ask), so it warns
+    # loudly and proceeds with the resolved (possibly reordered) entries.
+    resolution = mapping_store.resolve_apply_targets(entries, new_palette)
+    if resolution["tier"] == "blocked":
+        print(f"⚠ La paleta {new_p or '(no definida)'} tiene {resolution['available']} color(es), "
+              f"pero el mapping necesita al menos {resolution['needed']} (cantidad de ids "
+              "distintos usados). Revisá el mapping ('ucs mapping show <mapping>') o "
+              "regenerá/reimportá la paleta.")
         sys.exit(1)
+    if resolution["tier"] == "compacted":
+        _print_reorder_banner(resolution["warning"])
+    entries = resolution["final_entries"]
 
     siblings = conflicts.find_case2_siblings(detected_colors)
     collisions = conflicts.find_case1_collisions(detected_colors, new_palette, entries)
@@ -547,6 +737,12 @@ def _apply_or_test(args, config, mode):
         for fg_key, dangling_bg_key in pair_collisions:
             print(f"⚠ {fg_key} perdió su vínculo con {dangling_bg_key}: ese background ya no existe "
                   "como tal tras el apply. Re-vinculalo a mano si corresponde.")
+        # The colors just replaced no longer exist in the files BY DESIGN --
+        # re-stamp this mapping's identity to the NEW colors now actually
+        # there, so the drift refresh below doesn't mistake "I just replaced
+        # this" for real drift and flag it orphaned.
+        store.entries = mapping_store.stamp_applied_entries(store.entries, entries, new_palette, detected_colors)
+        store.save()
         print(f"Backup en: {config.backup_dir}")
         print("Para deshacer: ucs restore")
         _refresh_detected_after_change(config)
@@ -562,6 +758,7 @@ def _refresh_detected_after_change(config):
     colors = detect_diff.run_detect(config)
     color_detector.write_detected_csv(colors, config.detected_palette_csv)
     print(f"Colores re-detectados y guardados en: {config.detected_palette_csv}")
+    _report_mapping_drift(config, colors, persist=True)
 
 
 def cmd_test(args, config):
@@ -605,45 +802,79 @@ def cmd_automatic(args, config):
         print("Pasá exactamente uno: la paleta (posicional) o --from-image <wallpaper>.")
         sys.exit(1)
 
-    mapping_path = args.mapping or config.mapping_csv
+    registry = None
+    if args.mapping:
+        store = mapping_store.MappingStore(args.mapping, project_dir=config.project_dir).load()
+        mapping_desc = args.mapping
+    else:
+        registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+        store = registry.for_active()
+        mapping_desc = "el mapping activo"
+
     palette_source = args.palette
+    target_path = None
     if args.from_image:
-        _old_p, _new_p, entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
-        if not entries:
-            print(f"Mapping vacío o no encontrado: {mapping_path}")
+        if not store.entries:
+            print(f"Mapping vacío o no encontrado: {mapping_desc}")
             sys.exit(1)
-        n_colors = args.colors or len({e["new_id"] for e in entries})
-        palette_source, saved_path, gen_warnings = palette_shift.generate_and_save_palette(
-            config, args.from_image, n_colors, args.sample_size, args.mode, args.my_eyes,
-            scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
-            weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
-            ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
-            shading_direction=args.shading_direction,
-            shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
-            keep_custom=args.keep_custom, eco=args.eco, hallucinate=args.hallucinate,
-            mapping_path=mapping_path,
+        fallback_colors = len({e["new_id"] for e in store.entries})
+        out_path, n_colors, reused_path = _resolve_generate_target(
+            config, args.from_image, None, args.regenerate, args.colors, fallback_colors,
         )
-        for w in gen_warnings:
-            print(f"⚠ {w}")
-        print(f"Paleta generada desde {args.from_image} ({n_colors} color(es)) — guardada en: {saved_path}")
+        if reused_path:
+            palette_source = palette_store.read_palette_csv(reused_path)
+            target_path = reused_path
+            print(f"Ya existe una paleta generada para esta imagen: {reused_path} "
+                  f"({len(palette_source)} color(es)) -- se usa esa. Pasá --regenerate para forzar "
+                  "una nueva generación.")
+        else:
+            palette_source, saved_path, gen_warnings = palette_shift.generate_and_save_palette(
+                config, args.from_image, n_colors, args.sample_size, args.mode, args.my_eyes, out_path,
+                scoring=args.scoring, custom_scoring_values=args.custom_scoring_values,
+                weighted_contrast=args.weighted_contrast, shuffle=args.shuffle, overfetch=args.overfetch,
+                ying_yang=args.ying_yang, my_eyes_factor=args.my_eyes_factor, my_eyes_max_chroma=args.my_eyes_max_chroma,
+                shading_direction=args.shading_direction,
+                shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
+                keep_custom=args.keep_custom, eco=args.eco, hallucinate=args.hallucinate,
+                mapping_path=args.mapping,
+            )
+            target_path = saved_path
+            for w in gen_warnings:
+                print(f"⚠ {w}")
+            print(f"Paleta generada desde {args.from_image} ({n_colors} color(es)) — guardada en: {saved_path}")
         _print_palette(palette_source)
+    elif isinstance(args.palette, str) and args.palette != "-" and args.palette.lower().endswith(".csv"):
+        target_path = _resolve_path(args.palette, config.palettes_created_dir, config.project_dir)
+
+    # Bind (creating/seeding if needed -- see MappingRegistry.for_palette) the
+    # mapping to the palette actually being applied against, so what's used
+    # here is persisted/discoverable under ITS OWN section afterward -- e.g.
+    # opening this exact palette later in the GUI ("Importar paleta") must
+    # show what was actually applied, not whatever happened to be active
+    # before this command ran (the real bug report this fixes: `automatic
+    # --from-image` kept using/saving into the PREVIOUS active section,
+    # leaving the just-generated/-reused palette's own section empty).
+    if registry is not None and target_path:
+        store = registry.for_palette(target_path, old_palette=store.old_palette or config.detected_palette_csv)
+        mapping_desc = target_path
 
     result = guiless.apply_palette(
         palette_source,
-        mapping_path,
+        store,
         config.backup_dir,
         dry_run=args.test,
         force=args.force,
         yolo=args.yolo,
         project_dir=config.project_dir,
     )
-    _report_apply_result(result, args, config, mapping_path)
+    _report_apply_result(result, args, config, mapping_desc)
 
 
-def _report_apply_result(result, args, config, mapping_path):
+def _report_apply_result(result, args, config, mapping_desc):
     """Shared by `automatic` and `automatic shift`: turn a guiless.apply_palette
     result into CLI output (and the post-apply detect refresh / restarts on a
-    real apply). Exits 1 on any non-applied status."""
+    real apply). Exits 1 on any non-applied status. mapping_desc is a plain
+    display string (a path, or "el mapping activo") -- only used in messages."""
     status = result["status"]
     if status == "insufficient_palette":
         print(f"La paleta nueva tiene {result['available']} color(es), pero el mapping necesita "
@@ -662,7 +893,7 @@ def _report_apply_result(result, args, config, mapping_path):
             print(f"  [convergencia] ids {c['old_ids']} -> #{c['target_hex']} (se pierde la distinción entre ellos)")
         sys.exit(1)
     elif status == "empty_mapping":
-        print(f"Mapping vacío o no encontrado: {mapping_path}")
+        print(f"Mapping vacío o no encontrado: {mapping_desc}")
         sys.exit(1)
     else:
         results = result["results"]
@@ -683,30 +914,51 @@ def _report_apply_result(result, args, config, mapping_path):
                 print(f"  Reiniciando: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
 
 
-def _maybe_apply_after_edit(args, config, palette_source, mapping_path=None):
+def _maybe_apply_after_edit(args, config, palette_source, mapping_path=None, target_palette=None):
     """Shared tail for every palette-mutating command's `--apply`: reuses the
     exact same guiless.apply_palette + _report_apply_result pipeline
     `automatic`/`automatic shift` already use, so "mutate a palette, then
     apply it" never needs its own bespoke apply logic. No-op if --apply
     wasn't passed. `palette_source` is a path OR an already-loaded list
     (guiless.load_palette accepts either) -- `palette generate --apply`
-    passes the just-computed in-memory entries directly, no file round-trip."""
+    passes the just-computed in-memory entries directly, no file round-trip.
+
+    target_palette (a real palette CSV path, when the caller has one -- None
+    for an anonymous/in-memory palette_source with no stable identity, e.g.
+    `palette show -` from stdin): without an explicit --mapping, binds
+    (creating/seeding if needed -- see MappingRegistry.for_palette) to THAT
+    palette's own registry section instead of blindly whatever was active
+    before this command ran, so what actually gets applied here is
+    persisted/discoverable under its own palette afterward -- the same class
+    of bug fixed in `cmd_automatic` (a mapping edited/applied against palette
+    X must live under X's own section, not some unrelated previously-active
+    one)."""
     if not getattr(args, "apply", False):
         return
-    mapping_path = mapping_path or args.mapping or config.mapping_csv
+    mapping_path = mapping_path or args.mapping
+    if mapping_path:
+        store = mapping_store.MappingStore(mapping_path, project_dir=config.project_dir).load()
+        mapping_desc = mapping_path
+    else:
+        registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+        if target_palette:
+            store = registry.for_palette(target_palette, old_palette=config.detected_palette_csv)
+            mapping_desc = target_palette
+        else:
+            store = registry.for_active()
+            mapping_desc = "el mapping activo"
     result = guiless.apply_palette(
-        palette_source, mapping_path, config.backup_dir,
+        palette_source, store, config.backup_dir,
         dry_run=args.test, force=args.force, yolo=args.yolo, project_dir=config.project_dir,
     )
-    _report_apply_result(result, args, config, mapping_path)
+    _report_apply_result(result, args, config, mapping_desc)
 
 
 def cmd_palette_shift(args, config):
     """`palette shift` (--apply defaults False) and the back-compat `automatic
     shift` (which forces apply=True via set_defaults, no --apply flag shown)
     both point here -- one function, no duplicated shift-then-apply logic."""
-    mapping_path = args.mapping or config.mapping_csv
-    palette_path = _resolve_target_palette(args.palette, config, mapping_path=mapping_path)
+    palette_path = _resolve_target_palette(args.palette, config, mapping_path=args.mapping)
 
     weighted_contrast = None if args.weighted_contrast is None else (args.weighted_contrast == "on")
     result = palette_shift.shift_palette(
@@ -718,7 +970,7 @@ def cmd_palette_shift(args, config):
         colors=args.colors, shading_direction=args.shading_direction,
         shading_min_luminance=args.shading_min_luminance, shading_max_luminance=args.shading_max_luminance,
         keep_custom=args.keep_custom, eco=args.eco, hallucinate=args.hallucinate,
-        mapping_path=mapping_path, write=not args.test,
+        mapping_path=args.mapping, write=not args.test,
     )
     for w in result["warnings"]:
         print(f"⚠ {w}")
@@ -727,7 +979,7 @@ def cmd_palette_shift(args, config):
     _print_palette(result["entries"])
 
     palette_source = [{"hex": e["hex"], "label": e.get("label", "")} for e in result["entries"]]
-    _maybe_apply_after_edit(args, config, palette_source, mapping_path=mapping_path)
+    _maybe_apply_after_edit(args, config, palette_source, mapping_path=args.mapping, target_palette=palette_path)
 
 
 def _parse_custom_scoring_values(raw: str) -> dict:
@@ -970,6 +1222,21 @@ def _add_hallucinate_generation_arg(parser):
                               "imagen no es monocromática.")
 
 
+def _add_regenerate_arg(parser):
+    """Whether a FRESH generation (palette generate / automatic --from-image)
+    forces regenerating even if a palette for this exact image already
+    exists -- see palette_store.find_palettes_for_image. Without this flag,
+    an existing palette for the image is reused as-is instead of being
+    silently overwritten (this REPLACES the old "generate always overwrites
+    one canonical generated.csv" behavior). When used with no explicit
+    --colors, falls back to the existing palette's own color count, or (if
+    there's no existing palette at all) the mapping's usual fallback."""
+    parser.add_argument("--regenerate", action="store_true",
+                         help="Forzar una regeneración aunque ya exista una paleta generada para esta "
+                              "imagen (sin --colors, usa la cantidad de colores de la paleta existente, "
+                              "o si no hay ninguna, la que necesite el mapping).")
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Color Switcher — CLI")
     # not required: no subcommand at all means "launch the GUI" (see main())
@@ -1086,7 +1353,10 @@ def build_parser():
     _add_keep_custom_generation_arg(pg)
     _add_eco_generation_arg(pg)
     _add_hallucinate_generation_arg(pg)
-    pg.add_argument("--out", help="Ruta de salida (default: palettes/created/generated.csv, se reemplaza en cada corrida)")
+    _add_regenerate_arg(pg)
+    pg.add_argument("--out", help="Ruta de salida explícita (default: un archivo persistente por imagen, "
+                                  "bajo palettes/created/ -- ver find_palettes_for_image/--regenerate. "
+                                  "Si se pasa, siempre se (re)genera ahí, sin buscar una paleta existente.")
     _add_apply_args(pg)
     pg.set_defaults(func=cmd_palette_generate)
 
@@ -1103,12 +1373,34 @@ def build_parser():
     mn = msub.add_parser("new", help="Crear un mapping interactivo")
     mn.add_argument("target_palette", help="Ruta a la paleta objetivo")
     mn.add_argument("--detected-palette", help="Usar un detected_palette.csv específico")
-    mn.add_argument("--out", help="Ruta de salida del mapping (default: mappings/mapping.csv, el mapping canónico)")
+    mn.add_argument("--out", help="Ruta de salida standalone explícita (default: la sección de esta "
+                                  "paleta en el registro de mappings, mappings/mappings.json -- ver "
+                                  "'mapping list'). Si se pasa, se crea un archivo aparte, nunca "
+                                  "auto-detectado luego.")
     mn.set_defaults(func=cmd_mapping_new)
 
     ms = msub.add_parser("show", help="Mostrar un mapping y sus conflictos")
-    ms.add_argument("path")
+    ms.add_argument("path", nargs="?", default=None,
+                    help="Archivo de mapping standalone (legacy). Omitir para usar --palette o el "
+                         "mapping activo.")
+    ms.add_argument("--palette", help="Mostrar el mapping de esta paleta específica (su propia "
+                                      "sección en el registro), sin cambiar cuál está activa.")
     ms.set_defaults(func=cmd_mapping_show)
+
+    ml = msub.add_parser("list", help="Listar todas las paletas que tienen mapping, y cuál está activa")
+    ml.set_defaults(func=cmd_mapping_list)
+
+    mr = msub.add_parser(
+        "relink",
+        help="Re-vincular entradas cuyo color detectado cambió de id en el último escaneo "
+             "(ver 'ucs detect'/'ucs apply' -- avisan cuando hay algo para re-vincular)",
+    )
+    mr.add_argument("--mapping", help="Archivo de mapping standalone (legacy). default: --palette, o "
+                                      "si tampoco se pasa, el mapping activo.")
+    mr.add_argument("--palette", help="Re-vincular el mapping de esta paleta específica, sin cambiar "
+                                      "cuál está activa.")
+    mr.add_argument("--yes", action="store_true", help="Re-vincular sin pedir confirmación")
+    mr.set_defaults(func=cmd_mapping_relink)
 
     t = sub.add_parser("test", help="Simular aplicar un mapping (no modifica archivos)")
     t.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
@@ -1165,6 +1457,7 @@ def build_parser():
     _add_keep_custom_generation_arg(ap)
     _add_eco_generation_arg(ap)
     _add_hallucinate_generation_arg(ap)
+    _add_regenerate_arg(ap)
     ap.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
     ap.add_argument("--test", action="store_true", help="Simular, no modificar archivos")
     ap.add_argument("--force", action="store_true",

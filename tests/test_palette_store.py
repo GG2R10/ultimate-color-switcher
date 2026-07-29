@@ -190,6 +190,50 @@ def test_read_ignores_invalid_role_value(tmp_path):
     assert "role" not in entries[0]
 
 
+def test_find_palettes_for_image_matches_by_provenance_not_filename(tmp_path):
+    directory = tmp_path / "created"
+    meta = ps.default_meta()
+    meta.update({"generated": True, "image": str(tmp_path / "wall.png")})
+    ps.write_palette_csv(str(directory / "totally-unrelated-name.csv"),
+                         [{"id": 1, "hex": "111111", "label": ""}], meta=meta)
+
+    matches = ps.find_palettes_for_image(str(directory), str(tmp_path / "wall.png"))
+    assert matches == [str(directory / "totally-unrelated-name.csv")]
+
+    # a different image -> no match, regardless of any filename resemblance
+    assert ps.find_palettes_for_image(str(directory), str(tmp_path / "other.png")) == []
+
+
+def test_find_palettes_for_image_ignores_non_generated_palettes(tmp_path):
+    directory = tmp_path / "created"
+    ps.write_palette_csv(str(directory / "handmade.csv"), [{"id": 1, "hex": "111111", "label": ""}])  # no meta
+
+    meta = ps.default_meta()  # generated=False, but image happens to be set
+    meta["image"] = str(tmp_path / "wall.png")
+    ps.write_palette_csv(str(directory / "half.csv"), [{"id": 1, "hex": "222222", "label": ""}], meta=meta)
+
+    assert ps.find_palettes_for_image(str(directory), str(tmp_path / "wall.png")) == []
+
+
+def test_find_palettes_for_image_missing_dir_returns_empty(tmp_path):
+    assert ps.find_palettes_for_image(str(tmp_path / "nope"), str(tmp_path / "wall.png")) == []
+
+
+def test_default_generated_path_for_image_is_deterministic_per_image(tmp_path):
+    created_dir = str(tmp_path / "created")
+    image = str(tmp_path / "wallpapers" / "sunset.jpg")
+
+    first = ps.default_generated_path_for_image(created_dir, image)
+    second = ps.default_generated_path_for_image(created_dir, image)
+    assert first == second
+    assert first.startswith(str(tmp_path / "created"))
+    assert first.endswith(".csv")
+    assert "sunset" in first
+
+    other_image = str(tmp_path / "wallpapers" / "sunrise.jpg")
+    assert ps.default_generated_path_for_image(created_dir, other_image) != first
+
+
 def test_add_color_with_role(tmp_path):
     path = tmp_path / "p.csv"
     ps.write_palette_csv(str(path), [{"id": 1, "hex": "111111", "label": "a"}])

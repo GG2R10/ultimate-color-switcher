@@ -305,6 +305,13 @@ template $MainWindow: Adw.ApplicationWindow {
             margin-end: 6;
             margin-top: 10;
 
+            Gtk.Label mapping_palette_header {
+              xalign: 0;
+              wrap: true;
+              css-classes: ["dim-label", "caption"];
+              margin-bottom: 4;
+            }
+
             Gtk.Button palette_image_button {
               css-classes: ["flat"];
               tooltip-text: _("Elegir imagen para previsualizar");

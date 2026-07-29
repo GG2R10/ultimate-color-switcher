@@ -17,11 +17,16 @@ a una aplicación Python con backend aislado y GUI en GTK4 + libadwaita + Bluepr
 3. **blueprint-compiler**: no está instalado en el sistema — lo instala el usuario
    (`sudo pacman -S blueprint-compiler`) antes de empezar la Fase 3. Los `.blp` se escriben igual
    mientras tanto; solo no se podrán compilar/probar hasta que esté disponible.
-4. **Modo "GUIless" (orden de emparejamiento)**: cuando sobran/faltan colores entre el JSON de
-   paleta recibido y el mapping guardado, se empareja en **orden de inserción del mapping**
-   (el orden en que el usuario fue construyendo el mapping en la GUI), no por `old_id` numérico.
-   Esto implica que la estructura de mapping en disco debe preservar orden de inserción explícito
-   (no basta con el CSV ordenado por `old_id`; ver Fase 1.3).
+4. **Modo "GUIless" (orden de emparejamiento) — SUPERSEDIDA**: esta decisión decía que, cuando
+   sobran/faltan colores entre el JSON de paleta recibido y el mapping guardado, se empareja en
+   orden de inserción del mapping (el orden en que el usuario fue construyendo el mapping en la
+   GUI), no por el valor numérico de `new_id`. Quedó reemplazada por el rework de mappings
+   persistentes por paleta (ver notas de esa sesión): ahora TODO camino de apply (GUI, `apply`/
+   `test`, `automatic`/`guiless.apply_palette`, `palette shift --apply`) usa un único resolver
+   (`mapping_store.resolve_apply_targets`) que compacta por **valor numérico ascendente** de
+   `new_id`, nunca por orden de inserción — necesario para que `new_id` signifique lo mismo
+   (una posición literal en la paleta) en todos los caminos, no una "etiqueta de rol" opaca solo
+   en `automatic`.
 
 ## Estructura de carpetas propuesta
 

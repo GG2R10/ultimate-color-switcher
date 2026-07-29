@@ -377,6 +377,22 @@ def test_apply_post_modifiers_preserves_label_and_order():
     assert len(out) == len(_CREATED_PALETTE)
 
 
+def test_load_image_samples_expands_a_literal_tilde(tmp_path, monkeypatch):
+    """Real bug report: `ucs automatic --from-image '~/wallpapers/x.jpg'`
+    (single-quoted) failed with "No existe la imagen", while the same path
+    unquoted worked fine. The shell only expands `~` for an unquoted/double-
+    quoted argument -- single-quoting (or any non-interactive source: a saved
+    script, a systemd unit, a hook) passes the literal string through, so the
+    app must expand it itself, same as every other path in this codebase
+    (color_detector.expand_path)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "wallpapers").mkdir()
+    _make_test_image(tmp_path / "wallpapers" / "wall.png")
+
+    samples = pg.load_image_samples("~/wallpapers/wall.png", sample_size=100)
+    assert len(samples) > 0
+
+
 def test_generate_palette_raises_clean_error_on_directory(tmp_path):
     with pytest.raises(pg.ImageLoadError):
         pg.generate_palette(str(tmp_path), n_colors=4)
