@@ -884,7 +884,7 @@ def test_manage_palette_delete_all_removes_every_palette_file(fake_project, monk
 
 
 def _restore_args(**kwargs):
-    kwargs.setdefault("restart", False)
+    kwargs.setdefault("postcommands", False)
     kwargs.setdefault("yolo", False)
     return argparse.Namespace(**kwargs)
 

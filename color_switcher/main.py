@@ -902,7 +902,7 @@ def _apply_or_test(args, config, mode):
             restart_actions.read_restart_actions(config), extra_env=restart_actions.wallpaper_env(new_p), cli=True
         )
         for a in started:
-            print(f"  Restarting: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
+            print(f"  Running: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
 
 
 def _refresh_detected_after_change(config):
@@ -962,23 +962,23 @@ def cmd_restore(args, config):
     active_palette = registry.for_active().new_palette
     restart_actions.write_wallpaper_state(config, active_palette)
 
-    if args.restart is not None:
-        do_restart = args.restart
+    if args.postcommands is not None:
+        do_postcommands = args.postcommands
     else:
         try:
-            answer = input("Restart the configured services? (y/N): ").strip().lower()
+            answer = input("Run the configured post-apply scripts? (y/N): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = ""
-        do_restart = answer in ("y", "yes", "s", "si", "sí")
+        do_postcommands = answer in ("y", "yes", "s", "si", "sí")
 
-    if do_restart:
+    if do_postcommands:
         started = restart_actions.run_enabled(
             restart_actions.read_restart_actions(config),
             extra_env=restart_actions.wallpaper_env(active_palette),
             cli=True,
         )
         for a in started:
-            print(f"  Restarting: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
+            print(f"  Running: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
 
 
 def cmd_automatic(args, config):
@@ -1102,7 +1102,7 @@ def _report_apply_result(result, args, config, mapping_desc, palette_path=None):
                 cli=True,
             )
             for a in started:
-                print(f"  Restarting: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
+                print(f"  Running: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
 
 
 def _maybe_apply_after_edit(args, config, palette_source, mapping_path=None, target_palette=None):
@@ -1604,11 +1604,11 @@ def build_parser():
     a.set_defaults(func=cmd_apply)
 
     r = sub.add_parser("restore", help="Restore files from the backup")
-    r_restart = r.add_mutually_exclusive_group()
-    r_restart.add_argument("--restart", dest="restart", action="store_true", default=None,
-                            help="Restart the configured services without asking")
-    r_restart.add_argument("--no-restart", dest="restart", action="store_false",
-                            help="Don't restart services or ask (skips the confirmation)")
+    r_postcommands = r.add_mutually_exclusive_group()
+    r_postcommands.add_argument("--postcommands", dest="postcommands", action="store_true", default=None,
+                                 help="Run the configured post-apply scripts without asking")
+    r_postcommands.add_argument("--no-postcommands", dest="postcommands", action="store_false",
+                                 help="Don't run post-apply scripts or ask (skips the confirmation)")
     r.add_argument("--yolo", action="store_true",
                     help="Don't ask for confirmation before restoring (overwrites complete files, "
                          "not just the colors)")

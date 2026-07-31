@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dialogs/restart_actions.py — The "Restart services" manager: the add
+dialogs/restart_actions.py — The "Post-apply scripts" manager: the add
 prompt, the Adw.PreferencesGroup builder (also reused by the first-run
 onboarding in dialogs/onboarding.py), and its standalone settings dialog.
 """
@@ -67,7 +67,7 @@ def build_restart_actions_group(config) -> Adw.PreferencesGroup:
     actions = ra.read_restart_actions(config)
 
     group = Adw.PreferencesGroup(
-        title="Restart services",
+        title="Post-apply scripts",
         description="Run in the background after every real Apply (not Simulate).",
     )
     _center_group_title(group)
@@ -148,6 +148,6 @@ def show_restart_actions_settings(parent: Gtk.Widget, config):
     page = Adw.PreferencesPage()
     page.add(group)
     prefs = Adw.PreferencesDialog()
-    prefs.set_title("Restart services")
+    prefs.set_title("Post-apply scripts")
     prefs.add(page)
     prefs.present(parent)

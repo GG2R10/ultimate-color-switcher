@@ -240,7 +240,7 @@ def show_restart_actions_onboarding(parent: Gtk.Widget, config, on_done):
 
     continue_button = Gtk.Button(label="Continue", css_classes=["suggested-action"])
     dialog = _build_dialog_shell(
-        "Restart services", content_box, [continue_button],
+        "Post-apply scripts", content_box, [continue_button],
         width=480, height=520, hide_title_buttons=True,
     )
 

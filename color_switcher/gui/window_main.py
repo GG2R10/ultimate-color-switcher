@@ -1498,7 +1498,7 @@ class MainWindow(Adw.ApplicationWindow):
             )
             if started:
                 names = ", ".join(a["label"] for a in started)
-                dialogs.toast(self.toast_overlay, f"Restarting: {names}")
+                dialogs.toast(self.toast_overlay, f"Running: {names}")
 
         if (collisions or convergence or reorder_warning) and not dry_run:
             parts = []
@@ -1542,13 +1542,13 @@ class MainWindow(Adw.ApplicationWindow):
                 )
                 if started:
                     names = ", ".join(a["label"] for a in started)
-                    dialogs.toast(self.toast_overlay, f"Restarting: {names}")
+                    dialogs.toast(self.toast_overlay, f"Running: {names}")
 
             dialogs.ask_confirm(
                 self,
-                "Restart services",
-                "Do you want to restart the configured services so they pick up the restored theme?",
-                "Restart",
+                "Post-apply scripts",
+                "Do you want to run the configured post-apply scripts so they pick up the restored theme?",
+                "Run",
                 do_restart_services,
             )
 

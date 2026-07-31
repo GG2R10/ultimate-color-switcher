@@ -44,7 +44,7 @@ menu palette_menu {
       action: "win.scanned-files-settings";
     }
     item {
-      label: "Services to restart…";
+      label: "Post-apply scripts…";
       action: "win.restart-actions";
     }
     item {
@@ -75,7 +75,7 @@ template $MainWindow: Adw.ApplicationWindow {
       [end]
       Gtk.MenuButton {
         menu-model: palette_menu;
-        tooltip-text: "Palette, hex/rgb linking, restarts, snapshots and saved palette management";
+        tooltip-text: "Palette, hex/rgb linking, post-apply scripts, snapshots and saved palette management";
         child: Adw.ButtonContent {
           icon-name: "view-more-symbolic";
           label: "Options";
