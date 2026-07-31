@@ -40,7 +40,7 @@ _BASE_CSS = """
 """
 
 _ROLE_LABELS = {"foreground": "F", "background": "B", None: ""}
-_ROLE_NAMES_ES = {"foreground": "Foreground", "background": "Background", None: "Sin rol"}
+_ROLE_NAMES = {"foreground": "Foreground", "background": "Background", None: "No role"}
 
 _base_css_provider = None
 _known_swatch_colors = set()
@@ -269,7 +269,7 @@ class ColorChip(Gtk.Box):
         practical equivalent.)"""
         self.role_button.set_label(_ROLE_LABELS[role])
         self.role_button.set_tooltip_text(
-            f"{_ROLE_NAMES_ES[role]} -- clic para ciclar: sin marcar → background → foreground"
+            f"{_ROLE_NAMES[role]} -- click to cycle: none → background → foreground"
         )
         for css_class in ("role-badge-unmarked", self._current_swatch_class,
                          self._current_text_class, self._current_role_fg_class):

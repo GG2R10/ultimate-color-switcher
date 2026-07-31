@@ -8,10 +8,10 @@ dialogs/ — Dialog helpers used by window_main.py, split by concern:
   ~/.config auto-scan + review tree, stale-detect, restart-actions intro).
 - restart_actions.py / scanned_files.py: the two small config.json-backed
   settings managers (restart hooks / scanned dotfiles).
-- generation_settings.py: "Configurar generación de paleta…" and "Otros…"
+- generation_settings.py: "Palette generation" and "Other…"
   (mode/scoring/shading/my-eyes knobs).
-- backup_settings.py: the backup status/delete row shown inside "Otros…".
-- modifiers.py: the "Modificadores…" live-shift-preview dialog.
+- backup_settings.py: the backup status/delete row shown inside "Other…".
+- modifiers.py: the "Modifiers…" live-shift-preview dialog.
 
 Everything public each submodule defines is re-exported here so callers keep
 using `dialogs.whatever(...)` exactly as before this split -- window_main.py

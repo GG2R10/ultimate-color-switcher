@@ -4,51 +4,51 @@ using Adw 1;
 menu palette_menu {
   section {
     item {
-      label: _("Nueva paleta…");
+      label: "New palette…";
       action: "win.new-palette";
     }
     item {
-      label: _("Importar paleta…");
+      label: "Import palette…";
       action: "win.import-palette";
     }
     item {
-      label: _("Generar paleta desde imagen…");
+      label: "Generate palette from image…";
       action: "win.generate-palette";
     }
     item {
-      label: _("Guardar paleta como…");
+      label: "Save palette as…";
       action: "win.save-palette-as";
     }
     item {
-      label: _("Configurar generación de paleta…");
+      label: "Configure palette generation…";
       action: "win.palette-generation-settings";
     }
     item {
-      label: _("Gestionar paletas…");
+      label: "Manage palettes…";
       action: "win.manage-palettes";
     }
     item {
-      label: _("Otros…");
+      label: "Other…";
       action: "win.other-settings";
     }
   }
   section {
     item {
-      label: _("Vincular hex/rgb automáticamente");
+      label: "Auto-link hex/rgb";
       action: "win.auto-link-siblings";
     }
   }
   section {
     item {
-      label: _("Archivos a escanear…");
+      label: "Files to scan…";
       action: "win.scanned-files-settings";
     }
     item {
-      label: _("Servicios a reiniciar…");
+      label: "Services to restart…";
       action: "win.restart-actions";
     }
     item {
-      label: _("Guardar snapshot de detección…");
+      label: "Save detection snapshot…";
       action: "win.snapshot-detect";
     }
   }
@@ -62,42 +62,42 @@ Gtk.SizeGroup {
 template $MainWindow: Adw.ApplicationWindow {
   default-width: 1150;
   default-height: 760;
-  title: _("Ultimate Color Switcher");
+  title: "Ultimate Color Switcher";
 
   content: Adw.ToolbarView {
     [top]
     Adw.HeaderBar {
       title-widget: Adw.WindowTitle {
-        title: _("Ultimate Color Switcher");
-        subtitle: _("Reemplazo de colores en dotfiles");
+        title: "Ultimate Color Switcher";
+        subtitle: "Color replacement in dotfiles";
       };
 
       [end]
       Gtk.MenuButton {
         menu-model: palette_menu;
-        tooltip-text: _("Paleta, vínculo hex/rgb, reinicios, snapshots y gestión de paletas guardadas");
+        tooltip-text: "Palette, hex/rgb linking, restarts, snapshots and saved palette management";
         child: Adw.ButtonContent {
           icon-name: "view-more-symbolic";
-          label: _("Opciones");
+          label: "Options";
         };
       }
 
       [end]
       Gtk.Button rescan_button {
-        tooltip-text: _("Volver a escanear los archivos en busca de colores");
+        tooltip-text: "Re-scan the files for colors";
         child: Adw.ButtonContent {
           icon-name: "view-refresh-symbolic";
-          label: _("Escanear");
+          label: "Scan";
         };
       }
 
       [end]
       Gtk.Button modifiers_button {
         sensitive: false;
-        tooltip-text: _("Cambiar modificadores de la paleta (saturación, complementarios, regeneración) y previsualizar");
+        tooltip-text: "Change the palette's modifiers (saturation, complementary colors, regeneration) and preview";
         child: Adw.ButtonContent {
           icon-name: "applications-graphics-symbolic";
-          label: _("Modificadores");
+          label: "Modifiers";
         };
       }
     }
@@ -123,7 +123,7 @@ template $MainWindow: Adw.ApplicationWindow {
               margin-end: 6;
 
               Gtk.Label {
-                label: _("Colores detectados");
+                label: "Detected colors";
                 css-classes: ["heading"];
                 xalign: 0;
                 hexpand: true;
@@ -132,13 +132,13 @@ template $MainWindow: Adw.ApplicationWindow {
               Gtk.ToggleButton detected_view_toggle {
                 icon-name: "folder-symbolic";
                 css-classes: ["flat"];
-                tooltip-text: _("Agrupar por archivo en vez de por cantidad de ocurrencias");
+                tooltip-text: "Group by file instead of by occurrence count";
                 valign: center;
               }
             }
 
             Gtk.SearchEntry detected_search_entry {
-              placeholder-text: _("Buscar color (hex, tipo o archivo)…");
+              placeholder-text: "Search color (hex, type or file)…";
               margin-start: 12;
               margin-end: 10;
               margin-bottom: 4;
@@ -164,7 +164,7 @@ template $MainWindow: Adw.ApplicationWindow {
             }
 
             Gtk.Label {
-              label: _("A reemplazar (mapping)");
+              label: "To be replaced (mapping)";
               css-classes: ["heading"];
               xalign: 0;
               margin-start: 12;
@@ -198,7 +198,7 @@ template $MainWindow: Adw.ApplicationWindow {
               margin-end: 10;
 
               Gtk.Label {
-                label: _("Paleta nueva");
+                label: "New palette";
                 css-classes: ["heading"];
                 xalign: 0;
                 hexpand: true;
@@ -207,9 +207,9 @@ template $MainWindow: Adw.ApplicationWindow {
               Gtk.DropDown palette_role_filter {
                 visible: false;
                 valign: center;
-                tooltip-text: _("Filtrar por rol de contraste");
+                tooltip-text: "Filter by contrast role";
                 model: Gtk.StringList {
-                  strings [_("Todos"), _("Solo foreground"), _("Solo background"), _("Sin rol")]
+                  strings ["All", "Foreground only", "Background only", "No role"]
                 };
               }
             }
@@ -231,7 +231,7 @@ template $MainWindow: Adw.ApplicationWindow {
                   halign: center;
 
                   Gtk.Label {
-                    label: _("Todavía no hay paleta nueva.");
+                    label: "There's no new palette yet.";
                     css-classes: ["dim-label"];
                   }
 
@@ -241,7 +241,7 @@ template $MainWindow: Adw.ApplicationWindow {
                     css-classes: ["suggested-action", "pill"];
                     child: Adw.ButtonContent {
                       icon-name: "image-x-generic-symbolic";
-                      label: _("Generar desde imagen…");
+                      label: "Generate from image…";
                     };
                   }
 
@@ -252,12 +252,12 @@ template $MainWindow: Adw.ApplicationWindow {
 
                     Gtk.Button {
                       action-name: "win.import-palette";
-                      label: _("Importar…");
+                      label: "Import…";
                     }
 
                     Gtk.Button {
                       action-name: "win.new-palette";
-                      label: _("Nueva…");
+                      label: "New…";
                     }
                   }
                 }
@@ -278,7 +278,7 @@ template $MainWindow: Adw.ApplicationWindow {
               action-name: "win.add-color";
               child: Adw.ButtonContent {
                 icon-name: "list-add-symbolic";
-                label: _("Agregar color");
+                label: "Add color";
               };
             }
 
@@ -290,7 +290,7 @@ template $MainWindow: Adw.ApplicationWindow {
             }
 
             Gtk.Label {
-              label: _("Van a reemplazar (mapping)");
+              label: "Will replace (mapping)";
               css-classes: ["heading"];
               xalign: 0;
               margin-start: 12;
@@ -329,7 +329,7 @@ template $MainWindow: Adw.ApplicationWindow {
 
             Gtk.Button palette_image_button {
               css-classes: ["flat"];
-              tooltip-text: _("Elegir imagen para previsualizar");
+              tooltip-text: "Choose an image to preview";
 
               child: Gtk.Frame {
                 css-classes: ["card"];
@@ -360,7 +360,7 @@ template $MainWindow: Adw.ApplicationWindow {
                     }
 
                     Gtk.Label {
-                      label: _("Seleccioná una imagen para mostrar");
+                      label: "Select an image to show";
                       wrap: true;
                       justify: center;
                       margin-start: 12;
@@ -376,7 +376,7 @@ template $MainWindow: Adw.ApplicationWindow {
             }
 
             Gtk.Label {
-              label: _("Vista previa");
+              label: "Preview";
               css-classes: ["heading"];
               xalign: 0;
               margin-start: 4;
@@ -419,15 +419,15 @@ template $MainWindow: Adw.ApplicationWindow {
           }
 
           Gtk.Button restore_button {
-            label: _("Restaurar");
+            label: "Restore";
           }
 
           Gtk.Button test_button {
-            label: _("Simular");
+            label: "Simulate";
           }
 
           Gtk.Button apply_button {
-            label: _("Aplicar");
+            label: "Apply";
             css-classes: ["suggested-action"];
             sensitive: false;
           }

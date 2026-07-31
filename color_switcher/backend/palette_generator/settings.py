@@ -90,7 +90,7 @@ def resolve_shuffle_index(shuffle, n_colors: int, overfetch: int = 0, config=Non
     else:
         resolved = int(shuffle)
         if resolved < 0:
-            raise ValueError(f"shuffle no puede ser negativo: {shuffle!r}")
+            raise ValueError(f"shuffle can't be negative: {shuffle!r}")
 
     if config is not None:
         settings = read_generation_settings(config)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-dialogs/generation_settings.py — Everything behind "Configurar generación de
-paleta…" and "Otros…": the mode/scoring ComboRow builders (also reused by
+dialogs/generation_settings.py — Everything behind "Configure palette
+generation…" and "Other…": the mode/scoring ComboRow builders (also reused by
 dialogs/modifiers.py's live shift preview), the three settings groups
 (generation / contrast comparison / advanced+shading), the my-eyes fine-tuning
 group, and their two Adw.PreferencesDialog wrappers.
@@ -20,14 +20,14 @@ from .common import _center_group_title
 
 _GENERATION_MODES = ["contrast", "balanced", "shading"]
 _GENERATION_MODE_LABELS = {
-    "contrast": "Contraste",
-    "balanced": "Balanceado",
+    "contrast": "Contrast",
+    "balanced": "Balanced",
     "shading": "Shading",
 }
 _GENERATION_MODE_DESCRIPTIONS = {
-    "contrast": "Secondary maximiza contraste con primary (default).",
-    "balanced": "Secondary elegido por score, sin sesgo de contraste con primary.",
-    "shading": "El resto de la paleta son variantes monocromáticas de primary.",
+    "contrast": "Secondary maximizes contrast with primary (default).",
+    "balanced": "Secondary picked by score, with no contrast bias toward primary.",
+    "shading": "The rest of the palette are monochrome variants of primary.",
 }
 
 
@@ -59,7 +59,7 @@ def _build_mode_row(initial_mode: str) -> Adw.ComboRow:
     (shift preview, doesn't persist) -- callers just connect their own
     notify::selected handler on top for whichever side effect they need."""
     string_list = Gtk.StringList.new([_GENERATION_MODE_LABELS[m] for m in _GENERATION_MODES])
-    row = Adw.ComboRow(title="Modo de selección", model=string_list, list_factory=_mode_list_factory())
+    row = Adw.ComboRow(title="Selection mode", model=string_list, list_factory=_mode_list_factory())
     row.set_selected(_GENERATION_MODES.index(initial_mode))
     row.set_tooltip_text(_GENERATION_MODE_DESCRIPTIONS[initial_mode])
     row.connect("notify::selected", lambda r, _p:
@@ -70,19 +70,19 @@ def _build_mode_row(initial_mode: str) -> Adw.ComboRow:
 _SCORING_MODES = ["default", "alternative", "custom"]
 _SCORING_MODE_LABELS = {
     "default": "Default",
-    "alternative": "Alternativo",
+    "alternative": "Alternative",
     "custom": "Custom",
 }
 _SCORING_MODE_DESCRIPTIONS = {
-    "default": "Coverage 20% / Saturación 30% / Midtone 25% / Contraste 25%.",
-    "alternative": "Coverage 30% / Saturación 30% / Midtone 30% / Contraste 10%.",
-    "custom": "Definí tus propios porcentajes abajo (deben sumar 100).",
+    "default": "Coverage 20% / Saturation 30% / Midtone 25% / Contrast 25%.",
+    "alternative": "Coverage 30% / Saturation 30% / Midtone 30% / Contrast 10%.",
+    "custom": "Define your own percentages below (must add up to 100).",
 }
 _SCORING_WEIGHT_LABELS = {
     "coverage": "Coverage",
-    "saturation": "Saturación",
+    "saturation": "Saturation",
     "midtone": "Midtone",
-    "contrast": "Contraste",
+    "contrast": "Contrast",
 }
 
 
@@ -109,7 +109,7 @@ def _build_scoring_row(initial_scoring: str) -> Adw.ComboRow:
     """Same self-updating-tooltip pattern as _build_mode_row, over
     _SCORING_MODES."""
     string_list = Gtk.StringList.new([_SCORING_MODE_LABELS[s] for s in _SCORING_MODES])
-    row = Adw.ComboRow(title="Ponderación de scoring", model=string_list, list_factory=_scoring_list_factory())
+    row = Adw.ComboRow(title="Scoring weighting", model=string_list, list_factory=_scoring_list_factory())
     row.set_selected(_SCORING_MODES.index(initial_scoring))
     row.set_tooltip_text(_SCORING_MODE_DESCRIPTIONS[initial_scoring])
     row.connect("notify::selected", lambda r, _p:
@@ -118,7 +118,7 @@ def _build_scoring_row(initial_scoring: str) -> Adw.ComboRow:
 
 
 def build_palette_generation_group(config, settings=None) -> tuple:
-    """An Adw.PreferencesGroup configuring "Generar paleta desde imagen…"
+    """An Adw.PreferencesGroup configuring "Generate palette from image…"
     (mode + saturation boost / --my-eyes), persisted immediately to
     config.json via palette_generator.read/write_generation_settings —
     same real-time-save philosophy as the restart-actions group.
@@ -138,8 +138,8 @@ def build_palette_generation_group(config, settings=None) -> tuple:
     settings = settings if settings is not None else pg.read_generation_settings(config)
 
     group = Adw.PreferencesGroup(
-        title="Generación de paleta desde imagen",
-        description="Afecta a 'Generar paleta desde imagen…' en el menú principal.",
+        title="Palette generation from image",
+        description="Affects 'Generate palette from image…' in the main menu.",
     )
     _center_group_title(group)
 
@@ -153,8 +153,8 @@ def build_palette_generation_group(config, settings=None) -> tuple:
     group.add(mode_row)
 
     saturate_row = Adw.SwitchRow(
-        title="Saturar colores (--my-eyes)",
-        subtitle="Sube la saturación de los colores elegidos justo antes de usarlos.",
+        title="Saturate colors (--my-eyes)",
+        subtitle="Boosts the saturation of the chosen colors right before using them.",
     )
     saturate_row.set_active(bool(settings.get("saturate", False)))
 
@@ -166,8 +166,8 @@ def build_palette_generation_group(config, settings=None) -> tuple:
     group.add(saturate_row)
 
     ying_yang_row = Adw.SwitchRow(
-        title="Ying Yang (Complementarios)",
-        subtitle="Usa la paleta complementaria: rota todos los colores 180° en el tono.",
+        title="Ying Yang (Complementary)",
+        subtitle="Uses the complementary palette: rotates every color 180° in hue.",
     )
     ying_yang_row.set_active(bool(settings.get("ying_yang", False)))
 
@@ -183,17 +183,17 @@ def build_palette_generation_group(config, settings=None) -> tuple:
 
     # Pre-filled with whatever's stored, or the "default" preset's own
     # percentages as a sensible starting point to tweak from -- not left
-    # empty, per the spec ("nos muestra un campo con los porcentajes que
-    # estaban guardados que podemos editar").
+    # empty, per the spec ("show us a field with the saved percentages that
+    # we can edit").
     custom_percentages = {k: pg._SCORING_PRESETS["default"][k] * 100 for k in pg._SCORING_WEIGHT_KEYS}
     custom_percentages.update(settings.get("custom_percentages") or {})
 
-    total_row = Adw.ActionRow(title="Suma de porcentajes")
+    total_row = Adw.ActionRow(title="Sum of percentages")
 
     def _update_total_row():
         total = sum(custom_percentages[k] for k in pg._SCORING_WEIGHT_KEYS)
         ok = abs(total - 100.0) <= 0.5
-        total_row.set_subtitle(f"{total:g}%" + ("" if ok else "  ✗ debe sumar 100"))
+        total_row.set_subtitle(f"{total:g}%" + ("" if ok else "  ✗ must add up to 100"))
 
     def _persist_custom_percentages():
         settings["custom_percentages"] = dict(custom_percentages)
@@ -253,22 +253,22 @@ def build_contrast_comparison_group(config, settings=None) -> Adw.PreferencesGro
     settings = settings if settings is not None else pg.read_generation_settings(config)
 
     group = Adw.PreferencesGroup(
-        title="Comparación de contraste",
-        description="Cómo se mide qué tan distinto es un color candidato al elegir primary/secondary/auxN.",
+        title="Contrast comparison",
+        description="How different a candidate color is measured when picking primary/secondary/auxN.",
     )
     _center_group_title(group)
 
-    weighted_row = Adw.ActionRow(title="Ponderado (Recomendado)", activatable=True)
+    weighted_row = Adw.ActionRow(title="Weighted (Recommended)", activatable=True)
     weighted_row.set_tooltip_text(
-        "Se compara de forma ponderada con todos los colores. Funciona bien para la gran mayoría de imágenes."
+        "Compared in a weighted way against every color. Works well for the vast majority of images."
     )
     weighted_icon = Gtk.Image.new_from_icon_name("object-select-symbolic")
     weighted_row.add_suffix(weighted_icon)
 
-    single_row = Adw.ActionRow(title="Solo background", activatable=True)
+    single_row = Adw.ActionRow(title="Background only", activatable=True)
     single_row.set_tooltip_text(
-        "Se compara solo con el color más dominante en la imagen. Funciona bien para imágenes con "
-        "backgrounds de un solo color."
+        "Compared only against the most dominant color in the image. Works well for images with "
+        "single-color backgrounds."
     )
     single_icon = Gtk.Image.new_from_icon_name("object-select-symbolic")
     single_row.add_suffix(single_icon)
@@ -299,15 +299,15 @@ def build_contrast_comparison_group(config, settings=None) -> Adw.PreferencesGro
 
 
 _SHADING_DIRECTIONS_GUI = ["dark", "light"]
-_SHADING_DIRECTION_LABELS = {"dark": "Oscuro (dark)", "light": "Claro (light)"}
+_SHADING_DIRECTION_LABELS = {"dark": "Dark", "light": "Light"}
 
 
 def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw.PreferencesGroup:
     """Overfetch + shuffle + shading direction/luminance -- palette_generation.
     {overfetch, shuffle_enabled, shuffle_mode, shuffle_value, shading_direction,
     shading_min_luminance, shading_max_luminance}, same real-time-save group as
-    the others here. Tucked into collapsed Adw.ExpanderRows ("Opciones
-    avanzadas" / "Shading") since these are power-user/scripting knobs most
+    the others here. Tucked into collapsed Adw.ExpanderRows ("Advanced
+    options" / "Shading") since these are power-user/scripting knobs most
     people never touch -- see resolve_shuffle_index/select_primary/
     generate_shading_series in palette_generator for what they actually do.
 
@@ -323,9 +323,9 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
     group = Adw.PreferencesGroup()
 
     keep_custom_row = Adw.SwitchRow(
-        title="Mantener colores editados/agregados",
-        subtitle="Al regenerar una paleta ya existente en la ruta de salida, preservar sus colores "
-                 "editados/agregados a mano en vez de descartarlos.",
+        title="Keep edited/added colors",
+        subtitle="When regenerating a palette that already exists at the output path, preserve its "
+                 "hand-edited/added colors instead of discarding them.",
     )
     keep_custom_row.set_active(bool(settings.get("keep_custom_on_regen", True)))
 
@@ -337,9 +337,9 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
     group.add(keep_custom_row)
 
     eco_row = Adw.SwitchRow(
-        title="Modo eco (contraste solo por luminancia)",
-        subtitle="En las parejas foreground/background vinculadas que contrastan por luminancia, "
-                 "forzar el mismo tono en vez de dejar que cada una mantenga el suyo.",
+        title="Eco mode (contrast by luminance only)",
+        subtitle="For linked foreground/background pairs that contrast by luminance, force the same "
+                 "hue instead of letting each keep its own.",
     )
     eco_row.set_active(bool(settings.get("eco_contrast", False)))
 
@@ -351,9 +351,9 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
     group.add(eco_row)
 
     hallucinate_row = Adw.SwitchRow(
-        title="Alucinar acento en fondos monocromáticos",
-        subtitle="Si la imagen fuente es monocromática, sintetizar un acento saturado + un ramp de "
-                 "shading a partir de él en vez de una paleta gris de verdad.",
+        title="Hallucinate an accent on monochrome backgrounds",
+        subtitle="If the source image is monochrome, synthesize a saturated accent + a shading ramp "
+                 "off it instead of a genuinely gray palette.",
     )
     hallucinate_row.set_active(bool(settings.get("hallucinate_on_monochrome", True)))
 
@@ -365,8 +365,8 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
     group.add(hallucinate_row)
 
     expander = Adw.ExpanderRow(
-        title="Opciones avanzadas",
-        subtitle="Overfetch y shuffle -- para explorar variantes de una misma imagen, pensado para scripts.",
+        title="Advanced options",
+        subtitle="Overfetch and shuffle -- for exploring variants of the same image, meant for scripts.",
     )
     group.add(expander)
 
@@ -375,9 +375,9 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
     )
     overfetch_row = Adw.SpinRow(
         title="Overfetch",
-        subtitle="Candidatos extra a considerar más allá de la cantidad pedida (0 = desactivado). "
-                  "Los auxiliares se eligen entre más candidatos por score; el ramp de shading sale "
-                  "más denso. También le da más margen a shuffle.",
+        subtitle="Extra candidates to consider beyond the requested amount (0 = disabled). "
+                  "Auxiliaries get picked from more candidates by score; the shading ramp comes out "
+                  "denser. Also gives shuffle more room to work with.",
         adjustment=overfetch_adjustment, digits=0,
     )
 
@@ -390,14 +390,15 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
 
     shuffle_enabled_row = Adw.SwitchRow(
         title="Shuffle",
-        subtitle="Saltear los primeros N candidatos al elegir primary (el resto de la paleta se recalcula a partir de eso).",
+        subtitle="Skip the first N candidates when picking primary (the rest of the palette is "
+                 "recalculated from that).",
     )
     shuffle_enabled_row.set_active(bool(settings.get("shuffle_enabled", False)))
     expander.add_row(shuffle_enabled_row)
 
     shuffle_next_row = Adw.SwitchRow(
-        title="Modo siguiente (next)",
-        subtitle="Cada generación avanza automáticamente al próximo valor, cíclico.",
+        title="Next mode (next)",
+        subtitle="Each generation automatically advances to the next value, cyclically.",
     )
     shuffle_next_row.set_active(settings.get("shuffle_mode", "manual") == "next")
     expander.add_row(shuffle_next_row)
@@ -405,7 +406,7 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
     shuffle_value_adjustment = Gtk.Adjustment(
         value=settings.get("shuffle_value", 0), lower=0, upper=30, step_increment=1, page_increment=5,
     )
-    shuffle_value_row = Adw.SpinRow(title="Valor de shuffle", adjustment=shuffle_value_adjustment, digits=0)
+    shuffle_value_row = Adw.SpinRow(title="Shuffle value", adjustment=shuffle_value_adjustment, digits=0)
     expander.add_row(shuffle_value_row)
 
     def _sync_shuffle_visibility():
@@ -435,14 +436,14 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
 
     shading_expander = Adw.ExpanderRow(
         title="Shading",
-        subtitle="Dirección y límites de luminancia del ramp -- solo aplica con modo 'shading'.",
+        subtitle="Direction and luminance bounds of the ramp -- only applies with 'shading' mode.",
     )
     group.add(shading_expander)
 
     direction_string_list = Gtk.StringList.new(
         [_SHADING_DIRECTION_LABELS[d] for d in _SHADING_DIRECTIONS_GUI]
     )
-    direction_row = Adw.ComboRow(title="Dirección", model=direction_string_list)
+    direction_row = Adw.ComboRow(title="Direction", model=direction_string_list)
     direction_row.set_selected(_SHADING_DIRECTIONS_GUI.index(settings.get("shading_direction", "dark")))
     shading_expander.add_row(direction_row)
 
@@ -450,7 +451,7 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
         value=settings.get("shading_min_luminance", 8.0), lower=0, upper=100, step_increment=1, page_increment=5,
     )
     min_lum_row = Adw.SpinRow(
-        title="Luminancia mínima", subtitle="Solo con dirección 'dark'.",
+        title="Minimum luminance", subtitle="Only with 'dark' direction.",
         adjustment=min_lum_adjustment, digits=0,
     )
     shading_expander.add_row(min_lum_row)
@@ -459,7 +460,7 @@ def build_advanced_generation_group(config, mode_row=None, settings=None) -> Adw
         value=settings.get("shading_max_luminance", 92.0), lower=0, upper=100, step_increment=1, page_increment=5,
     )
     max_lum_row = Adw.SpinRow(
-        title="Luminancia máxima", subtitle="Solo con dirección 'light'.",
+        title="Maximum luminance", subtitle="Only with 'light' direction.",
         adjustment=max_lum_adjustment, digits=0,
     )
     shading_expander.add_row(max_lum_row)
@@ -501,8 +502,8 @@ def build_other_settings_group(config) -> Adw.PreferencesGroup:
     settings = pg.read_generation_settings(config)
 
     group = Adw.PreferencesGroup(
-        title="Saturar colores (--my-eyes)",
-        description="Ajuste fino del boost de croma CIELAB (C*) usado por 'Saturar colores'.",
+        title="Saturate colors (--my-eyes)",
+        description="Fine-tuning for the CIELAB chroma (C*) boost used by 'Saturate colors'.",
     )
     _center_group_title(group)
 
@@ -511,8 +512,8 @@ def build_other_settings_group(config) -> Adw.PreferencesGroup:
         step_increment=0.1, page_increment=0.5,
     )
     factor_row = Adw.SpinRow(
-        title="Multiplicador de Saturación",
-        subtitle="Cuánto se multiplica el croma CIELAB (C*) de cada color elegido.",
+        title="Saturation multiplier",
+        subtitle="How much the CIELAB chroma (C*) of each chosen color gets multiplied.",
         adjustment=factor_adjustment, digits=2,
     )
 
@@ -528,8 +529,9 @@ def build_other_settings_group(config) -> Adw.PreferencesGroup:
         step_increment=1, page_increment=10,
     )
     max_chroma_row = Adw.SpinRow(
-        title="Saturación máxima",
-        subtitle="Tope del croma CIELAB resultante -- evita distorsión de tono en colores extremos. Recomendado 132-150 para sRGB.",
+        title="Maximum saturation",
+        subtitle="Cap on the resulting CIELAB chroma -- avoids hue distortion on extreme colors. "
+                 "Recommended 132-150 for sRGB.",
         adjustment=max_chroma_adjustment, digits=0,
     )
 
@@ -544,13 +546,13 @@ def build_other_settings_group(config) -> Adw.PreferencesGroup:
 
 
 def show_other_settings(parent: Gtk.Widget, config):
-    """"Otros…": rarely-touched fine-tuning knobs, reachable from the header
+    """"Other…": rarely-touched fine-tuning knobs, reachable from the header
     menu. The --my-eyes chroma-boost group, plus backup status/delete -- a
     placeholder name/section for whatever else ends up not fitting
     elsewhere. Rebuilds itself in place (close + reopen) after deleting the
     backup, same pattern as dialogs/manage_palettes.py."""
     prefs = Adw.PreferencesDialog()
-    prefs.set_title("Otros")
+    prefs.set_title("Other")
 
     def _on_backup_change():
         prefs.close()
@@ -577,6 +579,6 @@ def show_palette_generation_settings(parent: Gtk.Widget, config):
     page.add(build_contrast_comparison_group(config, settings=settings))
     page.add(build_advanced_generation_group(config, mode_row=mode_row, settings=settings))
     prefs = Adw.PreferencesDialog()
-    prefs.set_title("Generación de paleta")
+    prefs.set_title("Palette generation")
     prefs.add(page)
     prefs.present(parent)

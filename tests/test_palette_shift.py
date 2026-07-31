@@ -120,7 +120,7 @@ def test_selection_shift_keeps_custom_colors_by_default(gen_palette):
     palette_shift.add_color(str(path), "abcdef", "mine")
     result = palette_shift.shift_palette(str(path), config, shuffle=1)
     assert result["regenerated"] is True
-    assert not any("mano" in w for w in result["warnings"])
+    assert not any("hand" in w for w in result["warnings"])
     assert "abcdef" in [e["hex"] for e in result["entries"]]
     assert result["meta"]["keep_custom_on_regen"] is True
 
@@ -130,7 +130,7 @@ def test_selection_shift_keep_custom_off_wipes_and_warns(gen_palette):
     palette_shift.add_color(str(path), "abcdef", "mine")
     result = palette_shift.shift_palette(str(path), config, shuffle=1, keep_custom="off")
     assert result["regenerated"] is True
-    assert any("mano" in w for w in result["warnings"])
+    assert any("hand" in w for w in result["warnings"])
     assert "abcdef" not in [e["hex"] for e in result["entries"]]   # wiped by regeneration
     assert result["meta"]["keep_custom_on_regen"] is False
 
@@ -744,7 +744,7 @@ def test_generate_existing_files_own_stored_preference_wins_over_project_setting
     )
     # the file's own "off" wins over the project's "on" -- wiped, with a warning
     assert "abcdef" not in [e["hex"] for e in entries]
-    assert any("mano" in w for w in warnings)
+    assert any("hand" in w for w in warnings)
 
 
 def test_generate_keep_custom_override_beats_everything_stored(tmp_path, fake_project):
@@ -759,7 +759,7 @@ def test_generate_keep_custom_override_beats_everything_stored(tmp_path, fake_pr
         config, str(img), 4, 3000, "contrast", False, str(out), keep_custom="off",
     )
     assert "abcdef" not in [e["hex"] for e in entries]
-    assert any("mano" in w for w in warnings)
+    assert any("hand" in w for w in warnings)
 
 
 def test_generate_resolved_keep_custom_persists_back_to_project_settings(tmp_path, fake_project):
@@ -924,7 +924,7 @@ def test_generate_tagged_without_pair_is_ignored_and_warns(tmp_path, fake_projec
         config, str(img), 4, 3000, "contrast", False, str(out),
     )
     assert not any(e.get("role") for e in entries)
-    assert any("sin pareja" in w for w in warnings)
+    assert any("no linked pair" in w for w in warnings)
 
 
 def test_generate_raises_when_role_pairs_exceed_colors_requested(tmp_path, fake_project):

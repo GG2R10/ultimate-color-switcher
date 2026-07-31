@@ -188,8 +188,8 @@ def generate_and_save_palette(config, image, n_colors, sample_size, mode, satura
     unpaired = color_detector.tagged_without_pair(roles)
     if unpaired:
         warnings.append(
-            f"{len(unpaired)} color(es) marcado(s) foreground/background sin pareja vinculada "
-            "no se toman en cuenta para la generación."
+            f"{len(unpaired)} color(s) tagged foreground/background with no linked pair "
+            "aren't taken into account for generation."
         )
     if existing_entries and not role_pairs:
         role_pairs = _role_pairs_from_entries(existing_entries)
@@ -274,7 +274,7 @@ def _resolve_bool(current, override) -> bool:
         return False
     if override == "toggle":
         return not bool(current)
-    raise ShiftError(f"valor inválido para un modificador booleano: {override!r} (esperado on|off|toggle)")
+    raise ShiftError(f"invalid value for a boolean modifier: {override!r} (expected on|off|toggle)")
 
 
 def _resolve_shading_direction(current, override) -> str:
@@ -288,7 +288,7 @@ def _resolve_shading_direction(current, override) -> str:
         return override
     if override == "toggle":
         return "light" if current == "dark" else "dark"
-    raise ShiftError(f"valor inválido para la dirección de shading: {override!r} (esperado dark|light|toggle)")
+    raise ShiftError(f"invalid value for the shading direction: {override!r} (expected dark|light|toggle)")
 
 
 # --------------------------------------------------------------------------- #
@@ -501,7 +501,7 @@ def add_color(path, hex_value, label="", role=None):
     duplicate. Returns the new effective row entry."""
     entries, meta, base = _load(path)
     if _has_dup(base, hex_value):
-        raise PaletteEditError(f"El color #{_norm_hex(hex_value)} ya existe en la paleta.")
+        raise PaletteEditError(f"Color #{_norm_hex(hex_value)} already exists in the palette.")
     base.append({"hex": _debased_hex(hex_value, meta), "label": label, "origin": "custom",
                 "role": role, "pair_id": None})
     rows = _write_derived(path, base, meta)
@@ -518,12 +518,12 @@ def edit_color(path, target, new_hex, role=_UNSET):
     changing doesn't, by itself, invalidate an existing pairing."""
     entries, meta, base = _load(path)
     if not base:
-        raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
+        raise PaletteEditError(f"Empty or not found palette: {path}")
     idx = _find_index(base, entries, target)
     if idx is None:
-        raise PaletteEditError(f"No se encontró el color {target!r} en la paleta.")
+        raise PaletteEditError(f"Color {target!r} not found in the palette.")
     if _has_dup(base, new_hex, exclude_index=idx):
-        raise PaletteEditError(f"El color #{_norm_hex(new_hex)} ya existe en la paleta.")
+        raise PaletteEditError(f"Color #{_norm_hex(new_hex)} already exists in the palette.")
     old_role = base[idx].get("role")
     new_role = old_role if role is _UNSET else role
     if new_role != old_role:
@@ -543,10 +543,10 @@ def set_role(path, target, role):
     _clear_pairing. Returns the 1-based id of the affected slot."""
     entries, meta, base = _load(path)
     if not base:
-        raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
+        raise PaletteEditError(f"Empty or not found palette: {path}")
     idx = _find_index(base, entries, target)
     if idx is None:
-        raise PaletteEditError(f"No se encontró el color {target!r} en la paleta.")
+        raise PaletteEditError(f"Color {target!r} not found in the palette.")
     if role != base[idx].get("role"):
         _clear_pairing(base, idx)
     base[idx] = dict(base[idx], role=role)
@@ -566,19 +566,19 @@ def set_pair(path, target_a, target_b=None):
     made. Returns the 1-based id of `target_a`'s slot."""
     entries, meta, base = _load(path)
     if not base:
-        raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
+        raise PaletteEditError(f"Empty or not found palette: {path}")
     idx_a = _find_index(base, entries, target_a)
     if idx_a is None:
-        raise PaletteEditError(f"No se encontró el color {target_a!r} en la paleta.")
+        raise PaletteEditError(f"Color {target_a!r} not found in the palette.")
 
     _clear_pairing(base, idx_a)
 
     if target_b is not None:
         idx_b = _find_index(base, entries, target_b)
         if idx_b is None:
-            raise PaletteEditError(f"No se encontró el color {target_b!r} en la paleta.")
+            raise PaletteEditError(f"Color {target_b!r} not found in the palette.")
         if idx_b == idx_a:
-            raise PaletteEditError("Un color no puede ser su propia pareja.")
+            raise PaletteEditError("A color can't be its own pair.")
         _clear_pairing(base, idx_b)
         id_a, id_b = entries[idx_a]["id"], entries[idx_b]["id"]
         pair_id = f"{min(id_a, id_b)}::{max(id_a, id_b)}"
@@ -597,10 +597,10 @@ def delete_color(path, target):
     was paired, its partner's pairing is cleared too (see _clear_pairing)."""
     entries, meta, base = _load(path)
     if not base:
-        raise PaletteEditError(f"Paleta vacía o no encontrada: {path}")
+        raise PaletteEditError(f"Empty or not found palette: {path}")
     idx = _find_index(base, entries, target)
     if idx is None:
-        raise PaletteEditError(f"No se encontró el color {target!r} en la paleta.")
+        raise PaletteEditError(f"Color {target!r} not found in the palette.")
     _clear_pairing(base, idx)
     del base[idx]
     _write_derived(path, base, meta)
@@ -636,16 +636,16 @@ def _plan_regen_merge(old_base, n_colors, keep_custom, warnings):
 
     if keep_custom and n_custom_in_range >= n_colors:
         raise ShiftError(
-            f"Esta paleta tiene {n_custom_in_range} color(es) editado(s) a mano dentro de los "
-            f"primeros {n_colors} que pediste -- no queda espacio para generar ninguno nuevo. "
-            f"Pedí al menos {n_custom_in_range + 1} colores, desactivá --keep-custom para esta "
-            "regeneración, o creá una paleta nueva desde cero."
+            f"This palette has {n_custom_in_range} hand-edited color(s) within the "
+            f"first {n_colors} you requested -- there's no room left to generate any new ones. "
+            f"Ask for at least {n_custom_in_range + 1} colors, turn off --keep-custom for this "
+            "regeneration, or create a new palette from scratch."
         )
 
     if not keep_custom and n_custom:
         warnings.append(
-            f"Se descartan {n_custom} color(es) agregados/editados a mano: una regeneración "
-            "reemplaza los colores. Los modificadores simples (--my-eyes/--ying-yang) no los borran."
+            f"{n_custom} hand-added/edited color(s) are being discarded: a regeneration "
+            "replaces the colors. Simple modifiers (--my-eyes/--ying-yang) don't erase them."
         )
     # A PAIRED color's role/pairing is NOT actually lost on a regeneration:
     # tier 1 (_role_pairs_from_entries/_role_demand_from_entries-equivalent)
@@ -663,9 +663,9 @@ def _plan_regen_merge(old_base, n_colors, keep_custom, warnings):
     )
     if n_roled_lost:
         warnings.append(
-            f"Se pierde el rol foreground/background (sin pareja vinculada) asignado a "
-            f"{n_roled_lost} color(es) de esta paleta: una regeneración reemplaza los colores, "
-            "así que quedan sin marcar de nuevo."
+            f"The foreground/background role (with no linked pair) assigned to "
+            f"{n_roled_lost} color(s) of this palette is lost: a regeneration replaces the colors, "
+            "so they end up unmarked again."
         )
 
     n_gen_needed = (n_colors - n_custom_in_range) if keep_custom else n_colors
@@ -761,10 +761,10 @@ def _check_role_pairs_fit(n_colors: int, n_pairs: int) -> None:
     total_needed = n_pairs * 2
     if total_needed > n_colors:
         raise ShiftError(
-            f"Hay {n_pairs} pareja(s) foreground/background vinculada(s) (hacen falta al menos "
-            f"{total_needed} color(es)), pero pediste {n_colors} en total. Pedí al menos "
-            f"{total_needed} colores (--colors), desvinculá alguna pareja, o creá una paleta "
-            "nueva desde cero."
+            f"There are {n_pairs} linked foreground/background pair(s) (need at least "
+            f"{total_needed} color(s)), but you asked for {n_colors} total. Ask for at least "
+            f"{total_needed} colors (--colors), unlink some pair, or create a new palette "
+            "from scratch."
         )
 
 
@@ -780,13 +780,13 @@ def _check_generated_enough_colors(base_colors: list, n_gen_needed: int, halluci
     a clean, actionable message instead of either failure mode."""
     if len(base_colors) < n_gen_needed:
         hint = (
-            "activá --hallucinate para que sintetice un acento en vez de depender de los "
-            "colores reales de la imagen, "
+            "turn on --hallucinate so it synthesizes an accent instead of depending on the "
+            "image's real colors, "
         ) if not hallucinate else ""
         raise ShiftError(
-            f"La imagen no tiene suficiente diversidad de color real para generar {n_gen_needed} "
-            f"color(es) -- sólo se pudieron obtener {len(base_colors)}. Pedí menos colores "
-            f"(--colors), {hint}o probá con otra imagen."
+            f"The image doesn't have enough real color diversity to generate {n_gen_needed} "
+            f"color(s) -- only {len(base_colors)} could be obtained. Ask for fewer colors "
+            f"(--colors), {hint}or try another image."
         )
 
 
@@ -819,7 +819,7 @@ def shift_palette(palette_path, config, *, my_eyes=None, ying_yang=None,
     Raises ShiftError for the clean user-facing failures."""
     entries, meta = palette_store.read_palette(palette_path)
     if not entries:
-        raise ShiftError(f"Paleta vacía o no encontrada: {palette_path}")
+        raise ShiftError(f"Empty or not found palette: {palette_path}")
 
     post = _post_of(meta)
     new_post = {
@@ -883,14 +883,14 @@ def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custo
     persist ONLY if it actually writes (never on a dry-run preview)."""
     if not meta.get("generated"):
         raise ShiftError(
-            "Esta paleta es creada (no tiene imagen): no admite modificadores de selección "
-            "(--mode/--scoring/--shuffle/--overfetch/--colors). Solo --my-eyes/--ying-yang."
+            "This palette is created (has no image): it doesn't support selection modifiers "
+            "(--mode/--scoring/--shuffle/--overfetch/--colors). Only --my-eyes/--ying-yang."
         )
     image = meta.get("image")
     if not image:
         raise ShiftError(
-            "Esta paleta no tiene información de generación guardada. Regenerá una vez con "
-            "'automatic --from-image <img>' para grabarla, y después usá shift."
+            "This palette has no saved generation info. Regenerate it once with "
+            "'automatic --from-image <img>' to record it, then use shift."
         )
     gen = meta.get("gen") or {}
     n_colors = selection["colors"] if selection["colors"] is not None else gen.get("colors", 6)
@@ -938,8 +938,8 @@ def _regenerate(meta, entries, new_post, selection, config, warnings, keep_custo
     unpaired = color_detector.tagged_without_pair(roles)
     if unpaired:
         warnings.append(
-            f"{len(unpaired)} color(es) marcado(s) foreground/background sin pareja vinculada "
-            "no se toman en cuenta para la generación."
+            f"{len(unpaired)} color(s) tagged foreground/background with no linked pair "
+            "aren't taken into account for generation."
         )
     if not role_pairs:
         role_pairs = _role_pairs_from_entries(entries)

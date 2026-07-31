@@ -28,22 +28,22 @@ def percentages_to_weights(percentages: dict) -> dict:
     keys = set(percentages)
     missing = [k for k in _SCORING_WEIGHT_KEYS if k not in keys]
     if missing:
-        raise ValueError(f"faltan porcentajes: {', '.join(missing)}")
+        raise ValueError(f"missing percentages: {', '.join(missing)}")
     unknown = keys - set(_SCORING_WEIGHT_KEYS)
     if unknown:
-        raise ValueError(f"claves desconocidas: {', '.join(sorted(unknown))}")
+        raise ValueError(f"unknown keys: {', '.join(sorted(unknown))}")
 
     for k in _SCORING_WEIGHT_KEYS:
         try:
             percentages[k] = float(percentages[k])
         except (TypeError, ValueError):
-            raise ValueError(f"{k!r} no es un número: {percentages[k]!r}")
+            raise ValueError(f"{k!r} is not a number: {percentages[k]!r}")
         if percentages[k] < 0:
-            raise ValueError(f"{k!r} no puede ser negativo: {percentages[k]!r}")
+            raise ValueError(f"{k!r} can't be negative: {percentages[k]!r}")
 
     total = sum(percentages[k] for k in _SCORING_WEIGHT_KEYS)
     if abs(total - 100.0) > 0.5:
-        raise ValueError(f"los porcentajes deben sumar 100 (suman {total:g})")
+        raise ValueError(f"percentages must add up to 100 (they add up to {total:g})")
 
     return {k: percentages[k] / 100.0 for k in _SCORING_WEIGHT_KEYS}
 
@@ -64,7 +64,7 @@ def resolve_scoring_weights(scoring: str, custom_percentages: dict = None, confi
     setting.
     """
     if scoring not in _SCORING_MODES:
-        raise ValueError(f"scoring debe ser uno de {_SCORING_MODES}, se recibió {scoring!r}")
+        raise ValueError(f"scoring must be one of {_SCORING_MODES}, got {scoring!r}")
     if scoring != "custom":
         return _SCORING_PRESETS[scoring]
 

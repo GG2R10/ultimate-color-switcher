@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dialogs/scanned_files.py — The "Archivos a escanear" manager: a file picker
+dialogs/scanned_files.py — The "Files to scan" manager: a file picker
 with no format filter (files_to_replace can be any config format), the
 Adw.PreferencesGroup builder, and its standalone settings dialog.
 """
@@ -22,7 +22,7 @@ from .common import _center_group_title
 def pick_scan_file(parent: Gtk.Widget, on_selected):
     """No filter -- files_to_replace can be any config format (css, lua,
     toml, jsonc, ...)."""
-    file_dialog = Gtk.FileDialog(title="Elegir archivo a escanear")
+    file_dialog = Gtk.FileDialog(title="Choose a file to scan")
 
     def _on_selected(dialog, result):
         try:
@@ -44,8 +44,8 @@ def build_scanned_files_group(config, on_change=None) -> Adw.PreferencesGroup:
     files = cfg.read_files_to_replace(config)
 
     group = Adw.PreferencesGroup(
-        title="Archivos a escanear",
-        description="Los archivos de configuración donde se detectan y reemplazan colores.",
+        title="Files to scan",
+        description="The config files where colors are detected and replaced.",
     )
     _center_group_title(group)
 
@@ -56,11 +56,11 @@ def build_scanned_files_group(config, on_change=None) -> Adw.PreferencesGroup:
 
     def add_row(file_str):
         exists = os.path.isfile(cd.expand_path(file_str))
-        row = Adw.ActionRow(title=file_str, subtitle="" if exists else "No encontrado")
+        row = Adw.ActionRow(title=file_str, subtitle="" if exists else "Not found")
 
         remove_button = Gtk.Button(
             icon_name="user-trash-symbolic", css_classes=["flat"], valign=Gtk.Align.CENTER,
-            tooltip_text="Quitar",
+            tooltip_text="Remove",
         )
 
         def on_remove(_b):
@@ -85,7 +85,7 @@ def build_scanned_files_group(config, on_change=None) -> Adw.PreferencesGroup:
         add_row(entry)
         persist()
 
-    add_button = Gtk.Button(icon_name="list-add-symbolic", css_classes=["flat"], tooltip_text="Agregar archivo")
+    add_button = Gtk.Button(icon_name="list-add-symbolic", css_classes=["flat"], tooltip_text="Add file")
     add_button.connect("clicked", lambda _b: pick_scan_file(group.get_root(), on_add_path))
     group.set_header_suffix(add_button)
 
@@ -98,6 +98,6 @@ def show_scanned_files_settings(parent: Gtk.Widget, config, on_change=None):
     page = Adw.PreferencesPage()
     page.add(group)
     prefs = Adw.PreferencesDialog()
-    prefs.set_title("Archivos a escanear")
+    prefs.set_title("Files to scan")
     prefs.add(page)
     prefs.present(parent)

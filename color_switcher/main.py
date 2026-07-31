@@ -64,12 +64,12 @@ def _report_mapping_drift(config, detected_colors, persist=False):
         store.entries = new_entries
         store.save()
     if drift["driftable"]:
-        print(f"⚠ {len(drift['driftable'])} color(es) mapeados cambiaron de id en el último escaneo "
-              "(el color real sigue existiendo, solo se movió de posición). Ejecutá "
-              "'ucs mapping relink' para corregirlos.")
+        print(f"⚠ {len(drift['driftable'])} mapped color(s) changed id on the last scan "
+              "(the real color still exists, it just moved position). Run "
+              "'ucs mapping relink' to fix them.")
     if drift["orphaned"]:
-        print(f"⚠ {len(drift['orphaned'])} color(es) mapeados ya no aparecen en tus archivos escaneados. "
-              "Revisalos a mano ('ucs mapping show').")
+        print(f"⚠ {len(drift['orphaned'])} mapped color(s) no longer appear in your scanned files. "
+              "Check them by hand ('ucs mapping show').")
 
 
 def cmd_detect(args, config):
@@ -77,28 +77,28 @@ def cmd_detect(args, config):
     route = result["route"]
 
     if route == "a":
-        print("Ruta a: primera detección (no había detected_palette.csv previo).")
+        print("Route a: first detection (no previous detected_palette.csv).")
     elif route == "b":
-        print("Ruta b: la detección coincide con la guardada. Sin cambios.")
+        print("Route b: detection matches what's saved. No changes.")
     else:
         d = result["diff"]
-        print("Ruta c: los colores detectados cambiaron desde la última vez.")
+        print("Route c: the detected colors changed since last time.")
         if d["added"]:
-            print(f"  Nuevos ({len(d['added'])}):")
+            print(f"  New ({len(d['added'])}):")
             for c in d["added"]:
                 print(f"    + #{c['color']} ({c['type']}) x{c['count']}")
         if d["removed"]:
-            print(f"  Desaparecidos ({len(d['removed'])}):")
+            print(f"  Gone ({len(d['removed'])}):")
             for c in d["removed"]:
                 print(f"    - #{c['color']} ({c['type']}) x{c['count']}")
-        print("  Se recomienda crear un mapping nuevo.")
+        print("  A new mapping is recommended.")
 
-    print(f"\nColores detectados: {len(result['colors'])}")
+    print(f"\nDetected colors: {len(result['colors'])}")
     for c in result["colors"]:
-        print(f"  ID {c['id']:>3} | {c['type']:<12} | #{c['color']} | x{c['count']:<4} | {len(c['files'])} archivo(s)")
+        print(f"  ID {c['id']:>3} | {c['type']:<12} | #{c['color']} | x{c['count']:<4} | {len(c['files'])} file(s)")
 
     if not args.dry_run:
-        print(f"\nGuardado en: {config.detected_palette_csv}")
+        print(f"\nSaved to: {config.detected_palette_csv}")
 
     _report_mapping_drift(config, result["colors"], persist=False)
 
@@ -106,10 +106,10 @@ def cmd_detect(args, config):
 def cmd_config_files_list(args, config):
     files = read_files_to_replace(config)
     if not files:
-        print("No hay archivos configurados para escanear.")
+        print("No files configured to scan.")
         return
     for f in files:
-        marker = "" if os.path.isfile(color_detector.expand_path(f)) else "  (no encontrado)"
+        marker = "" if os.path.isfile(color_detector.expand_path(f)) else "  (not found)"
         print(f"  {f}{marker}")
 
 
@@ -117,12 +117,12 @@ def cmd_config_files_add(args, config):
     files = read_files_to_replace(config)
     entry = to_home_relative(args.path)
     if entry in files:
-        print(f"Ya está en la lista: {entry}")
+        print(f"Already in the list: {entry}")
         return
     files.append(entry)
     write_files_to_replace(config, files)
-    print(f"Agregado: {entry}")
-    print("Corré 'ucs detect' para actualizar los colores detectados.")
+    print(f"Added: {entry}")
+    print("Run 'ucs detect' to refresh the detected colors.")
 
 
 def cmd_config_files_remove(args, config):
@@ -130,18 +130,18 @@ def cmd_config_files_remove(args, config):
     target_expanded = color_detector.expand_path(args.path)
     remaining = [f for f in files if f != args.path and color_detector.expand_path(f) != target_expanded]
     if len(remaining) == len(files):
-        print(f"No estaba en la lista: {args.path}")
+        print(f"Wasn't in the list: {args.path}")
         return
     write_files_to_replace(config, remaining)
-    print(f"Eliminado: {args.path}")
-    print("Corré 'ucs detect' para actualizar los colores detectados.")
+    print(f"Removed: {args.path}")
+    print("Run 'ucs detect' to refresh the detected colors.")
 
 
 def cmd_config_files_scan(args, config):
-    print("Buscando archivos con colores en ~/.config …")
+    print("Looking for files with colors under ~/.config …")
     found = color_detector.scan_config_dir_for_color_files()
     if not found:
-        print("No se encontró ningún archivo con colores.")
+        print("No file with colors was found.")
         return
 
     existing = set(read_files_to_replace(config))
@@ -152,32 +152,32 @@ def cmd_config_files_scan(args, config):
         print(f"\n{to_home_relative(folder)}/")
         for p, display in files:
             hr = to_home_relative(p)
-            marker = "  (ya en la lista)" if hr in existing else ""
+            marker = "  (already in the list)" if hr in existing else ""
             print(f"    {display}{marker}")
 
-    print(f"\nTotal: {len(found)} archivo(s) con colores, {len(new_paths)} nuevo(s).")
-    print("⚠ Puede incluir hex que no son colores (ej. direcciones 0xADDR) o archivos que no querés "
-          "modificar. Quitá lo que no sirva con: ucs config files remove <ruta>")
+    print(f"\nTotal: {len(found)} file(s) with colors, {len(new_paths)} new.")
+    print("⚠ May include hex-looking values that aren't colors (e.g. 0xADDR addresses) or files you "
+          "don't want to modify. Remove whatever doesn't apply with: ucs config files remove <path>")
 
     if args.dry_run:
-        print("\n(--dry-run: no se agregó nada)")
+        print("\n(--dry-run: nothing was added)")
         return
     if not new_paths:
-        print("\nTodos ya estaban en la lista, nada para agregar.")
+        print("\nEverything was already in the list, nothing to add.")
         return
     if not args.yes:
         try:
-            answer = input(f"\n¿Agregar los {len(new_paths)} archivo(s) nuevo(s)? (y/N): ").strip().lower()
+            answer = input(f"\nAdd the {len(new_paths)} new file(s)? (y/N): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer not in ("y", "yes", "s", "si", "sí"):
-            print("Cancelado.")
+            print("Cancelled.")
             return
 
     merged = read_files_to_replace(config)
     merged.extend(new_paths)
     write_files_to_replace(config, merged)
-    print(f"Agregados {len(new_paths)} archivo(s). Corré 'ucs detect' para actualizar los colores detectados.")
+    print(f"Added {len(new_paths)} file(s). Run 'ucs detect' to refresh the detected colors.")
 
 
 def _resolve_path(path, default_dir, project_dir=None):
@@ -242,14 +242,14 @@ def cmd_palette_create(args, config):
     entries = []
     for parts in (args.add or []):
         if len(parts) not in (2, 3):
-            print(f"--add espera HEX LABEL [ROLE], se recibieron {len(parts)} valor(es): {parts}")
+            print(f"--add expects HEX LABEL [ROLE], got {len(parts)} value(s): {parts}")
             sys.exit(1)
         hexval, label = parts[0], parts[1]
         role = None
         if len(parts) == 3:
             role_raw = parts[2]
             if role_raw not in ("foreground", "background", "none"):
-                print(f"--add: rol inválido {role_raw!r} (usá foreground, background o none)")
+                print(f"--add: invalid role {role_raw!r} (use foreground, background, or none)")
                 sys.exit(1)
             role = _role_arg_to_value(role_raw)
         next_id = max((e["id"] for e in entries), default=0) + 1
@@ -258,7 +258,7 @@ def cmd_palette_create(args, config):
             entry["role"] = role
         entries.append(entry)
     palette_store.write_palette_csv(path, entries)
-    print(f"Paleta creada: {path} ({len(entries)} colores)")
+    print(f"Palette created: {path} ({len(entries)} color(s))")
     _print_palette(entries)
     _maybe_apply_after_edit(args, config, path, target_palette=path)
 
@@ -268,7 +268,7 @@ def cmd_palette_list(args, config):
         entries = palette_store.read_palette_csv(p)
         strip = "".join(_color_swatch(e["hex"], width=2) for e in entries)
         sep = "  " if strip else ""
-        print(f"{p} ({len(entries)} colores){sep}{strip}")
+        print(f"{p} ({len(entries)} color(s)){sep}{strip}")
 
 
 def cmd_palette_show(args, config):
@@ -280,10 +280,10 @@ def cmd_palette_show(args, config):
     entries = guiless.load_palette(resolved)
     label = resolved if isinstance(resolved, str) else "(stdin)"
     if not entries:
-        print(f"Paleta vacía o no encontrada: {label}")
+        print(f"Empty or not found palette: {label}")
         sys.exit(1)
     display = [{"id": i + 1, **e} for i, e in enumerate(entries)]
-    print(f"{label} ({len(entries)} colores):")
+    print(f"{label} ({len(entries)} color(s)):")
     _print_palette(display)
     _maybe_apply_after_edit(args, config, resolved, mapping_path=args.mapping,
                             target_palette=resolved if isinstance(resolved, str) else None)
@@ -295,9 +295,9 @@ def cmd_palette_add_color(args, config):
     if args.link is not None:
         palette_shift.set_pair(path, entry["id"], args.link)
     swatch = _color_swatch(entry["hex"])
-    cells = ["Agregado:", swatch, f"#{entry['hex']}", entry.get("label", "")]
+    cells = ["Added:", swatch, f"#{entry['hex']}", entry.get("label", "")]
     print(" ".join(c for c in cells if c))
-    print("Paleta actual:")
+    print("Current palette:")
     _print_palette(palette_store.read_palette_csv(path))
     _maybe_apply_after_edit(args, config, path, mapping_path=args.mapping, target_palette=path)
 
@@ -324,8 +324,8 @@ def _resolve_target_palette(palette_arg, config, mapping_path=None):
         new_p = registry.active_palette_path()
     if not new_p:
         raise palette_shift.PaletteEditError(
-            "No se indicó paleta y el mapping no referencia ninguna (#new_palette=). "
-            "Pasá la ruta de la paleta explícitamente."
+            "No palette was given and the mapping doesn't reference any (#new_palette=). "
+            "Pass the palette path explicitly."
         )
     return new_p
 
@@ -354,7 +354,7 @@ def _adjust_mapping_after_palette_delete(config, mapping_path, palette_path, del
     store.entries = adjusted
     store.save()
     if dropped:
-        print(f"⚠ {dropped} asignación(es) del mapping apuntaban a ese color y quedaron sin asignar.")
+        print(f"⚠ {dropped} mapping assignment(s) pointed at that color and were left unassigned.")
 
 
 def cmd_palette_edit(args, config):
@@ -366,7 +366,7 @@ def cmd_palette_edit(args, config):
     if args.link is not None:
         link_target = None if args.link == "none" else args.link
         palette_shift.set_pair(path, new_id, link_target)
-    print(f"Editado en {path}:")
+    print(f"Edited in {path}:")
     _print_palette(palette_store.read_palette_csv(path))
     _maybe_apply_after_edit(args, config, path, mapping_path=args.mapping, target_palette=path)
 
@@ -375,7 +375,7 @@ def cmd_palette_remove(args, config):
     path = _resolve_target_palette(args.palette, config, mapping_path=args.mapping)
     deleted_id = palette_shift.delete_color(path, args.target)
     _adjust_mapping_after_palette_delete(config, args.mapping, path, deleted_id)
-    print(f"Borrado el color {deleted_id} de {path}:")
+    print(f"Removed color {deleted_id} from {path}:")
     _print_palette(palette_store.read_palette_csv(path))
     _maybe_apply_after_edit(args, config, path, mapping_path=args.mapping, target_palette=path)
 
@@ -388,7 +388,7 @@ def _parse_on_off(raw: str) -> bool:
         return True
     if v in ("off", "false", "0", "no"):
         return False
-    raise argparse.ArgumentTypeError(f"valor debe ser 'on' u 'off', se recibió {raw!r}")
+    raise argparse.ArgumentTypeError(f"value must be 'on' or 'off', got {raw!r}")
 
 
 def _mapping_fallback_colors(config, mapping_path):
@@ -442,11 +442,11 @@ def cmd_palette_generate(args, config):
 
     if reused_path:
         entries = palette_store.read_palette_csv(reused_path)
-        print(f"Ya existe una paleta generada para esta imagen: {reused_path} ({len(entries)} color(es)) "
-              "-- se usa esa. Pasá --regenerate para forzar una nueva generación.")
-        print(f"\nGuardada en: {reused_path}")
+        print(f"A palette already exists for this image: {reused_path} ({len(entries)} color(s)) "
+              "-- reusing it. Pass --regenerate to force a fresh generation.")
+        print(f"\nSaved to: {reused_path}")
         if not args.apply:
-            print(f"Para aplicarla: ucs palette show {reused_path} --apply")
+            print(f"To apply it: ucs palette show {reused_path} --apply")
         _maybe_apply_after_edit(args, config, entries, mapping_path=args.mapping, target_palette=reused_path)
         return
 
@@ -463,11 +463,11 @@ def cmd_palette_generate(args, config):
     for w in warnings:
         print(f"⚠ {w}")
 
-    print(f"Paleta generada desde {args.image} ({n_colors} color(es)):")
+    print(f"Palette generated from {args.image} ({n_colors} color(s)):")
     _print_palette(entries)
-    print(f"\nGuardada en: {saved_path}")
+    print(f"\nSaved to: {saved_path}")
     if not args.apply:
-        print(f"Para aplicarla: ucs palette show {saved_path} --apply")
+        print(f"To apply it: ucs palette show {saved_path} --apply")
     # entries is already the in-memory, just-computed list -- guiless accepts
     # it directly, no need to round-trip it back through the file we just wrote.
     _maybe_apply_after_edit(args, config, entries, mapping_path=args.mapping, target_palette=saved_path)
@@ -481,13 +481,13 @@ def cmd_mapping_new(args, config):
     detected_path = _resolve_detected_csv(args, config)
     detected_colors = color_detector.read_detected_csv(detected_path)
     if not detected_colors:
-        print(f"No hay colores detectados en {detected_path}. Corre 'detect' primero.")
+        print(f"No detected colors in {detected_path}. Run 'detect' first.")
         sys.exit(1)
 
     target_palette = _resolve_path(args.target_palette, config.palettes_created_dir, config.project_dir)
     new_palette = palette_store.read_palette_csv(target_palette)
     if not new_palette:
-        print(f"Paleta objetivo vacía o no encontrada: {target_palette}")
+        print(f"Empty or not found target palette: {target_palette}")
         sys.exit(1)
 
     if args.out:
@@ -506,26 +506,26 @@ def cmd_mapping_new(args, config):
     else:
         registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
         store = registry.for_palette(target_palette, old_palette=detected_path)
-        location = f"{target_palette}  (registro: {config.mapping_registry_json})"
+        location = f"{target_palette}  (registry: {config.mapping_registry_json})"
 
     siblings = conflicts.find_case2_siblings(detected_colors)
     color_by_id = {c["id"]: c for c in detected_colors}
 
-    print(f"Paleta objetivo: {target_palette} ({len(new_palette)} colores)")
-    print("Colores detectados:")
+    print(f"Target palette: {target_palette} ({len(new_palette)} color(s))")
+    print("Detected colors:")
     for c in detected_colors:
         twin_note = ""
         group = siblings.get(c["color"].lower())
         if group and len(group) > 1:
             other_ids = [g["id"] for g in group if g["id"] != c["id"]]
-            twin_note = f"  (mismo color también como id {other_ids})"
+            twin_note = f"  (same color also as id {other_ids})"
         print(f"  ID {c['id']:>3} | {c['type']:<12} | #{c['color']} | x{c['count']:<4}{twin_note}")
 
-    print("\nPaleta objetivo:")
+    print("\nTarget palette:")
     for p in new_palette:
         print(f"  ID {p['id']:>3} | #{p['hex']} | {p['label']}")
 
-    print(f"\nIngresá pares 'old_id new_id' (ENTER vacío para terminar). Mapping: {location}")
+    print(f"\nEnter 'old_id new_id' pairs (empty ENTER to finish). Mapping: {location}")
     while True:
         try:
             line = input("> ").strip()
@@ -536,7 +536,7 @@ def cmd_mapping_new(args, config):
             break
         parts = line.split()
         if len(parts) != 2 or not all(p.isdigit() for p in parts):
-            print("Formato inválido. Usá: <old_id> <new_id>")
+            print("Invalid format. Use: <old_id> <new_id>")
             continue
         old_id, new_id = int(parts[0]), int(parts[1])
         store.add_or_update(old_id, new_id)  # persists immediately
@@ -544,7 +544,7 @@ def cmd_mapping_new(args, config):
         collisions = conflicts.find_case1_collisions(detected_colors, new_palette, store.resolved_entries())
         relevant = [c for c in collisions if c["old_id"] == old_id]
         for c in relevant:
-            print(f"  ⚠ #{c['new_hex']} ya existe en la paleta detectada (id {c['conflict_with_ids']}).")
+            print(f"  ⚠ #{c['new_hex']} already exists in the detected palette (id {c['conflict_with_ids']}).")
 
         old_color_entry = color_by_id.get(old_id)
         group = siblings.get(old_color_entry["color"].lower()) if old_color_entry else None
@@ -552,14 +552,14 @@ def cmd_mapping_new(args, config):
             twins = [g["id"] for g in group if g["id"] != old_id]
             for twin_id in twins:
                 if store._find(twin_id) is None:
-                    print(f"  ⚠ El id {old_id} también aparece como id {twin_id} en otro formato. "
-                          f"Corré: {twin_id} {new_id}  (o dejalo para mapearlo distinto)")
+                    print(f"  ⚠ id {old_id} also appears as id {twin_id} in another format. "
+                          f"Run: {twin_id} {new_id}  (or leave it to map it differently)")
 
     if not store.resolved_entries():
-        print("No se guardó ningún mapping (vacío).")
+        print("No mapping was saved (empty).")
         return
 
-    print(f"\nMapping guardado: {location} ({len(store.resolved_entries())} entradas)")
+    print(f"\nMapping saved: {location} ({len(store.resolved_entries())} entries)")
 
 
 def _resolve_mapping_store_for_show(args, config):
@@ -596,9 +596,9 @@ def _print_mapping_details(store, config) -> None:
 
     collisions = conflicts.find_case1_collisions(detected_colors, new_palette, entries)
     if collisions:
-        print("\nConflictos (caso 1):")
+        print("\nConflicts (case 1):")
         for c in collisions:
-            print(f"  old_id {c['old_id']} -> #{c['new_hex']} colisiona con id(s) {c['conflict_with_ids']}")
+            print(f"  old_id {c['old_id']} -> #{c['new_hex']} collides with id(s) {c['conflict_with_ids']}")
 
 
 def cmd_mapping_show(args, config):
@@ -610,7 +610,7 @@ def cmd_mapping_relink(args, config):
     store = _resolve_mapping_store_for_show(args, config)
     entries = store.entries
     if not entries:
-        print("Mapping vacío o no encontrado.")
+        print("Empty or not found mapping.")
         return
 
     detected_path = store.old_palette or config.detected_palette_csv
@@ -618,45 +618,48 @@ def cmd_mapping_relink(args, config):
     drift = mapping_store.detect_drift(entries, detected_colors)
 
     if not drift["driftable"] and not drift["orphaned"]:
-        print("Nada para re-vincular: el mapping está al día con los colores detectados.")
+        print("Nothing to relink: the mapping is up to date with the detected colors.")
         return
 
     if drift["driftable"]:
-        print(f"{len(drift['driftable'])} color(es) para re-vincular (el color real sigue existiendo, "
-              "solo se movió de id):")
+        print(f"{len(drift['driftable'])} color(s) to relink (the real color still exists, "
+              "it just moved id):")
         for d in drift["driftable"]:
             print(f"  old_id {d['old_id']} -> {d['correct_old_id']}  (#{d['hex']}, {d['type']})")
     if drift["orphaned"]:
-        print(f"\n{len(drift['orphaned'])} color(es) huérfano(s) -- ya no existen, no se auto-resuelven:")
+        print(f"\n{len(drift['orphaned'])} orphaned color(s) -- no longer exist, not auto-resolved:")
         for d in drift["orphaned"]:
-            print(f"  old_id {d['old_id']}  (#{d['hex']}, {d['type']}) -- corregilo a mano.")
+            print(f"  old_id {d['old_id']}  (#{d['hex']}, {d['type']}) -- fix it by hand.")
 
     if not drift["driftable"]:
         return
 
     if not args.yes:
+        n_driftable = len(drift["driftable"])
+        noun = "entry" if n_driftable == 1 else "entries"
         try:
-            answer = input(f"\n¿Re-vincular {len(drift['driftable'])} entrada(s)? (y/N): ").strip().lower()
+            answer = input(f"\nRelink {n_driftable} {noun}? (y/N): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer not in ("y", "yes", "s", "si", "sí"):
-            print("Cancelado.")
+            print("Cancelled.")
             return
 
     relinked = store.apply_drift_relinks(drift["driftable"])
-    print(f"\n{relinked} entrada(s) re-vinculada(s).")
+    print(f"\n{relinked} {'entry' if relinked == 1 else 'entries'} relinked.")
 
 
 def cmd_mapping_list(args, config):
     registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
     sections = registry.all_sections()
     if not sections:
-        print("No hay ningún mapping todavía.")
+        print("No mapping yet.")
         return
     active = registry.active_palette_path()
     for palette_path, store in sections:
-        marker = "  (activo)" if palette_path == active else ""
-        print(f"  {palette_path}{marker} -- {len(store.resolved_entries())} entrada(s)")
+        marker = "  (active)" if palette_path == active else ""
+        n = len(store.resolved_entries())
+        print(f"  {palette_path}{marker} -- {n} {'entry' if n == 1 else 'entries'}")
 
 
 def _resolve_explicit_palette_path(target: str, config) -> list:
@@ -700,36 +703,31 @@ def _resolve_manage_mapping_targets(target: str, config, registry) -> list:
 
 
 def _manage_empty_message(target: str, kind: str) -> str:
-    """kind: "mapping" (masculine: "el mapping") or "palette" (feminine:
-    "la paleta") -- only affects grammatical agreement."""
-    if kind == "mapping":
-        none_phrase, all_phrase = "ningún mapping activo", "ningún mapping guardado todavía"
-    else:
-        none_phrase, all_phrase = "ninguna paleta activa", "ninguna paleta guardada todavía"
+    """kind: "mapping" or "palette"."""
     if target is None:
-        return f"No hay {none_phrase}."
+        return f"No active {kind}."
     if target == "all":
-        return f"No hay {all_phrase}."
-    return f"No se encontró ninguna paleta asociada a: {target}"
+        return f"No {kind} saved yet."
+    return f"No palette found matching: {target}"
 
 
 def _confirm_manage_delete(target: str, count: int, kind: str, idc: bool) -> bool:
     """Shared confirm-unless---idc prompt for `manage mappings/palette
-    delete`. kind: "mapping" or "palette" (grammatical agreement only).
-    target == "all" additionally gets the loud ATENCIÓN banner -- an
-    irreversible bulk wipe deserves more than an easy-to-miss "(y/N)"."""
+    delete`. kind: "mapping" or "palette". target == "all" additionally
+    gets the loud ATTENTION banner -- an irreversible bulk wipe deserves
+    more than an easy-to-miss "(y/N)"."""
     if idc:
         return True
-    plural = "mapping(s)" if kind == "mapping" else "paleta(s)"
+    plural = "mapping(s)" if kind == "mapping" else "palette(s)"
     if target == "all":
-        wipeout = (f"TODOS los mappings guardados ({count})" if kind == "mapping"
-                   else f"TODAS las paletas guardadas ({count})")
+        wipeout = (f"ALL saved mappings ({count})" if kind == "mapping"
+                   else f"ALL saved palettes ({count})")
         _print_warning_banner(
-            "¡ATENCIÓN! BORRADO MASIVO",
-            f"Se van a borrar {wipeout}. Esta acción no se puede deshacer.",
+            "ATTENTION! BULK DELETE",
+            f"This is going to delete {wipeout}. This action cannot be undone.",
         )
     try:
-        answer = input(f"¿Borrar {count} {plural}? (y/N): ").strip().lower()
+        answer = input(f"Delete {count} {plural}? (y/N): ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
         answer = ""
@@ -749,7 +747,7 @@ def cmd_manage_mappings_show(args, config):
         if store is None:
             continue
         shown = True
-        marker = "  (activo)" if palette_path == active else ""
+        marker = "  (active)" if palette_path == active else ""
         print(f"\n=== {palette_path}{marker} ===")
         _print_mapping_details(store, config)
     if not shown:
@@ -764,14 +762,14 @@ def cmd_manage_mappings_delete(args, config):
         print(_manage_empty_message(args.target, "mapping"))
         return
     if not _confirm_manage_delete(args.target, len(to_delete), "mapping", args.idc):
-        print("Cancelado.")
+        print("Cancelled.")
         return
     if args.target == "all":
         registry.remove_all_sections()
     else:
         for p in to_delete:
             registry.remove_section(p)
-    print(f"{len(to_delete)} mapping(s) borrado(s).")
+    print(f"{len(to_delete)} mapping(s) deleted.")
 
 
 def cmd_manage_palette_show(args, config):
@@ -782,7 +780,7 @@ def cmd_manage_palette_show(args, config):
         return
     for palette_path in palettes:
         entries = palette_store.read_palette_csv(palette_path)
-        print(f"\n=== {palette_path} ({len(entries)} colores) ===")
+        print(f"\n=== {palette_path} ({len(entries)} color(s)) ===")
         _print_palette(entries)
 
 
@@ -794,11 +792,11 @@ def cmd_manage_palette_delete(args, config):
         print(_manage_empty_message(args.target, "palette"))
         return
     if not _confirm_manage_delete(args.target, len(to_delete), "palette", args.idc):
-        print("Cancelado.")
+        print("Cancelled.")
         return
     for p in to_delete:
         palette_store.delete_palette(p)
-    print(f"{len(to_delete)} paleta(s) borrada(s).")
+    print(f"{len(to_delete)} palette(s) deleted.")
 
 
 def _print_warning_banner(title: str, message: str) -> None:
@@ -814,7 +812,7 @@ def _print_warning_banner(title: str, message: str) -> None:
 def _print_reorder_banner(warning: str) -> None:
     """tier="compacted" applies: the mapping's assignment order changed and
     may break a previously-tuned theme (see resolve_apply_targets)."""
-    _print_warning_banner("¡ATENCIÓN! REASIGNACIÓN DE MAPPING", warning)
+    _print_warning_banner("ATTENTION! MAPPING REASSIGNMENT", warning)
 
 
 def _apply_or_test(args, config, mode):
@@ -825,7 +823,7 @@ def _apply_or_test(args, config, mode):
         store = registry.for_active()
     new_p, entries = store.new_palette, store.entries
     if not entries:
-        print(f"Mapping vacío o no encontrado: {args.mapping or '(ningún mapping activo)'}")
+        print(f"Empty or not found mapping: {args.mapping or '(no active mapping)'}")
         sys.exit(1)
 
     detected_path = store.old_palette or config.detected_palette_csv
@@ -842,10 +840,10 @@ def _apply_or_test(args, config, mode):
     # loudly and proceeds with the resolved (possibly reordered) entries.
     resolution = mapping_store.resolve_apply_targets(entries, new_palette)
     if resolution["tier"] == "blocked":
-        print(f"⚠ La paleta {new_p or '(no definida)'} tiene {resolution['available']} color(es), "
-              f"pero el mapping necesita al menos {resolution['needed']} (cantidad de ids "
-              "distintos usados). Revisá el mapping ('ucs mapping show <mapping>') o "
-              "regenerá/reimportá la paleta.")
+        print(f"⚠ Palette {new_p or '(not set)'} has {resolution['available']} color(s), "
+              f"but the mapping needs at least {resolution['needed']} (number of distinct ids "
+              "used). Check the mapping ('ucs mapping show <mapping>') or "
+              "regenerate/reimport the palette.")
         sys.exit(1)
     if resolution["tier"] == "compacted":
         _print_reorder_banner(resolution["warning"])
@@ -855,11 +853,11 @@ def _apply_or_test(args, config, mode):
     collisions = conflicts.find_case1_collisions(detected_colors, new_palette, entries)
     convergence = conflicts.find_target_convergence(detected_colors, new_palette, entries, sibling_groups=siblings)
     if (collisions or convergence) and not args.force:
-        print("⚠ Se detectaron conflictos. Usá --force para continuar de todas formas:")
+        print("⚠ Conflicts detected. Use --force to continue anyway:")
         for c in collisions:
-            print(f"  [caso 1] old_id {c['old_id']} -> #{c['new_hex']} colisiona con id(s) {c['conflict_with_ids']}")
+            print(f"  [case 1] old_id {c['old_id']} -> #{c['new_hex']} collides with id(s) {c['conflict_with_ids']}")
         for c in convergence:
-            print(f"  [convergencia] ids {c['old_ids']} -> #{c['target_hex']} (se pierde la distinción entre ellos)")
+            print(f"  [convergence] ids {c['old_ids']} -> #{c['target_hex']} (loses the distinction between them)")
         sys.exit(1)
 
     dry_run = mode == "test"
@@ -868,40 +866,43 @@ def _apply_or_test(args, config, mode):
     )
     total = sum(r.get("count", 0) for r in results)
     errors = [r for r in results if "error" in r]
-    label = "Simulación (test)" if dry_run else "Aplicado"
-    print(f"{label}: {total} reemplazos en {len(results)} operaciones de archivo.")
+    label = "Simulation (test)" if dry_run else "Applied"
+    print(f"{label}: {total} replacement(s) across {len(results)} file operation(s).")
     for r in results:
         if r.get("count", 0) > 0 or "error" in r:
             status = r.get("error", f"x{r['count']}")
             print(f"  {r['file']}: {r['old_color']} -> {r['new_color']} [{r['type']}] {status}")
     if errors:
-        print(f"Errores: {len(errors)}")
+        print(f"Errors: {len(errors)}")
     if (collisions or convergence) and args.force and not dry_run:
-        print("⚠ Se forzó un conflicto/convergencia: el mapping usado probablemente quedó desactualizado "
-              "(algunos ids ya no representan el mismo color real). Conviene rehacerlo antes de reusarlo.")
+        print("⚠ A conflict/convergence was forced: the mapping used is probably out of date now "
+              "(some ids no longer represent the same real color). It's worth redoing it before reusing it.")
     if not dry_run:
         roles_path = os.path.join(os.path.dirname(detected_path), "color_roles.json")
         role_collisions, pair_collisions = color_detector.rekey_roles_after_apply(
             roles_path, detected_colors, new_palette, entries
         )
         for new_key, old_keys in role_collisions:
-            print(f"⚠ {new_key} quedó sin rol asignado: los colores {old_keys} tenían roles distintos "
-                  "y convergieron en él. Reasigná el rol a mano si corresponde.")
+            print(f"⚠ {new_key} was left without a role: colors {old_keys} had different roles "
+                  "and converged into it. Reassign the role by hand if needed.")
         for fg_key, dangling_bg_key in pair_collisions:
-            print(f"⚠ {fg_key} perdió su vínculo con {dangling_bg_key}: ese background ya no existe "
-                  "como tal tras el apply. Re-vinculalo a mano si corresponde.")
+            print(f"⚠ {fg_key} lost its link to {dangling_bg_key}: that background no longer exists "
+                  "as such after the apply. Relink it by hand if needed.")
         # The colors just replaced no longer exist in the files BY DESIGN --
         # re-stamp this mapping's identity to the NEW colors now actually
         # there, so the drift refresh below doesn't mistake "I just replaced
         # this" for real drift and flag it orphaned.
         store.entries = mapping_store.stamp_applied_entries(store.entries, entries, new_palette, detected_colors)
         store.save()
-        print(f"Backup en: {config.backup_dir}")
-        print("Para deshacer: ucs restore")
+        print(f"Backup at: {config.backup_dir}")
+        print("To undo: ucs restore")
         _refresh_detected_after_change(config)
-        started = restart_actions.run_enabled(restart_actions.read_restart_actions(config))
+        restart_actions.write_wallpaper_state(config, new_p)
+        started = restart_actions.run_enabled(
+            restart_actions.read_restart_actions(config), extra_env=restart_actions.wallpaper_env(new_p), cli=True
+        )
         for a in started:
-            print(f"  Reiniciando: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
+            print(f"  Restarting: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
 
 
 def _refresh_detected_after_change(config):
@@ -910,7 +911,7 @@ def _refresh_detected_after_change(config):
     pointing at colors that no longer exist in the files."""
     colors = detect_diff.run_detect(config)
     color_detector.write_detected_csv(colors, config.detected_palette_csv)
-    print(f"Colores re-detectados y guardados en: {config.detected_palette_csv}")
+    print(f"Colors re-detected and saved to: {config.detected_palette_csv}")
     _report_mapping_drift(config, colors, persist=True)
 
 
@@ -929,52 +930,60 @@ def cmd_gui(args, config):
 
 def cmd_restore(args, config):
     if not os.path.isdir(config.backup_dir) or not os.listdir(config.backup_dir):
-        print(f"⚠ No se encontró ningún backup en {config.backup_dir}. "
-              "Necesitás haber hecho al menos un 'ucs apply' real antes de poder restaurar.")
+        print(f"⚠ No backup was found at {config.backup_dir}. "
+              "You need to have done at least one real 'ucs apply' before you can restore.")
         sys.exit(1)
 
     if not args.yolo:
         _print_warning_banner(
-            "¡ATENCIÓN! RESTAURAR DESDE BACKUP",
-            "Esto sobrescribe tus archivos COMPLETOS con la copia de respaldo -- no es solo "
-            "deshacer el reemplazo de colores. Cualquier cambio o código nuevo que hayas agregado "
-            "a esos archivos DESPUÉS del último apply se pierde. Usá --yolo para saltear esta "
-            "confirmación.",
+            "ATTENTION! RESTORE FROM BACKUP",
+            "This overwrites your COMPLETE files with the backup copy -- it's not just "
+            "undoing the color replacement. Any change or new code you added to those "
+            "files AFTER the last apply is lost. Use --yolo to skip this "
+            "confirmation.",
         )
         try:
-            answer = input("¿Restaurar de todas formas? (y/N): ").strip().lower()
+            answer = input("Restore anyway? (y/N): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
             answer = ""
         if answer not in ("y", "yes", "s", "si", "sí"):
-            print("Cancelado.")
+            print("Cancelled.")
             return
 
     results = color_replacer.restore_files(config.files_to_replace, config.backup_dir)
     for r in results:
-        status = "restaurado" if r["restored"] else "sin backup"
+        status = "restored" if r["restored"] else "no backup"
         print(f"  {r['file']}: {status}")
 
     _refresh_detected_after_change(config)
+
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    active_palette = registry.for_active().new_palette
+    restart_actions.write_wallpaper_state(config, active_palette)
 
     if args.restart is not None:
         do_restart = args.restart
     else:
         try:
-            answer = input("¿Reiniciar los servicios configurados? (y/N): ").strip().lower()
+            answer = input("Restart the configured services? (y/N): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = ""
         do_restart = answer in ("y", "yes", "s", "si", "sí")
 
     if do_restart:
-        started = restart_actions.run_enabled(restart_actions.read_restart_actions(config))
+        started = restart_actions.run_enabled(
+            restart_actions.read_restart_actions(config),
+            extra_env=restart_actions.wallpaper_env(active_palette),
+            cli=True,
+        )
         for a in started:
-            print(f"  Reiniciando: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
+            print(f"  Restarting: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
 
 
 def cmd_automatic(args, config):
     if bool(args.palette) == bool(args.from_image):
-        print("Pasá exactamente uno: la paleta (posicional) o --from-image <wallpaper>.")
+        print("Pass exactly one: the palette (positional) or --from-image <wallpaper>.")
         sys.exit(1)
 
     registry = None
@@ -984,13 +993,13 @@ def cmd_automatic(args, config):
     else:
         registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
         store = registry.for_active()
-        mapping_desc = "el mapping activo"
+        mapping_desc = "the active mapping"
 
     palette_source = args.palette
     target_path = None
     if args.from_image:
         if not store.entries:
-            print(f"Mapping vacío o no encontrado: {mapping_desc}")
+            print(f"Empty or not found mapping: {mapping_desc}")
             sys.exit(1)
         fallback_colors = len({e["new_id"] for e in store.entries})
         out_path, n_colors, reused_path = _resolve_generate_target(
@@ -999,9 +1008,9 @@ def cmd_automatic(args, config):
         if reused_path:
             palette_source = palette_store.read_palette_csv(reused_path)
             target_path = reused_path
-            print(f"Ya existe una paleta generada para esta imagen: {reused_path} "
-                  f"({len(palette_source)} color(es)) -- se usa esa. Pasá --regenerate para forzar "
-                  "una nueva generación.")
+            print(f"A palette already exists for this image: {reused_path} "
+                  f"({len(palette_source)} color(s)) -- reusing it. Pass --regenerate to force "
+                  "a fresh generation.")
         else:
             palette_source, saved_path, gen_warnings = palette_shift.generate_and_save_palette(
                 config, args.from_image, n_colors, args.sample_size, args.mode, args.my_eyes, out_path,
@@ -1016,7 +1025,7 @@ def cmd_automatic(args, config):
             target_path = saved_path
             for w in gen_warnings:
                 print(f"⚠ {w}")
-            print(f"Paleta generada desde {args.from_image} ({n_colors} color(es)) — guardada en: {saved_path}")
+            print(f"Palette generated from {args.from_image} ({n_colors} color(s)) — saved to: {saved_path}")
         _print_palette(palette_source)
     elif isinstance(args.palette, str) and args.palette != "-" and args.palette.lower().endswith(".csv"):
         target_path = _resolve_path(args.palette, config.palettes_created_dir, config.project_dir)
@@ -1042,51 +1051,58 @@ def cmd_automatic(args, config):
         yolo=args.yolo,
         project_dir=config.project_dir,
     )
-    _report_apply_result(result, args, config, mapping_desc)
+    _report_apply_result(result, args, config, mapping_desc, palette_path=store.new_palette)
 
 
-def _report_apply_result(result, args, config, mapping_desc):
+def _report_apply_result(result, args, config, mapping_desc, palette_path=None):
     """Shared by `automatic` and `automatic shift`: turn a guiless.apply_palette
     result into CLI output (and the post-apply detect refresh / restarts on a
     real apply). Exits 1 on any non-applied status. mapping_desc is a plain
-    display string (a path, or "el mapping activo") -- only used in messages."""
+    display string (a path, or "the active mapping") -- only used in messages.
+    palette_path, if given, is the applied palette's own path, used to look
+    up $UCS_WALLPAPER for the restart actions (see restart_actions.wallpaper_env)."""
     status = result["status"]
     if status == "insufficient_palette":
-        print(f"La paleta nueva tiene {result['available']} color(es), pero el mapping necesita "
-              f"{result['needed']} (roles distintos usados). Generá una paleta con al menos "
-              f"{result['needed']} colores (--colors {result['needed']}).")
+        print(f"The new palette has {result['available']} color(s), but the mapping needs "
+              f"{result['needed']} (distinct roles used). Generate a palette with at least "
+              f"{result['needed']} colors (--colors {result['needed']}).")
         sys.exit(1)
     elif status == "needs_confirmation":
-        print(f"La paleta nueva tiene {result['surplus_palette_count']} color(es) de más que no se van a usar.")
-        print("Volvé a correr con --yolo para aplicar de todas formas.")
+        print(f"The new palette has {result['surplus_palette_count']} extra color(s) that won't be used.")
+        print("Run again with --yolo to apply anyway.")
         sys.exit(1)
     elif status == "conflicts":
-        print("⚠ Se detectaron conflictos. Usá --force para continuar de todas formas:")
+        print("⚠ Conflicts detected. Use --force to continue anyway:")
         for c in result["conflicts"]:
-            print(f"  [caso 1] old_id {c['old_id']} -> #{c['new_hex']} colisiona con id(s) {c['conflict_with_ids']}")
+            print(f"  [case 1] old_id {c['old_id']} -> #{c['new_hex']} collides with id(s) {c['conflict_with_ids']}")
         for c in result.get("convergence", []):
-            print(f"  [convergencia] ids {c['old_ids']} -> #{c['target_hex']} (se pierde la distinción entre ellos)")
+            print(f"  [convergence] ids {c['old_ids']} -> #{c['target_hex']} (loses the distinction between them)")
         sys.exit(1)
     elif status == "empty_mapping":
-        print(f"Mapping vacío o no encontrado: {mapping_desc}")
+        print(f"Empty or not found mapping: {mapping_desc}")
         sys.exit(1)
     else:
         results = result["results"]
         total = sum(r.get("count", 0) for r in results)
-        label = "Simulación (test)" if args.test else "Aplicado"
-        print(f"{label}: {total} reemplazos en {len(results)} operaciones de archivo.")
+        label = "Simulation (test)" if args.test else "Applied"
+        print(f"{label}: {total} replacement(s) across {len(results)} file operation(s).")
         if result.get("stale_mapping_warning"):
-            print("⚠ Se forzó un conflicto/convergencia: el mapping usado probablemente quedó desactualizado "
-                  "(algunos ids ya no representan el mismo color real). Conviene rehacerlo antes de reusarlo.")
+            print("⚠ A conflict/convergence was forced: the mapping used is probably out of date now "
+                  "(some ids no longer represent the same real color). It's worth redoing it before reusing it.")
         for new_key, old_keys in result.get("role_collisions", []):
-            print(f"⚠ {new_key} quedó sin rol asignado: los colores {old_keys} tenían roles distintos "
-                  "y convergieron en él. Reasigná el rol a mano si corresponde.")
+            print(f"⚠ {new_key} was left without a role: colors {old_keys} had different roles "
+                  "and converged into it. Reassign the role by hand if needed.")
         if not args.test:
-            print(f"Backup en: {config.backup_dir}")
+            print(f"Backup at: {config.backup_dir}")
             _refresh_detected_after_change(config)
-            started = restart_actions.run_enabled(restart_actions.read_restart_actions(config))
+            restart_actions.write_wallpaper_state(config, palette_path)
+            started = restart_actions.run_enabled(
+                restart_actions.read_restart_actions(config),
+                extra_env=restart_actions.wallpaper_env(palette_path),
+                cli=True,
+            )
             for a in started:
-                print(f"  Reiniciando: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
+                print(f"  Restarting: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
 
 
 def _maybe_apply_after_edit(args, config, palette_source, mapping_path=None, target_palette=None):
@@ -1121,12 +1137,12 @@ def _maybe_apply_after_edit(args, config, palette_source, mapping_path=None, tar
             mapping_desc = target_palette
         else:
             store = registry.for_active()
-            mapping_desc = "el mapping activo"
+            mapping_desc = "the active mapping"
     result = guiless.apply_palette(
         palette_source, store, config.backup_dir,
         dry_run=args.test, force=args.force, yolo=args.yolo, project_dir=config.project_dir,
     )
-    _report_apply_result(result, args, config, mapping_desc)
+    _report_apply_result(result, args, config, mapping_desc, palette_path=store.new_palette)
 
 
 def cmd_palette_shift(args, config):
@@ -1149,8 +1165,8 @@ def cmd_palette_shift(args, config):
     )
     for w in result["warnings"]:
         print(f"⚠ {w}")
-    print(f"Paleta {'regenerada' if result['regenerated'] else 'ajustada'}"
-          f"{' (simulación, no se guardó)' if args.test else ''}: {palette_path}")
+    print(f"Palette {'regenerated' if result['regenerated'] else 'adjusted'}"
+          f"{' (simulation, not saved)' if args.test else ''}: {palette_path}")
     _print_palette(result["entries"])
 
     palette_source = [{"hex": e["hex"], "label": e.get("label", "")} for e in result["entries"]]
@@ -1167,13 +1183,13 @@ def _parse_custom_scoring_values(raw: str) -> dict:
         if not part:
             continue
         if "=" not in part:
-            raise argparse.ArgumentTypeError(f"formato inválido: {part!r} (esperado clave=valor)")
+            raise argparse.ArgumentTypeError(f"invalid format: {part!r} (expected key=value)")
         key, _, value = part.partition("=")
         key = key.strip()
         try:
             percentages[key] = float(value.strip())
         except ValueError:
-            raise argparse.ArgumentTypeError(f"valor no numérico para {key!r}: {value.strip()!r}")
+            raise argparse.ArgumentTypeError(f"non-numeric value for {key!r}: {value.strip()!r}")
 
     try:
         palette_generator.percentages_to_weights(dict(percentages))
@@ -1190,9 +1206,9 @@ def _parse_shuffle(raw: str):
     try:
         value = int(raw)
     except ValueError:
-        raise argparse.ArgumentTypeError("--shuffle debe ser un entero >= 0 o 'next'")
+        raise argparse.ArgumentTypeError("--shuffle must be an integer >= 0 or 'next'")
     if value < 0:
-        raise argparse.ArgumentTypeError("--shuffle debe ser un entero >= 0 o 'next'")
+        raise argparse.ArgumentTypeError("--shuffle must be an integer >= 0 or 'next'")
     return value
 
 
@@ -1200,41 +1216,41 @@ def _parse_overfetch(raw: str):
     try:
         value = int(raw)
     except ValueError:
-        raise argparse.ArgumentTypeError("--overfetch debe ser un entero >= 0")
+        raise argparse.ArgumentTypeError("--overfetch must be an integer >= 0")
     if value < 0:
-        raise argparse.ArgumentTypeError("--overfetch debe ser un entero >= 0")
+        raise argparse.ArgumentTypeError("--overfetch must be an integer >= 0")
     return value
 
 
 def _add_shuffle_args(parser, from_image_note=""):
     parser.add_argument(
         "--shuffle", type=_parse_shuffle, default=None,
-        help=f"Saltear los primeros N candidatos a primary{from_image_note} (todo lo demás se elige "
-             "relativo a ese nuevo primary). También acepta 'next': retoma desde el último valor "
-             "usado + 1, cíclico según el tamaño del pool (--colors + --overfetch) -- pensado para "
-             "scripts que llaman esto repetidamente para ir probando variantes.",
+        help=f"Skip the first N primary candidates{from_image_note} (everything else is chosen "
+             "relative to that new primary). Also accepts 'next': resumes from the last value "
+             "used + 1, cyclic based on the pool size (--colors + --overfetch) -- meant for "
+             "scripts that call this repeatedly to try out variants.",
     )
     parser.add_argument(
         "--overfetch", type=_parse_overfetch, default=0,
-        help=f"Candidatos extra a considerar más allá de --colors{from_image_note} (default: 0). "
-             "auxN: se eligen entre n_needed+overfetch candidatos y sobreviven los de mejor score. "
-             "shading: el ramp se genera como si hicieran falta n_needed+overfetch shades y se "
-             "conservan los más cercanos a primary (más densos). También le da a --shuffle más "
-             "margen para saltear sin quedarse sin candidatos.",
+        help=f"Extra candidates to consider beyond --colors{from_image_note} (default: 0). "
+             "auxN: chosen among n_needed+overfetch candidates, the best-scoring ones survive. "
+             "shading: the ramp is generated as if n_needed+overfetch shades were needed and the "
+             "ones closest to primary (denser) are kept. Also gives --shuffle more "
+             "room to skip without running out of candidates.",
     )
 
 
 def _add_scoring_args(parser, from_image_note=""):
     parser.add_argument(
         "--scoring", choices=["default", "alternative", "custom"], default="default",
-        help=f"Cómo ponderar coverage/saturación/midtone/contraste al elegir colores{from_image_note} "
-             "(default: default). 'custom' usa --custom-scoring-values, o si no se pasa, los valores "
-             "guardados en config.json (y si tampoco hay, cae a 'default').",
+        help=f"How to weigh coverage/saturation/midtone/contrast when choosing colors{from_image_note} "
+             "(default: default). 'custom' uses --custom-scoring-values, or if not passed, the "
+             "values saved in config.json (and if there are none either, falls back to 'default').",
     )
     parser.add_argument(
         "--custom-scoring-values", type=_parse_custom_scoring_values,
-        help="Solo con --scoring custom: 'coverage=20,saturation=40,midtone=30,contrast=10' "
-             "(deben sumar 100). Tiene prioridad sobre lo guardado en config.json.",
+        help="Only with --scoring custom: 'coverage=20,saturation=40,midtone=30,contrast=10' "
+             "(must add up to 100). Takes priority over what's saved in config.json.",
     )
 
 
@@ -1246,14 +1262,14 @@ def _add_apply_args(parser, apply_help=None):
     --apply, these flags are simply unused."""
     parser.add_argument(
         "--apply", action="store_true",
-        help=apply_help or "Además, aplicar el mapping contra la paleta resultante (como 'automatic apply').",
+        help=apply_help or "Also apply the mapping against the resulting palette (like 'automatic apply').",
     )
-    parser.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
-    parser.add_argument("--test", action="store_true", help="Con --apply: simular, no modificar archivos")
+    parser.add_argument("--mapping", help="default: mappings/mapping.csv, the canonical mapping")
+    parser.add_argument("--test", action="store_true", help="With --apply: simulate, don't modify files")
     parser.add_argument("--force", action="store_true",
-                         help="Con --apply: aplicar aunque haya conflictos de caso 1/convergencia")
+                         help="With --apply: apply even if there are case 1/convergence conflicts")
     parser.add_argument("--yolo", action="store_true",
-                         help="Con --apply: aplicar aunque sobren colores en la paleta")
+                         help="With --apply: apply even if the palette has leftover colors")
 
 
 def _add_shift_args(parser):
@@ -1263,58 +1279,58 @@ def _add_shift_args(parser):
     so the two entry points can never drift apart."""
     onofftoggle = ["on", "off", "toggle"]
     parser.add_argument("--my-eyes", choices=onofftoggle, default=None, metavar="on|off|toggle",
-                         help="Saturación extra. 'on'/'off' fija el valor, 'toggle' lo invierte. "
-                              "Se aplica sin regenerar, aun en paletas creadas (default: mantener).")
+                         help="Extra saturation. 'on'/'off' sets the value, 'toggle' flips it. "
+                              "Applied without regenerating, even on created palettes (default: keep).")
     parser.add_argument("--my-eyes-factor", type=float, default=None,
-                         help="Con --my-eyes: multiplicador de croma CIELAB (default: mantener). "
-                              "Se aplica sin regenerar, aun en paletas creadas.")
+                         help="With --my-eyes: CIELAB chroma multiplier (default: keep). "
+                              "Applied without regenerating, even on created palettes.")
     parser.add_argument("--my-eyes-max-chroma", type=float, default=None,
-                         help="Con --my-eyes: tope de croma CIELAB resultante (default: mantener). "
-                              "Se aplica sin regenerar, aun en paletas creadas.")
+                         help="With --my-eyes: cap on the resulting CIELAB chroma (default: keep). "
+                              "Applied without regenerating, even on created palettes.")
     parser.add_argument("--ying-yang", choices=onofftoggle, default=None, metavar="on|off|toggle",
-                         help="Paleta complementaria (tonos +180°). 'on'/'off'/'toggle' (default: mantener). "
-                              "Se aplica sin regenerar, aun en paletas creadas.")
+                         help="Complementary palette (hues +180°). 'on'/'off'/'toggle' (default: keep). "
+                              "Applied without regenerating, even on created palettes.")
     parser.add_argument("--mode", choices=["balanced", "contrast", "shading"], default=None,
-                         help="Solo paletas generadas: regenera con este modo (default: mantener).")
+                         help="Generated palettes only: regenerate with this mode (default: keep).")
     parser.add_argument("--scoring", choices=["default", "alternative", "custom"], default=None,
-                         help="Solo paletas generadas: regenera con esta ponderación (default: mantener).")
+                         help="Generated palettes only: regenerate with this weighting (default: keep).")
     parser.add_argument("--custom-scoring-values", type=_parse_custom_scoring_values, default=None,
-                         help="Con --scoring custom: 'coverage=20,saturation=40,midtone=30,contrast=10' (suman 100).")
+                         help="With --scoring custom: 'coverage=20,saturation=40,midtone=30,contrast=10' (must add up to 100).")
     parser.add_argument("--weighted-contrast", choices=["on", "off"], default=None, metavar="on|off",
-                         help="Solo paletas generadas: contraste ponderado contra todos los clusters "
-                              "(default: mantener).")
+                         help="Generated palettes only: weighted contrast against all clusters "
+                              "(default: keep).")
     parser.add_argument("--shuffle", type=_parse_shuffle, default=None,
-                         help="Solo paletas generadas: saltear N candidatos a primary, o 'next' (cíclico). Regenera.")
+                         help="Generated palettes only: skip N primary candidates, or 'next' (cyclic). Regenerates.")
     parser.add_argument("--overfetch", type=_parse_overfetch, default=None,
-                         help="Solo paletas generadas: candidatos extra más allá de --colors. Regenera.")
+                         help="Generated palettes only: extra candidates beyond --colors. Regenerates.")
     parser.add_argument("--colors", type=int, default=None,
-                         help="Solo paletas generadas: regenera con esta cantidad de colores (default: mantener).")
+                         help="Generated palettes only: regenerate with this many colors (default: keep).")
     parser.add_argument("--shading-direction", choices=["dark", "light", "toggle"], default=None,
-                         help="Solo paletas generadas en modo shading: 'dark'/'light' fija la dirección "
-                              "del ramp, 'toggle' la invierte (default: mantener). Regenera.")
+                         help="Generated palettes only, shading mode: 'dark'/'light' sets the ramp's "
+                              "direction, 'toggle' flips it (default: keep). Regenerates.")
     parser.add_argument("--shading-min-luminance", type=float, default=None,
-                         help="Solo con --shading-direction dark: luminancia mínima del ramp "
-                              "(default: mantener). Regenera.")
+                         help="Only with --shading-direction dark: the ramp's minimum luminance "
+                              "(default: keep). Regenerates.")
     parser.add_argument("--shading-max-luminance", type=float, default=None,
-                         help="Solo con --shading-direction light: luminancia máxima del ramp "
-                              "(default: mantener). Regenera.")
+                         help="Only with --shading-direction light: the ramp's maximum luminance "
+                              "(default: keep). Regenerates.")
     parser.add_argument("--keep-custom", choices=onofftoggle, default=None, metavar="on|off|toggle",
-                         help="Al regenerar (paletas generadas), preservar los colores agregados/editados "
-                              "a mano en su mismo lugar en vez de descartarlos (default: mantener la "
-                              "preferencia guardada en la paleta, que empieza en 'on'). No dispara una "
-                              "regeneración por sí solo.")
+                         help="When regenerating (generated palettes), preserve hand-added/edited colors "
+                              "in their same spot instead of discarding them (default: keep the "
+                              "preference saved on the palette, which starts at 'on'). Doesn't trigger a "
+                              "regeneration by itself.")
     parser.add_argument("--eco", choices=onofftoggle, default=None, metavar="on|off|toggle",
-                         help="Al regenerar (paletas generadas), forzar mismo tono en las parejas "
-                              "foreground/background que contrastan por luminancia (contraste solo por "
-                              "luminancia, sin variedad de tono) (default: mantener la preferencia "
-                              "guardada, que empieza en 'off'). No dispara una regeneración por sí solo. "
-                              "Los colores tageados fg/bg sin pareja vinculada se ignoran para la "
-                              "generación (se avisa, sin bloquear).")
+                         help="When regenerating (generated palettes), force the same hue on "
+                              "foreground/background pairs that contrast by luminance (contrast purely by "
+                              "luminance, no hue variety) (default: keep the saved preference, "
+                              "which starts at 'off'). Doesn't trigger a regeneration by itself. "
+                              "Colors tagged fg/bg with no linked pair are ignored for "
+                              "generation (warned about, not blocked).")
     parser.add_argument("--hallucinate", choices=onofftoggle, default=None, metavar="on|off|toggle",
-                         help="Al regenerar (paletas generadas) contra una imagen monocromática, "
-                              "sintetizar un acento saturado + un ramp de shading a partir de él en vez "
-                              "de una paleta gris de verdad (default: mantener la preferencia guardada, "
-                              "que empieza en 'on'). No dispara una regeneración por sí solo.")
+                         help="When regenerating (generated palettes) against a monochrome image, "
+                              "synthesize a saturated accent + a shading ramp off it instead "
+                              "of a genuinely grey palette (default: keep the saved preference, "
+                              "which starts at 'on'). Doesn't trigger a regeneration by itself.")
 
 
 def _add_my_eyes_generation_args(parser):
@@ -1324,10 +1340,10 @@ def _add_my_eyes_generation_args(parser):
     the two entry points can't drift apart; see
     palette_generator._boost_saturation for what these mean."""
     parser.add_argument("--my-eyes-factor", type=float, default=palette_generator._MY_EYES_CHROMA_FACTOR,
-                         help=f"Con --my-eyes: multiplicador de croma CIELAB "
+                         help=f"With --my-eyes: CIELAB chroma multiplier "
                               f"(default: {palette_generator._MY_EYES_CHROMA_FACTOR}).")
     parser.add_argument("--my-eyes-max-chroma", type=float, default=palette_generator._MY_EYES_CHROMA_MAX,
-                         help=f"Con --my-eyes: tope de croma CIELAB resultante "
+                         help=f"With --my-eyes: cap on the resulting CIELAB chroma "
                               f"(default: {palette_generator._MY_EYES_CHROMA_MAX}).")
 
 
@@ -1338,15 +1354,15 @@ def _add_shading_generation_args(parser):
     invert yet). Shared so the two entry points can't drift apart; see
     palette_generator.generate_shading_series for what these mean."""
     parser.add_argument("--shading-direction", choices=["dark", "light"], default="dark",
-                         help="Solo con --mode shading: hacia dónde generar los shades. 'dark' "
-                              "(default): oscurece hacia el negro (una 'shade' de verdad). 'light': "
-                              "aclara hacia el blanco (técnicamente un 'tint').")
+                         help="Only with --mode shading: which way to generate the shades. 'dark' "
+                              "(default): darkens toward black (a genuine 'shade'). 'light': "
+                              "lightens toward white (technically a 'tint').")
     parser.add_argument("--shading-min-luminance", type=float, default=8.0,
-                         help="Solo con --mode shading --shading-direction dark: luminancia mínima "
-                              "del ramp (default: 8).")
+                         help="Only with --mode shading --shading-direction dark: the ramp's "
+                              "minimum luminance (default: 8).")
     parser.add_argument("--shading-max-luminance", type=float, default=92.0,
-                         help="Solo con --mode shading --shading-direction light: luminancia máxima "
-                              "del ramp (default: 92).")
+                         help="Only with --mode shading --shading-direction light: the ramp's "
+                              "maximum luminance (default: 92).")
 
 
 def _add_keep_custom_generation_arg(parser):
@@ -1357,10 +1373,10 @@ def _add_keep_custom_generation_arg(parser):
     palette_shift.generate_and_save_palette. Shared so the two entry points
     can't drift apart."""
     parser.add_argument("--keep-custom", choices=["on", "off", "toggle"], default=None, metavar="on|off|toggle",
-                         help="Si la ruta de salida ya existe como paleta: preservar sus colores "
-                              "agregados/editados a mano en vez de descartarlos (default: mantener la "
-                              "preferencia guardada -- de esa paleta si ya existe, si no la del proyecto, "
-                              "que empieza en 'on').")
+                         help="If the output path already exists as a palette: preserve its "
+                              "hand-added/edited colors instead of discarding them (default: keep the "
+                              "saved preference -- from that palette if it already exists, else the "
+                              "project's, which starts at 'on').")
 
 
 def _add_eco_generation_arg(parser):
@@ -1376,10 +1392,10 @@ def _add_eco_generation_arg(parser):
     vinculada is simply ignored (warned about, not blocked)."""
     parser.add_argument("--eco", choices=["on", "off", "toggle"], default=None,
                          metavar="on|off|toggle",
-                         help="Forzar mismo tono en las parejas foreground/background que contrastan "
-                              "por luminancia, en vez de dejar que cada una mantenga su propio tono "
-                              "(default: mantener la preferencia guardada -- de esa paleta si ya existe, "
-                              "si no la del proyecto, que empieza en 'off').")
+                         help="Force the same hue on foreground/background pairs that contrast "
+                              "by luminance, instead of letting each keep its own hue "
+                              "(default: keep the saved preference -- from that palette if it already "
+                              "exists, else the project's, which starts at 'off').")
 
 
 def _add_hallucinate_generation_arg(parser):
@@ -1390,11 +1406,11 @@ def _add_hallucinate_generation_arg(parser):
     two entry points can't drift apart."""
     parser.add_argument("--hallucinate", choices=["on", "off", "toggle"], default=None,
                          metavar="on|off|toggle",
-                         help="Contra una imagen monocromática: sintetizar un acento saturado + un ramp "
-                              "de shading a partir de él ('on', default: mantener la preferencia guardada "
-                              "-- de la paleta de salida si ya existe, si no la del proyecto, que empieza "
-                              "en 'on') en vez de una paleta gris de verdad ('off'). Sin efecto si la "
-                              "imagen no es monocromática.")
+                         help="Against a monochrome image: synthesize a saturated accent + a shading "
+                              "ramp off it ('on', default: keep the saved preference "
+                              "-- from the output palette if it already exists, else the project's, "
+                              "which starts at 'on') instead of a genuinely grey palette ('off'). No "
+                              "effect if the image isn't monochrome.")
 
 
 def _add_regenerate_arg(parser):
@@ -1407,9 +1423,9 @@ def _add_regenerate_arg(parser):
     --colors, falls back to the existing palette's own color count, or (if
     there's no existing palette at all) the mapping's usual fallback."""
     parser.add_argument("--regenerate", action="store_true",
-                         help="Forzar una regeneración aunque ya exista una paleta generada para esta "
-                              "imagen (sin --colors, usa la cantidad de colores de la paleta existente, "
-                              "o si no hay ninguna, la que necesite el mapping).")
+                         help="Force a regeneration even if a generated palette for this image "
+                              "already exists (without --colors, uses the existing palette's own "
+                              "color count, or if there's none, whatever the mapping needs).")
 
 
 def build_parser():
@@ -1417,111 +1433,111 @@ def build_parser():
     # not required: no subcommand at all means "launch the GUI" (see main())
     sub = parser.add_subparsers(dest="command", required=False)
 
-    p = sub.add_parser("detect", help="Escanear archivos y actualizar detected_palette.csv")
-    p.add_argument("--dry-run", action="store_true", help="No sobrescribir el CSV, solo mostrar")
+    p = sub.add_parser("detect", help="Scan files and update detected_palette.csv")
+    p.add_argument("--dry-run", action="store_true", help="Don't overwrite the CSV, just show")
     p.set_defaults(func=cmd_detect)
 
-    cf = sub.add_parser("config", help="Configuración del proyecto (config.json)")
+    cf = sub.add_parser("config", help="Project configuration (config.json)")
     cfsub = cf.add_subparsers(dest="config_command", required=True)
 
-    cfl = cfsub.add_parser("files", help="Archivos a escanear (files_to_replace)")
+    cfl = cfsub.add_parser("files", help="Files to scan (files_to_replace)")
     cflsub = cfl.add_subparsers(dest="files_command", required=True)
 
-    cfl_list = cflsub.add_parser("list", help="Listar archivos configurados")
+    cfl_list = cflsub.add_parser("list", help="List configured files")
     cfl_list.set_defaults(func=cmd_config_files_list)
 
-    cfl_add = cflsub.add_parser("add", help="Agregar un archivo a escanear")
-    cfl_add.add_argument("path", help="Ruta al archivo (absoluta o con ~)")
+    cfl_add = cflsub.add_parser("add", help="Add a file to scan")
+    cfl_add.add_argument("path", help="Path to the file (absolute or with ~)")
     cfl_add.set_defaults(func=cmd_config_files_add)
 
-    cfl_remove = cflsub.add_parser("remove", help="Quitar un archivo de la lista")
-    cfl_remove.add_argument("path", help="Tal como aparece en 'config files list', o su ruta absoluta")
+    cfl_remove = cflsub.add_parser("remove", help="Remove a file from the list")
+    cfl_remove.add_argument("path", help="As it appears in 'config files list', or its absolute path")
     cfl_remove.set_defaults(func=cmd_config_files_remove)
 
     cfl_scan = cflsub.add_parser(
-        "scan-config", help="Buscar en ~/.config archivos con colores y agregarlos a la lista")
+        "scan-config", help="Search ~/.config for files with colors and add them to the list")
     cfl_scan.add_argument("--dry-run", action="store_true",
-                           help="Solo mostrar lo que encontraría, sin agregar nada")
-    cfl_scan.add_argument("--yes", action="store_true", help="Agregar sin pedir confirmación")
+                           help="Just show what it would find, without adding anything")
+    cfl_scan.add_argument("--yes", action="store_true", help="Add without asking for confirmation")
     cfl_scan.set_defaults(func=cmd_config_files_scan)
 
-    pp = sub.add_parser("palette", help="Gestión de paletas creadas")
+    pp = sub.add_parser("palette", help="Manage created palettes")
     psub = pp.add_subparsers(dest="palette_command", required=True)
 
-    pc = psub.add_parser("create", help="Crear una paleta CSV")
-    pc.add_argument("path", help="Ruta de salida (relativa a palettes/created/ si no es absoluta)")
+    pc = psub.add_parser("create", help="Create a palette CSV")
+    pc.add_argument("path", help="Output path (relative to palettes/created/ if not absolute)")
     pc.add_argument("--add", nargs="+", metavar="HEX", action="append",
-                     help="Agregar un color: HEX LABEL, o HEX LABEL ROLE "
-                          "(ROLE: foreground|background|none) (puede repetirse)")
+                     help="Add a color: HEX LABEL, or HEX LABEL ROLE "
+                          "(ROLE: foreground|background|none) (can repeat)")
     _add_apply_args(pc)
     pc.set_defaults(func=cmd_palette_create)
 
-    pl = psub.add_parser("list", help="Listar paletas creadas")
+    pl = psub.add_parser("list", help="List created palettes")
     pl.set_defaults(func=cmd_palette_list)
 
-    ps = psub.add_parser("show", help="Mostrar una paleta con sus colores en la terminal")
+    ps = psub.add_parser("show", help="Show a palette and its colors in the terminal")
     ps.add_argument("path", nargs="?", default=None,
-                    help="Ruta a un CSV o JSON, o '-' para JSON por stdin "
-                         "(default: la que aplica el mapping actual, vía #new_palette=)")
-    _add_apply_args(ps, apply_help="Además, aplicar el mapping contra esta paleta (reemplazo de 'automatic apply').")
+                    help="Path to a CSV or JSON, or '-' for JSON via stdin "
+                         "(default: whatever the current mapping applies, via #new_palette=)")
+    _add_apply_args(ps, apply_help="Also apply the mapping against this palette (replacement for 'automatic apply').")
     ps.set_defaults(func=cmd_palette_show)
 
-    pa = psub.add_parser("add-color", help="Agregar un color a una paleta existente")
+    pa = psub.add_parser("add-color", help="Add a color to an existing palette")
     pa.add_argument("path", nargs="?", default=None,
-                    help="Paleta (default: la que aplica el mapping actual, vía #new_palette=)")
+                    help="Palette (default: whatever the current mapping applies, via #new_palette=)")
     pa.add_argument("hex")
-    pa.add_argument("--label", default="", help="Etiqueta para el color (default: vacía)")
+    pa.add_argument("--label", default="", help="Label for the color (default: empty)")
     pa.add_argument("--role", choices=["foreground", "background", "none"], default=None,
-                    help="Rol de contraste del color (default: sin marcar)")
-    pa.add_argument("--link", default=None, metavar="ID-O-HEX",
-                    help="Vincular este color (recién agregado) como pareja fg/bg de otro color de la "
-                         "misma paleta, por id o hex (default: sin vincular).")
+                    help="Contrast role of the color (default: unmarked)")
+    pa.add_argument("--link", default=None, metavar="ID-OR-HEX",
+                    help="Link this (just-added) color as the fg/bg pair of another color in the "
+                         "same palette, by id or hex (default: not linked).")
     _add_apply_args(pa)
     pa.set_defaults(func=cmd_palette_add_color)
 
-    ped = psub.add_parser("edit", help="Cambiar un color de una paleta por otro")
+    ped = psub.add_parser("edit", help="Change one color in a palette for another")
     ped.add_argument("palette", nargs="?", default=None,
-                     help="Paleta a editar (default: la que aplica el mapping actual, vía #new_palette=)")
-    ped.add_argument("target", help="Color a cambiar: su id o su hex")
-    ped.add_argument("new_hex", metavar="new-hex", help="Nuevo color (hex)")
+                     help="Palette to edit (default: whatever the current mapping applies, via #new_palette=)")
+    ped.add_argument("target", help="Color to change: its id or its hex")
+    ped.add_argument("new_hex", metavar="new-hex", help="New color (hex)")
     ped.add_argument("--role", choices=["foreground", "background", "none"], default=None,
-                     help="Además, fijar el rol de contraste (default: no lo toca)")
-    ped.add_argument("--link", default=None, metavar="ID-O-HEX",
-                     help="Además, vincular este color como pareja fg/bg de otro color de la misma "
-                          "paleta, por id o hex ('none' para desvincularlo; default: no lo toca).")
+                     help="Also set the contrast role (default: leave it untouched)")
+    ped.add_argument("--link", default=None, metavar="ID-OR-HEX",
+                     help="Also link this color as the fg/bg pair of another color in the same "
+                          "palette, by id or hex ('none' to unlink it; default: leave it untouched).")
     _add_apply_args(ped)
     ped.set_defaults(func=cmd_palette_edit)
 
-    prm = psub.add_parser("remove", help="Borrar un color de una paleta (ajusta el mapping si corresponde)")
+    prm = psub.add_parser("remove", help="Delete a color from a palette (adjusts the mapping if needed)")
     prm.add_argument("palette", nargs="?", default=None,
-                     help="Paleta (default: la que aplica el mapping actual, vía #new_palette=)")
-    prm.add_argument("target", help="Color a borrar: su id o su hex")
+                     help="Palette (default: whatever the current mapping applies, via #new_palette=)")
+    prm.add_argument("target", help="Color to delete: its id or its hex")
     _add_apply_args(prm)
     prm.set_defaults(func=cmd_palette_remove)
 
-    pg = psub.add_parser("generate", help="Generar una paleta a partir de una imagen (wallpaper)")
-    pg.add_argument("image", help="Ruta a la imagen")
+    pg = psub.add_parser("generate", help="Generate a palette from an image (wallpaper)")
+    pg.add_argument("image", help="Path to the image")
     pg.add_argument("--colors", type=int, default=None,
-                     help="Cantidad de colores a generar (default: la cantidad de roles distintos que "
-                          "usa el mapping -- ver --mapping --, o 6 si no hay mapping)")
-    pg.add_argument("--sample-size", type=int, default=40000, help="Píxeles a samplear (default: 40000)")
+                     help="Number of colors to generate (default: the number of distinct roles "
+                          "the mapping uses -- see --mapping --, or 6 if there's no mapping)")
+    pg.add_argument("--sample-size", type=int, default=40000, help="Pixels to sample (default: 40000)")
     pg.add_argument("--mode", choices=["balanced", "contrast", "shading"], default="contrast",
-                     help="Cómo elegir secondary/auxN (default: contrast). 'balanced': secondary por score, "
-                          "sin sesgo respecto al contraste con primary. 'contrast': secondary maximiza contraste "
-                          "con primary (comportamiento original). 'shading': el resto de la paleta son variantes "
-                          "monocromáticas (mismo tono) de primary")
+                     help="How to choose secondary/auxN (default: contrast). 'balanced': secondary by score, "
+                          "with no bias regarding contrast with primary. 'contrast': secondary maximizes contrast "
+                          "with primary (original behavior). 'shading': the rest of the palette are "
+                          "monochromatic variants (same hue) of primary")
     pg.add_argument("--my-eyes", action="store_true",
-                     help="Saturar los colores elegidos justo antes de guardarlos")
+                     help="Saturate the chosen colors right before saving them")
     _add_my_eyes_generation_args(pg)
     pg.add_argument("--ying-yang", type=_parse_on_off, default=False, metavar="on|off",
-                     help="Ying Yang: usar la paleta complementaria (todos los colores rotados 180° en el "
-                          "tono). 'on' u 'off' (default: off)")
+                     help="Ying Yang: use the complementary palette (every color rotated 180° in "
+                          "hue). 'on' or 'off' (default: off)")
     _add_scoring_args(pg)
     pg.add_argument(
         "--no-weighted-contrast", dest="weighted_contrast", action="store_false", default=True,
-        help="Comparar contraste solo contra el cluster más dominante de la imagen, en vez del sistema "
-             "ponderado contra todos los clusters (default: ponderado, recomendado; sirve mejor para "
-             "imágenes con un background de un solo color claro).",
+        help="Compare contrast only against the image's most dominant cluster, instead of the "
+             "weighted system against all clusters (default: weighted, recommended; works better for "
+             "images with a single-color light background).",
     )
     _add_shuffle_args(pg)
     _add_shading_generation_args(pg)
@@ -1529,121 +1545,121 @@ def build_parser():
     _add_eco_generation_arg(pg)
     _add_hallucinate_generation_arg(pg)
     _add_regenerate_arg(pg)
-    pg.add_argument("--out", help="Ruta de salida explícita (default: un archivo persistente por imagen, "
-                                  "bajo palettes/created/ -- ver find_palettes_for_image/--regenerate. "
-                                  "Si se pasa, siempre se (re)genera ahí, sin buscar una paleta existente.")
+    pg.add_argument("--out", help="Explicit output path (default: a persistent per-image file, "
+                                  "under palettes/created/ -- see find_palettes_for_image/--regenerate. "
+                                  "If passed, always (re)generates there, without looking for an existing palette.")
     _add_apply_args(pg)
     pg.set_defaults(func=cmd_palette_generate)
 
-    psh = psub.add_parser("shift", help="Cambiar modificadores de una paleta y, opcionalmente, reaplicar")
+    psh = psub.add_parser("shift", help="Change a palette's modifiers and, optionally, reapply")
     psh.add_argument("palette", nargs="?", default=None,
-                     help="Paleta a shiftear (default: la que aplica el mapping actual, vía #new_palette=)")
+                     help="Palette to shift (default: whatever the current mapping applies, via #new_palette=)")
     _add_shift_args(psh)
-    _add_apply_args(psh, apply_help="Además, aplicar el mapping contra la paleta shifteada (default: no aplicar).")
+    _add_apply_args(psh, apply_help="Also apply the mapping against the shifted palette (default: don't apply).")
     psh.set_defaults(func=cmd_palette_shift)
 
-    mp = sub.add_parser("mapping", help="Gestión de mappings")
+    mp = sub.add_parser("mapping", help="Manage mappings")
     msub = mp.add_subparsers(dest="mapping_command", required=True)
 
-    mn = msub.add_parser("new", help="Crear un mapping interactivo")
-    mn.add_argument("target_palette", help="Ruta a la paleta objetivo")
-    mn.add_argument("--detected-palette", help="Usar un detected_palette.csv específico")
-    mn.add_argument("--out", help="Ruta de salida standalone explícita (default: la sección de esta "
-                                  "paleta en el registro de mappings, mappings/mappings.json -- ver "
-                                  "'mapping list'). Si se pasa, se crea un archivo aparte, nunca "
-                                  "auto-detectado luego.")
+    mn = msub.add_parser("new", help="Create an interactive mapping")
+    mn.add_argument("target_palette", help="Path to the target palette")
+    mn.add_argument("--detected-palette", help="Use a specific detected_palette.csv")
+    mn.add_argument("--out", help="Explicit standalone output path (default: this palette's own "
+                                  "section in the mapping registry, mappings/mappings.json -- see "
+                                  "'mapping list'). If passed, creates a separate file, never "
+                                  "auto-discovered afterward.")
     mn.set_defaults(func=cmd_mapping_new)
 
-    ms = msub.add_parser("show", help="Mostrar un mapping y sus conflictos")
+    ms = msub.add_parser("show", help="Show a mapping and its conflicts")
     ms.add_argument("path", nargs="?", default=None,
-                    help="Archivo de mapping standalone (legacy). Omitir para usar --palette o el "
-                         "mapping activo.")
-    ms.add_argument("--palette", help="Mostrar el mapping de esta paleta específica (su propia "
-                                      "sección en el registro), sin cambiar cuál está activa.")
+                    help="Standalone (legacy) mapping file. Omit to use --palette or the "
+                         "active mapping.")
+    ms.add_argument("--palette", help="Show this specific palette's mapping (its own "
+                                      "section in the registry), without changing which one's active.")
     ms.set_defaults(func=cmd_mapping_show)
 
-    ml = msub.add_parser("list", help="Listar todas las paletas que tienen mapping, y cuál está activa")
+    ml = msub.add_parser("list", help="List every palette that has a mapping, and which one is active")
     ml.set_defaults(func=cmd_mapping_list)
 
     mr = msub.add_parser(
         "relink",
-        help="Re-vincular entradas cuyo color detectado cambió de id en el último escaneo "
-             "(ver 'ucs detect'/'ucs apply' -- avisan cuando hay algo para re-vincular)",
+        help="Relink entries whose detected color changed id on the last scan "
+             "(see 'ucs detect'/'ucs apply' -- they warn when there's something to relink)",
     )
-    mr.add_argument("--mapping", help="Archivo de mapping standalone (legacy). default: --palette, o "
-                                      "si tampoco se pasa, el mapping activo.")
-    mr.add_argument("--palette", help="Re-vincular el mapping de esta paleta específica, sin cambiar "
-                                      "cuál está activa.")
-    mr.add_argument("--yes", action="store_true", help="Re-vincular sin pedir confirmación")
+    mr.add_argument("--mapping", help="Standalone (legacy) mapping file. default: --palette, or "
+                                      "if that's not passed either, the active mapping.")
+    mr.add_argument("--palette", help="Relink this specific palette's mapping, without changing "
+                                      "which one's active.")
+    mr.add_argument("--yes", action="store_true", help="Relink without asking for confirmation")
     mr.set_defaults(func=cmd_mapping_relink)
 
-    t = sub.add_parser("test", help="Simular aplicar un mapping (no modifica archivos)")
-    t.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
-    t.add_argument("--force", action="store_true", help="Ignorar conflictos de caso 1")
+    t = sub.add_parser("test", help="Simulate applying a mapping (doesn't modify files)")
+    t.add_argument("--mapping", help="default: mappings/mapping.csv, the canonical mapping")
+    t.add_argument("--force", action="store_true", help="Ignore case 1 conflicts")
     t.set_defaults(func=cmd_test)
 
-    a = sub.add_parser("apply", help="Aplicar un mapping (hace backup real)")
-    a.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
-    a.add_argument("--force", action="store_true", help="Ignorar conflictos de caso 1")
+    a = sub.add_parser("apply", help="Apply a mapping (makes a real backup)")
+    a.add_argument("--mapping", help="default: mappings/mapping.csv, the canonical mapping")
+    a.add_argument("--force", action="store_true", help="Ignore case 1 conflicts")
     a.set_defaults(func=cmd_apply)
 
-    r = sub.add_parser("restore", help="Restaurar archivos desde el backup")
+    r = sub.add_parser("restore", help="Restore files from the backup")
     r_restart = r.add_mutually_exclusive_group()
     r_restart.add_argument("--restart", dest="restart", action="store_true", default=None,
-                            help="Reiniciar los servicios configurados sin preguntar")
+                            help="Restart the configured services without asking")
     r_restart.add_argument("--no-restart", dest="restart", action="store_false",
-                            help="No reiniciar servicios ni preguntar (omite la confirmación)")
+                            help="Don't restart services or ask (skips the confirmation)")
     r.add_argument("--yolo", action="store_true",
-                    help="No pedir confirmación antes de restaurar (sobrescribe archivos completos, "
-                         "no solo los colores)")
+                    help="Don't ask for confirmation before restoring (overwrites complete files, "
+                         "not just the colors)")
     r.set_defaults(func=cmd_restore)
 
-    g = sub.add_parser("gui", help="Lanzar la interfaz gráfica (GTK4 + libadwaita)")
+    g = sub.add_parser("gui", help="Launch the graphical interface (GTK4 + libadwaita)")
     g.set_defaults(func=cmd_gui)
 
-    au = sub.add_parser("automatic", help="Modo GUIless: aplicar una paleta usando un mapping existente")
+    au = sub.add_parser("automatic", help="GUIless mode: apply a palette using an existing mapping")
     au_sub = au.add_subparsers(dest="auto_cmd")
 
     # `automatic apply` — the original behavior. Bare `automatic <palette>` /
     # `automatic --from-image ...` still work: main() injects "apply" when the
     # first token after `automatic` isn't a known subcommand (see _inject_automatic_apply).
-    ap = au_sub.add_parser("apply", help="Aplicar una paleta (o generarla desde una imagen) contra el mapping")
+    ap = au_sub.add_parser("apply", help="Apply a palette (or generate it from an image) against the mapping")
     ap.add_argument("palette", nargs="?", default=None,
-                    help="Ruta a un CSV (id,#hex,label) o JSON [{hex,label}, ...], o '-' para JSON por stdin. "
-                         "Omitir si usás --from-image")
-    ap.add_argument("--from-image", help="Generar la paleta desde esta imagen (wallpaper) en vez de pasar una ruta")
+                    help="Path to a CSV (id,#hex,label) or JSON [{hex,label}, ...], or '-' for JSON via stdin. "
+                         "Omit if using --from-image")
+    ap.add_argument("--from-image", help="Generate the palette from this image (wallpaper) instead of passing a path")
     ap.add_argument("--colors", type=int,
-                    help="Cantidad de colores a generar con --from-image "
-                         "(default: la cantidad de roles distintos que usa el mapping)")
-    ap.add_argument("--sample-size", type=int, default=40000, help="Píxeles a samplear con --from-image (default: 40000)")
+                    help="Number of colors to generate with --from-image "
+                         "(default: the number of distinct roles the mapping uses)")
+    ap.add_argument("--sample-size", type=int, default=40000, help="Pixels to sample with --from-image (default: 40000)")
     ap.add_argument("--mode", choices=["balanced", "contrast", "shading"], default="contrast",
-                    help="Cómo elegir secondary/auxN con --from-image (default: contrast, ver 'palette generate --help')")
+                    help="How to choose secondary/auxN with --from-image (default: contrast, see 'palette generate --help')")
     ap.add_argument("--my-eyes", action="store_true",
-                    help="Saturar los colores generados con --from-image justo antes de aplicarlos")
+                    help="Saturate the colors generated with --from-image right before applying them")
     _add_my_eyes_generation_args(ap)
     ap.add_argument("--ying-yang", type=_parse_on_off, default=False, metavar="on|off",
-                    help="Ying Yang: usar la paleta complementaria con --from-image (tonos rotados 180°). "
-                         "'on' u 'off' (default: off)")
-    _add_scoring_args(ap, from_image_note=" con --from-image")
+                    help="Ying Yang: use the complementary palette with --from-image (hues rotated 180°). "
+                         "'on' or 'off' (default: off)")
+    _add_scoring_args(ap, from_image_note=" with --from-image")
     ap.add_argument(
         "--no-weighted-contrast", dest="weighted_contrast", action="store_false", default=True,
-        help="Comparar contraste solo contra el cluster más dominante de la imagen con --from-image, "
-             "en vez del sistema ponderado contra todos los clusters (default: ponderado, recomendado).",
+        help="Compare contrast only against the image's most dominant cluster with --from-image, "
+             "instead of the weighted system against all clusters (default: weighted, recommended).",
     )
-    _add_shuffle_args(ap, from_image_note=" con --from-image")
+    _add_shuffle_args(ap, from_image_note=" with --from-image")
     _add_shading_generation_args(ap)
     _add_keep_custom_generation_arg(ap)
     _add_eco_generation_arg(ap)
     _add_hallucinate_generation_arg(ap)
     _add_regenerate_arg(ap)
-    ap.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
-    ap.add_argument("--test", action="store_true", help="Simular, no modificar archivos")
+    ap.add_argument("--mapping", help="default: mappings/mapping.csv, the canonical mapping")
+    ap.add_argument("--test", action="store_true", help="Simulate, don't modify files")
     ap.add_argument("--force", action="store_true",
-                    help="Aplicar aunque haya conflictos de caso 1/convergencia "
-                         "(no salta el bloqueo por paleta insuficiente ni el de colores sobrantes)")
+                    help="Apply even if there are case 1/convergence conflicts "
+                         "(doesn't skip the insufficient-palette or leftover-colors blocks)")
     ap.add_argument("--yolo", action="store_true",
-                    help="Aplicar aunque sobren colores en la paleta (los de más quedan sin usar). "
-                         "Separado de --force, que es solo para conflictos.")
+                    help="Apply even if the palette has leftover colors (the extras go unused). "
+                         "Separate from --force, which is only for conflicts.")
     ap.set_defaults(func=cmd_automatic)
 
     # `automatic shift` — re-tweak the currently-applied palette's modifiers and
@@ -1654,46 +1670,46 @@ def build_parser():
     # Same cmd_palette_shift, same _add_shift_args -- the two can't drift
     # apart -- just with apply forced on via set_defaults (no --apply flag
     # shown here, since automatic's whole point was always "shift AND apply").
-    sh = au_sub.add_parser("shift", help="Cambiar modificadores de la paleta actual y reaplicar (sin repetir la imagen)")
+    sh = au_sub.add_parser("shift", help="Change the current palette's modifiers and reapply (without repeating the image)")
     sh.add_argument("palette", nargs="?", default=None,
-                    help="Paleta a shiftear (default: la que aplica el mapping actual, vía #new_palette=)")
+                    help="Palette to shift (default: whatever the current mapping applies, via #new_palette=)")
     _add_shift_args(sh)
-    sh.add_argument("--mapping", help="default: mappings/mapping.csv, el mapping canónico")
-    sh.add_argument("--test", action="store_true", help="Simular: no reescribe la paleta ni toca archivos")
-    sh.add_argument("--force", action="store_true", help="Aplicar aunque haya conflictos de caso 1/convergencia")
-    sh.add_argument("--yolo", action="store_true", help="Aplicar aunque sobren colores en la paleta")
+    sh.add_argument("--mapping", help="default: mappings/mapping.csv, the canonical mapping")
+    sh.add_argument("--test", action="store_true", help="Simulate: doesn't rewrite the palette or touch files")
+    sh.add_argument("--force", action="store_true", help="Apply even if there are case 1/convergence conflicts")
+    sh.add_argument("--yolo", action="store_true", help="Apply even if the palette has leftover colors")
     sh.set_defaults(func=cmd_palette_shift, apply=True)
 
-    mg = sub.add_parser("manage", help="Ver/borrar mappings y paletas guardadas")
+    mg = sub.add_parser("manage", help="View/delete saved mappings and palettes")
     mg_sub = mg.add_subparsers(dest="manage_command", required=True)
 
     _target_help = (
-        "Omitir para el activo. 'all' para todos. O una ruta a un wallpaper o a una "
-        "paleta (.csv) para el asociado a esa ruta."
+        "Omit for the active one. 'all' for every one. Or a path to a wallpaper or a "
+        "palette (.csv) for whichever is associated with that path."
     )
 
-    mgm = mg_sub.add_parser("mappings", help="Ver o borrar mappings guardados")
+    mgm = mg_sub.add_parser("mappings", help="View or delete saved mappings")
     mgm_sub = mgm.add_subparsers(dest="manage_mappings_command", required=True)
 
-    mgms = mgm_sub.add_parser("show", help="Mostrar mapping(s) guardado(s)")
+    mgms = mgm_sub.add_parser("show", help="Show saved mapping(s)")
     mgms.add_argument("target", nargs="?", default=None, help=_target_help)
     mgms.set_defaults(func=cmd_manage_mappings_show)
 
-    mgmd = mgm_sub.add_parser("delete", help="Borrar mapping(s) guardado(s)")
+    mgmd = mgm_sub.add_parser("delete", help="Delete saved mapping(s)")
     mgmd.add_argument("target", nargs="?", default=None, help=_target_help)
-    mgmd.add_argument("--idc", action="store_true", help="No pedir confirmación (\"I don't care\")")
+    mgmd.add_argument("--idc", action="store_true", help="Don't ask for confirmation (\"I don't care\")")
     mgmd.set_defaults(func=cmd_manage_mappings_delete)
 
-    mgp = mg_sub.add_parser("palette", help="Ver o borrar paletas guardadas")
+    mgp = mg_sub.add_parser("palette", help="View or delete saved palettes")
     mgp_sub = mgp.add_subparsers(dest="manage_palette_command", required=True)
 
-    mgps = mgp_sub.add_parser("show", help="Mostrar paleta(s) guardada(s)")
+    mgps = mgp_sub.add_parser("show", help="Show saved palette(s)")
     mgps.add_argument("target", nargs="?", default=None, help=_target_help)
     mgps.set_defaults(func=cmd_manage_palette_show)
 
-    mgpd = mgp_sub.add_parser("delete", help="Borrar paleta(s) guardada(s)")
+    mgpd = mgp_sub.add_parser("delete", help="Delete saved palette(s)")
     mgpd.add_argument("target", nargs="?", default=None, help=_target_help)
-    mgpd.add_argument("--idc", action="store_true", help="No pedir confirmación (\"I don't care\")")
+    mgpd.add_argument("--idc", action="store_true", help="Don't ask for confirmation (\"I don't care\")")
     mgpd.set_defaults(func=cmd_manage_palette_delete)
 
     return parser

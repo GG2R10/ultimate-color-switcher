@@ -60,7 +60,7 @@ def test_apply_or_test_errors_cleanly_when_even_the_distinct_count_does_not_fit(
     with pytest.raises(SystemExit) as exc:
         ucs_main.cmd_test(_args(), config)
     assert exc.value.code == 1
-    assert "necesita al menos" in capsys.readouterr().out
+    assert "needs at least" in capsys.readouterr().out
     # cmd_apply shares the exact same _apply_or_test body -- must fail identically
     with pytest.raises(SystemExit) as exc:
         ucs_main.cmd_apply(_args(), config)
@@ -77,8 +77,8 @@ def test_apply_or_test_compacted_tier_warns_and_applies_anyway(fake_project, mon
 
     ucs_main.cmd_test(_args(), config)  # must NOT raise
     out = capsys.readouterr().out
-    assert "REASIGNACIÓN DE MAPPING" in out
-    assert "1 reemplazos" in out
+    assert "MAPPING REASSIGNMENT" in out
+    assert "1 replacement" in out
 
 
 def test_apply_or_test_errors_cleanly_when_new_palette_file_is_missing(fake_project, monkeypatch, capsys):
@@ -90,7 +90,7 @@ def test_apply_or_test_errors_cleanly_when_new_palette_file_is_missing(fake_proj
     with pytest.raises(SystemExit) as exc:
         ucs_main.cmd_test(_args(), config)
     assert exc.value.code == 1
-    assert "necesita al menos" in capsys.readouterr().out
+    assert "needs at least" in capsys.readouterr().out
 
 
 def test_apply_or_test_still_works_on_a_healthy_mapping(fake_project, monkeypatch, capsys):
@@ -99,7 +99,7 @@ def test_apply_or_test_still_works_on_a_healthy_mapping(fake_project, monkeypatc
 
     ucs_main.cmd_test(_args(), config)  # must NOT raise
     out = capsys.readouterr().out
-    assert "1 reemplazos" in out
+    assert "1 replacement" in out
 
 
 def test_mapping_relink_reports_and_applies_with_yes(fake_project, monkeypatch, capsys):
@@ -131,7 +131,7 @@ def test_mapping_relink_reports_and_applies_with_yes(fake_project, monkeypatch, 
     capsys.readouterr()  # discard detect's own output
     ucs_main.cmd_mapping_relink(_args(yes=True, mapping=config.mapping_csv), config)
     out = capsys.readouterr().out
-    assert "re-vinculada" in out
+    assert "relinked" in out
 
     _, _, reloaded = mapping_store.read_mapping_csv(config.mapping_csv, project_dir=config.project_dir)
     by_old_id = {e["old_id"]: e["new_id"] for e in reloaded}
@@ -153,7 +153,7 @@ def test_apply_falls_back_to_active_mapping_with_no_explicit_flag(fake_project, 
 
     ucs_main.cmd_test(_args(), config)  # no --mapping at all -- must resolve via the active registry section
     out = capsys.readouterr().out
-    assert "1 reemplazos" in out
+    assert "1 replacement" in out
 
 
 def test_mapping_new_for_a_second_palette_does_not_touch_the_first_palettes_mapping(fake_project, monkeypatch, capsys):
@@ -209,8 +209,8 @@ def test_mapping_list_marks_the_active_palette(fake_project, monkeypatch, capsys
     lines = {l.strip().split()[0]: l for l in capsys.readouterr().out.splitlines() if l.strip()}
     a_line = next(l for l in lines.values() if "a.csv" in l)
     b_line = next(l for l in lines.values() if "b.csv" in l)
-    assert "(activo)" not in a_line
-    assert "(activo)" in b_line  # b was the last one set active
+    assert "(active)" not in a_line
+    assert "(active)" in b_line  # b was the last one set active
 
 
 def test_mapping_relink_without_yes_prompts_and_cancels_on_no(fake_project, monkeypatch, capsys):
@@ -236,7 +236,7 @@ def test_mapping_relink_without_yes_prompts_and_cancels_on_no(fake_project, monk
     capsys.readouterr()
     ucs_main.cmd_mapping_relink(_args(yes=False), config)
     out = capsys.readouterr().out
-    assert "Cancelado" in out
+    assert "Cancelled" in out
 
     _, _, reloaded = mapping_store.read_mapping_csv(config.mapping_csv, project_dir=config.project_dir)
     assert reloaded[0]["old_id"] == by_hex["111111"]  # untouched -- user declined
@@ -263,7 +263,7 @@ def test_detect_prints_drift_summary_without_mutating(fake_project, monkeypatch,
     capsys.readouterr()
     ucs_main.cmd_detect(argparse.Namespace(dry_run=False), config)
     out = capsys.readouterr().out
-    assert "cambiaron de id" in out
+    assert "changed id" in out
 
     # a bare `detect` never mutates the mapping's stamps, only reports.
     assert open(config.mapping_csv).read() == before
@@ -400,7 +400,7 @@ def test_cmd_palette_create_rejects_bad_role_in_add(tmp_path, fake_project, caps
     args = _args(path=str(path), add=[["aabbcc", "primary", "sideways"]])
     with pytest.raises(SystemExit):
         ucs_main.cmd_palette_create(args, config)
-    assert "inválido" in capsys.readouterr().out
+    assert "invalid" in capsys.readouterr().out
 
 
 def test_cmd_palette_add_color_sets_role(tmp_path, fake_project):
@@ -531,14 +531,14 @@ def test_palette_generate_reuses_existing_palette_for_same_image(tmp_path, fake_
     args = parser.parse_args(["palette", "generate", str(img), "--colors", "4"])
     ucs_main.cmd_palette_generate(args, config)
     first_out = capsys.readouterr().out
-    saved_line = [l for l in first_out.splitlines() if l.startswith("Guardada en:")][0]
-    saved_path = saved_line.split("Guardada en: ")[1]
+    saved_line = [l for l in first_out.splitlines() if l.startswith("Saved to:")][0]
+    saved_path = saved_line.split("Saved to: ")[1]
     before = open(saved_path).read()
 
     args2 = parser.parse_args(["palette", "generate", str(img), "--colors", "4"])
     ucs_main.cmd_palette_generate(args2, config)
     out2 = capsys.readouterr().out
-    assert "Ya existe una paleta generada para esta imagen" in out2
+    assert "A palette already exists for this image" in out2
     assert saved_path in out2
     assert open(saved_path).read() == before  # not rewritten
 
@@ -555,13 +555,13 @@ def test_palette_generate_regenerate_flag_forces_fresh_generation_at_same_path(
     args = parser.parse_args(["palette", "generate", str(img), "--colors", "4"])
     ucs_main.cmd_palette_generate(args, config)
     saved_path = [l for l in capsys.readouterr().out.splitlines()
-                  if l.startswith("Guardada en:")][0].split("Guardada en: ")[1]
+                  if l.startswith("Saved to:")][0].split("Saved to: ")[1]
 
     args2 = parser.parse_args(["palette", "generate", str(img), "--colors", "4", "--regenerate"])
     ucs_main.cmd_palette_generate(args2, config)
     out2 = capsys.readouterr().out
     assert "Ya existe una paleta generada" not in out2
-    assert f"Guardada en: {saved_path}" in out2  # regenerated IN PLACE, same slot
+    assert f"Saved to: {saved_path}" in out2  # regenerated IN PLACE, same slot
 
 
 def test_palette_generate_regenerate_without_colors_falls_back_to_existing_count(
@@ -580,7 +580,7 @@ def test_palette_generate_regenerate_without_colors_falls_back_to_existing_count
     args2 = parser.parse_args(["palette", "generate", str(img), "--regenerate"])  # no --colors
     ucs_main.cmd_palette_generate(args2, config)
     out2 = capsys.readouterr().out
-    assert "(3 color(es))" in out2  # fell back to the existing palette's own count
+    assert "(3 color(s))" in out2  # fell back to the existing palette's own count
 
 
 def test_palette_edit_apply_binds_mapping_to_the_edited_palette(fake_project, monkeypatch, tmp_path):
@@ -732,7 +732,7 @@ def test_manage_mappings_show_no_target_prints_the_active_mapping(fake_project, 
     ucs_main.cmd_manage_mappings_show(_manage_args(["mappings", "show"]), config)
     out = capsys.readouterr().out
     assert f"new_palette: {palette_path}" in out
-    assert "(activo)" in out
+    assert "(active)" in out
 
 
 def test_manage_mappings_show_all_lists_every_section(fake_project, monkeypatch, capsys):
@@ -757,7 +757,7 @@ def test_manage_mappings_show_unmatched_path_says_so(fake_project, monkeypatch, 
     args = _manage_args(["mappings", "show", os.path.join(config.palettes_created_dir, "nope.csv")])
     ucs_main.cmd_manage_mappings_show(args, config)
     out = capsys.readouterr().out
-    assert "No se encontró ninguna paleta asociada a:" in out
+    assert "No palette found matching:" in out
 
 
 def test_manage_mappings_delete_with_idc_skips_confirmation(fake_project, monkeypatch, capsys):
@@ -790,7 +790,7 @@ def test_manage_mappings_delete_without_idc_prompts_and_cancels_on_no(fake_proje
     ucs_main.cmd_manage_mappings_delete(args, config)
 
     out = capsys.readouterr().out
-    assert "Cancelado" in out
+    assert "Cancelled" in out
     registry_after = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
     assert registry_after.peek_section(palette_path) is not None  # untouched
 
@@ -807,7 +807,7 @@ def test_manage_mappings_delete_all_wipes_registry_after_confirmation(fake_proje
     ucs_main.cmd_manage_mappings_delete(args, config)
 
     out = capsys.readouterr().out
-    assert "BORRADO MASIVO" in out
+    assert "BULK DELETE" in out
     registry_after = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
     assert registry_after.all_sections() == []
 
@@ -848,7 +848,7 @@ def test_manage_palette_show_no_active_palette_says_so(fake_project, monkeypatch
     config = fake_project.load_config()
     ucs_main.cmd_manage_palette_show(_manage_args(["palette", "show"]), config)
     out = capsys.readouterr().out
-    assert "No hay ninguna paleta activa." in out
+    assert "No active palette." in out
 
 
 def test_manage_palette_delete_removes_the_file_but_not_its_mapping(fake_project, monkeypatch, capsys):
@@ -901,7 +901,7 @@ def test_restore_without_yolo_prompts_and_cancels_on_no(fake_project, monkeypatc
     ucs_main.cmd_restore(_restore_args(), config)
 
     out = capsys.readouterr().out
-    assert "Cancelado" in out
+    assert "Cancelled" in out
     assert open(target).read() == "modified"  # untouched
 
 
@@ -917,7 +917,7 @@ def test_restore_without_yolo_proceeds_on_yes(fake_project, monkeypatch, capsys)
     ucs_main.cmd_restore(_restore_args(), config)
 
     out = capsys.readouterr().out
-    assert "RESTAURAR DESDE BACKUP" in out
+    assert "RESTORE FROM BACKUP" in out
     assert open(target).read() == "original"
 
 
@@ -961,7 +961,7 @@ def test_restore_errors_cleanly_when_no_backup_exists(fake_project, monkeypatch,
     with pytest.raises(SystemExit) as exc:
         ucs_main.cmd_restore(_restore_args(), config)
     assert exc.value.code == 1
-    assert "No se encontró ningún backup" in capsys.readouterr().out
+    assert "No backup was found" in capsys.readouterr().out
 
 
 def test_restore_errors_cleanly_when_backup_dir_is_empty(fake_project, monkeypatch, capsys):
@@ -973,4 +973,4 @@ def test_restore_errors_cleanly_when_backup_dir_is_empty(fake_project, monkeypat
     with pytest.raises(SystemExit) as exc:
         ucs_main.cmd_restore(_restore_args(), config)
     assert exc.value.code == 1
-    assert "No se encontró ningún backup" in capsys.readouterr().out
+    assert "No backup was found" in capsys.readouterr().out

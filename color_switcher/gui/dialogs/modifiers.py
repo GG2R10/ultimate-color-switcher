@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dialogs/modifiers.py — The "Modificadores…" dialog: tweak an existing
+dialogs/modifiers.py — The "Modifiers…" dialog: tweak an existing
 palette's modifiers with a live preview and re-apply, mirroring
 `automatic shift` / `palette shift` on the backend.
 """
@@ -36,14 +36,14 @@ def _preview_swatch(hex_value: str) -> Gtk.Widget:
 
 
 def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied):
-    """"Modificadores…": tweak a palette's modifiers with a live preview and
+    """"Modifiers…": tweak a palette's modifiers with a live preview and
     re-apply, mirroring `automatic shift`. Post modifiers (my-eyes, ying-yang)
     are always available; the regeneration controls (mode/scoring/colors/…)
     only show for a generated palette, since a hand-created one has no image.
 
-    On "Aplicar cambios" the shifted palette is written to disk (same path) and
+    On "Apply changes" the shifted palette is written to disk (same path) and
     on_applied(path) fires, so the main window reloads it and its usual conflict
-    checks / Aplicar flow take over -- this dialog never touches files itself."""
+    checks / Apply flow take over -- this dialog never touches files itself."""
     ensure_base_styles()
     entries, meta = ps.read_palette(palette_path)
     generated = bool(meta.get("generated"))
@@ -118,14 +118,14 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
     page = Adw.PreferencesPage()
 
     post_group = Adw.PreferencesGroup(
-        title="Modificadores simples",
-        description="Se aplican al instante, sin regenerar. Andan también en paletas creadas a mano.",
+        title="Simple modifiers",
+        description="Apply instantly, no regeneration. Also work on hand-created palettes.",
     )
     _center_group_title(post_group)
-    my_eyes_row = Adw.SwitchRow(title="Saturar colores (--my-eyes)")
+    my_eyes_row = Adw.SwitchRow(title="Saturate colors (--my-eyes)")
     my_eyes_row.set_active(state["my_eyes"])
-    ying_row = Adw.SwitchRow(title="Ying Yang (complementarios)",
-                             subtitle="Rota todos los tonos 180°.")
+    ying_row = Adw.SwitchRow(title="Ying Yang (complementary)",
+                             subtitle="Rotates every hue 180°.")
     ying_row.set_active(state["ying_yang"])
 
     def on_my_eyes(row, _p):
@@ -144,8 +144,8 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
 
     if generated:
         sel_group = Adw.PreferencesGroup(
-            title="Regenerar desde la imagen",
-            description="Cambiar esto regenera la paleta (descarta colores agregados a mano).",
+            title="Regenerate from image",
+            description="Changing this regenerates the palette (discards hand-added colors).",
         )
         _center_group_title(sel_group)
 
@@ -168,7 +168,7 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         sel_group.add(scoring_row)
 
         colors_row = Adw.SpinRow(
-            title="Cantidad de colores",
+            title="Number of colors",
             adjustment=Gtk.Adjustment(value=state["colors"], lower=1, upper=32, step_increment=1),
             digits=0,
         )
@@ -182,7 +182,7 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
 
         shuffle_row = Adw.SpinRow(
             title="Shuffle",
-            subtitle="Saltear N candidatos a primary (explora variantes).",
+            subtitle="Skip N candidates for primary (explores variants).",
             adjustment=Gtk.Adjustment(value=state["shuffle"], lower=0, upper=999, step_increment=1),
             digits=0,
         )
@@ -196,8 +196,8 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
 
         overfetch_row = Adw.SpinRow(
             title="Overfetch",
-            subtitle="Más candidatos por score para auxiliares (o ramp más denso en shading). "
-                     "También le da margen a Shuffle.",
+            subtitle="More score candidates for auxiliaries (or a denser shading ramp). "
+                     "Also gives Shuffle more room to work with.",
             adjustment=Gtk.Adjustment(value=state["overfetch"], lower=0, upper=999, step_increment=1),
             digits=0,
         )
@@ -210,8 +210,8 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         sel_group.add(overfetch_row)
 
         keep_custom_row = Adw.SwitchRow(
-            title="Mantener colores editados/agregados",
-            subtitle="Al regenerar, preservarlos en su mismo lugar en vez de descartarlos.",
+            title="Keep edited/added colors",
+            subtitle="When regenerating, preserve them in place instead of discarding them.",
         )
         keep_custom_row.set_active(state["keep_custom"])
 
@@ -223,9 +223,9 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         sel_group.add(keep_custom_row)
 
         eco_row = Adw.SwitchRow(
-            title="Modo eco (contraste solo por luminancia)",
-            subtitle="En las parejas foreground/background vinculadas que contrastan por luminancia, "
-                     "forzar el mismo tono en vez de dejar que cada una mantenga el suyo.",
+            title="Eco mode (contrast by luminance only)",
+            subtitle="For linked foreground/background pairs that contrast by luminance, force the same "
+                     "hue instead of letting each keep its own.",
         )
         eco_row.set_active(state["eco"])
 
@@ -237,9 +237,9 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
         sel_group.add(eco_row)
 
         hallucinate_row = Adw.SwitchRow(
-            title="Alucinar acento en fondos monocromáticos",
-            subtitle="Si la imagen es monocromática, sintetizar un acento saturado + un ramp de "
-                     "shading a partir de él en vez de una paleta gris de verdad.",
+            title="Hallucinate an accent on monochrome backgrounds",
+            subtitle="If the source image is monochrome, synthesize a saturated accent + a shading "
+                     "ramp off it instead of a genuinely gray palette.",
         )
         hallucinate_row.set_active(state["hallucinate"])
 
@@ -253,9 +253,9 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
     else:
         note = Adw.PreferencesGroup()
         note.add(Adw.ActionRow(
-            title="Paleta creada a mano",
-            subtitle="Los modificadores de selección (modo, scoring, shuffle…) solo aplican a "
-                     "paletas generadas desde una imagen.",
+            title="Hand-created palette",
+            subtitle="Selection modifiers (mode, scoring, shuffle…) only apply to "
+                     "palettes generated from an image.",
         ))
         page.add(note)
 
@@ -264,7 +264,7 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
     image_path = cd.expand_path(meta.get("image") or "")
     if generated and image_path and os.path.isfile(image_path):
         image_caption = Gtk.Label(
-            label=f"Wallpaper ligado a paleta\nRuta: {image_path}",
+            label=f"Wallpaper linked to palette\nPath: {image_path}",
             xalign=0, wrap=True, justify=Gtk.Justification.LEFT,
             css_classes=["dim-label", "caption"],
             margin_start=12, margin_end=12, margin_top=8,
@@ -280,7 +280,7 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
 
     content_box.append(page)
 
-    preview_title = Gtk.Label(label="Vista previa", xalign=0, css_classes=["heading"],
+    preview_title = Gtk.Label(label="Preview", xalign=0, css_classes=["heading"],
                               margin_start=12, margin_top=6)
     content_box.append(preview_title)
     preview_scroller = Gtk.ScrolledWindow(
@@ -291,10 +291,10 @@ def show_palette_modifiers(parent: Gtk.Widget, config, palette_path, on_applied)
     content_box.append(preview_scroller)
     content_box.append(warn_label)
 
-    cancel_button = Gtk.Button(label="Cancelar")
-    apply_button = Gtk.Button(label="Aplicar cambios", css_classes=["suggested-action"])
+    cancel_button = Gtk.Button(label="Cancel")
+    apply_button = Gtk.Button(label="Apply changes", css_classes=["suggested-action"])
     dialog = _build_dialog_shell(
-        "Modificadores", content_box, [cancel_button, apply_button],
+        "Modifiers", content_box, [cancel_button, apply_button],
         width=500, height=640,
     )
 

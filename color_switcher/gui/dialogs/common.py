@@ -32,7 +32,7 @@ def resolve_gif_safe_image_source(image_path: str) -> str:
     dependency already (see palette_generator/color_entry.py), so for .gif
     we bake just the first frame to a cached PNG and point the widget at
     that instead. Any other format is returned untouched. Shared by the
-    wallpaper preview panel and the "Gestionar paletas" thumbnails."""
+    wallpaper preview panel and the "Manage palettes" thumbnails."""
     if not image_path.lower().endswith(".gif"):
         return image_path
     try:
@@ -108,7 +108,7 @@ def _build_dialog_shell(title: str, content: Gtk.Widget, footer_buttons: list,
 def ask_confirm(parent: Gtk.Widget, heading: str, body: str, ok_label: str, on_confirm,
                  destructive: bool = False):
     dialog = Adw.AlertDialog.new(heading, body)
-    dialog.add_response("cancel", "Cancelar")
+    dialog.add_response("cancel", "Cancel")
     dialog.add_response("ok", ok_label)
     dialog.set_response_appearance(
         "ok", Adw.ResponseAppearance.DESTRUCTIVE if destructive else Adw.ResponseAppearance.SUGGESTED
@@ -127,7 +127,7 @@ def ask_confirm(parent: Gtk.Widget, heading: str, body: str, ok_label: str, on_c
 def ask_choice(parent: Gtk.Widget, heading: str, body: str, choices: list, on_choice,
                extra_child: Gtk.Widget = None):
     """Generic N-way Adw.AlertDialog (ask_confirm generalized past a single
-    ok/cancel) -- used for the "usar la paleta existente / regenerar" reuse
+    ok/cancel) -- used for the "use existing palette / regenerate" reuse
     prompt, and any future 3+-way confirm. choices: [(response_id, label,
     appearance_or_None), ...]; appearance is an Adw.ResponseAppearance.* or
     None for the default look. A "cancel" response is always added and never
@@ -136,7 +136,7 @@ def ask_choice(parent: Gtk.Widget, heading: str, body: str, choices: list, on_ch
     dialog = Adw.AlertDialog.new(heading, body)
     if extra_child is not None:
         dialog.set_extra_child(extra_child)
-    dialog.add_response("cancel", "Cancelar")
+    dialog.add_response("cancel", "Cancel")
     for response_id, label, appearance in choices:
         dialog.add_response(response_id, label)
         if appearance is not None:
@@ -158,7 +158,7 @@ def prompt_text(parent: Gtk.Widget, heading: str, body: str, placeholder: str, o
     entry = Gtk.Entry(placeholder_text=placeholder)
     entry.set_activates_default(True)
     dialog.set_extra_child(entry)
-    dialog.add_response("cancel", "Cancelar")
+    dialog.add_response("cancel", "Cancel")
     dialog.add_response("ok", ok_label)
     dialog.set_response_appearance("ok", Adw.ResponseAppearance.SUGGESTED)
     dialog.set_default_response("ok")
@@ -197,9 +197,9 @@ def prompt_add_color(parent: Gtk.Widget, on_add):
         prompt_text(
             parent,
             f"Color #{hex_value}",
-            "Etiqueta para este color en la paleta (opcional):",
-            "ej: primary",
-            "Agregar",
+            "Label for this color in the palette (optional):",
+            "e.g. primary",
+            "Add",
             _on_label,
         )
 
@@ -227,8 +227,8 @@ def prompt_pick_color(parent: Gtk.Widget, on_pick, initial_hex=None):
 
 
 def pick_import_palette_file(parent: Gtk.Widget, on_selected):
-    file_dialog = Gtk.FileDialog(title="Importar paleta CSV")
-    csv_filter = Gtk.FileFilter(name="Paleta CSV")
+    file_dialog = Gtk.FileDialog(title="Import palette CSV")
+    csv_filter = Gtk.FileFilter(name="Palette CSV")
     csv_filter.add_pattern("*.csv")
     filters = Gio.ListStore.new(Gtk.FileFilter)
     filters.append(csv_filter)
@@ -245,9 +245,9 @@ def pick_import_palette_file(parent: Gtk.Widget, on_selected):
 
 
 def pick_image_file(parent: Gtk.Widget, on_selected):
-    file_dialog = Gtk.FileDialog(title="Elegir imagen (wallpaper)")
-    image_filter = Gtk.FileFilter(name="Imágenes")
-    for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp"):
+    file_dialog = Gtk.FileDialog(title="Choose image (wallpaper)")
+    image_filter = Gtk.FileFilter(name="Images")
+    for pattern in ("*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp", "*.gif"):
         image_filter.add_pattern(pattern)
     filters = Gio.ListStore.new(Gtk.FileFilter)
     filters.append(image_filter)

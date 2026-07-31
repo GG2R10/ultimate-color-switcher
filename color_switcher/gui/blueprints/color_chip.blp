@@ -48,7 +48,7 @@ template $ColorChip: Gtk.Box {
           icon-name: "dialog-warning-symbolic";
           css-classes: ["warning"];
           visible: false;
-          tooltip-text: _("Este color puede generar conflictos");
+          tooltip-text: "This color may cause conflicts";
         }
       }
 
@@ -64,14 +64,14 @@ template $ColorChip: Gtk.Box {
       valign: center;
       visible: false;
       css-classes: ["flat"];
-      tooltip-text: _("Ver archivos");
+      tooltip-text: "View files";
     }
 
     Gtk.Button role_button {
       valign: center;
       visible: false;
       css-classes: ["flat", "role-badge"];
-      tooltip-text: _("Sin rol de contraste -- clic para ciclar: sin marcar → background → foreground");
+      tooltip-text: "No contrast role -- click to cycle: none → background → foreground";
     }
 
     Gtk.Button add_button {
@@ -79,7 +79,7 @@ template $ColorChip: Gtk.Box {
       valign: center;
       visible: false;
       css-classes: ["flat"];
-      tooltip-text: _("Agregar al mapping");
+      tooltip-text: "Add to mapping";
     }
 
     Gtk.Button edit_button {
@@ -87,7 +87,7 @@ template $ColorChip: Gtk.Box {
       valign: center;
       visible: false;
       css-classes: ["flat"];
-      tooltip-text: _("Editar este color");
+      tooltip-text: "Edit this color";
     }
 
     Gtk.Button delete_button {
@@ -95,7 +95,7 @@ template $ColorChip: Gtk.Box {
       valign: center;
       visible: false;
       css-classes: ["flat"];
-      tooltip-text: _("Borrar este color de la paleta");
+      tooltip-text: "Delete this color from the palette";
     }
 
     Gtk.Button remove_button {
@@ -103,7 +103,7 @@ template $ColorChip: Gtk.Box {
       valign: center;
       visible: false;
       css-classes: ["flat"];
-      tooltip-text: _("Quitar del mapping");
+      tooltip-text: "Remove from mapping";
     }
 
     Gtk.Box move_box {
@@ -115,14 +115,14 @@ template $ColorChip: Gtk.Box {
         icon-name: "go-up-symbolic";
         visible: false;
         css-classes: ["flat"];
-        tooltip-text: _("Mover arriba");
+        tooltip-text: "Move up";
       }
 
       Gtk.Button move_down_button {
         icon-name: "go-down-symbolic";
         visible: false;
         css-classes: ["flat"];
-        tooltip-text: _("Mover abajo");
+        tooltip-text: "Move down";
       }
     }
   }

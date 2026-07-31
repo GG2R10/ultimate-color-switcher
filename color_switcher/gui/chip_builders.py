@@ -57,7 +57,7 @@ def build_palette_chip(entry, number=None, warning=None, usage_count=0, role_cb=
     chip.set_hex_text(f"#{entry['hex']}")
     label = entry.get("label", "")
     if usage_count:
-        label = f"{label + ' · ' if label else ''}usado {usage_count}x"
+        label = f"{label + ' · ' if label else ''}used {usage_count}x"
     chip.set_meta_text(label)
     chip.set_number(number)
     chip.set_warning(warning)
@@ -70,8 +70,8 @@ def build_palette_chip(entry, number=None, warning=None, usage_count=0, role_cb=
 def build_empty_target_chip(number, warning=None) -> ColorChip:
     chip = ColorChip()
     chip.swatch.add_css_class("swatch-empty")
-    chip.set_hex_text("Sin asignar")
-    chip.set_meta_text("Elegí un color de la paleta →")
+    chip.set_hex_text("Unassigned")
+    chip.set_meta_text("Pick a color from the palette →")
     chip.set_number(number)
     chip.set_warning(warning)
     return chip
@@ -86,7 +86,7 @@ def build_swatch_circle(hex_value, size=18, tooltip=None) -> Gtk.Box:
     if hex_value is None:
         return Gtk.Box(width_request=size, height_request=size,
                        css_classes=["swatch-empty-circle"], valign=Gtk.Align.CENTER,
-                       tooltip_text=tooltip or "Sin vincular")
+                       tooltip_text=tooltip or "Not linked")
     css_class = register_swatch_color(hex_value)
     return Gtk.Box(width_request=size, height_request=size,
                    css_classes=["color-swatch-circle", css_class], valign=Gtk.Align.CENTER,
@@ -117,7 +117,7 @@ def build_mapping_preview_row(old_hex, new_hex, warning=None) -> Gtk.Box:
     else:
         box.append(Gtk.Box(width_request=22, height_request=22,
                            css_classes=["swatch-empty-circle"],
-                           tooltip_text="Sin asignar"))
+                           tooltip_text="Unassigned"))
 
     if warning:
         box.append(Gtk.Image(icon_name="dialog-warning-symbolic", pixel_size=14, tooltip_text=warning))

@@ -57,6 +57,16 @@ class Config:
         return os.path.join(self.palettes_created_dir, "generated.csv")
 
     @property
+    def wallpaper_state_file(self) -> str:
+        """Plain-text record of the current wallpaper (one path, no trailing
+        content), rewritten on every real apply/restore -- unlike
+        $UCS_WALLPAPER (only visible to the restart-action child processes
+        launched at that moment), this lives on disk so any script, run at
+        any later time from anywhere, can read it (see
+        restart_actions.write_wallpaper_state)."""
+        return os.path.join(self.project_dir, "wallpaper")
+
+    @property
     def color_roles_json(self) -> str:
         """Cosmetic foreground/background role tags for detected colors,
         keyed by "type:hex" -- deliberately its own file, separate from

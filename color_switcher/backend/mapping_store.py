@@ -191,11 +191,11 @@ def resolve_apply_targets(entries: list, new_palette: list) -> dict:
         remap = {v: i + 1 for i, v in enumerate(distinct)}
         final_entries = [{"old_id": e["old_id"], "new_id": remap[e["new_id"]]} for e in entries]
         warning = (
-            f"La paleta tiene {available} color(es), menos que el máximo id referenciado "
-            f"por el mapping ({max_new_id}). Se reasignó por orden de valor a los "
-            f"{len(distinct)} distintos usados -- el orden de asignación de tu mapping "
-            "CAMBIÓ y podría romper temas que ya habías afinado. Revisá el resultado antes "
-            "de confiar en él."
+            f"The palette has {available} color(s), less than the highest id referenced "
+            f"by the mapping ({max_new_id}). It was reassigned by value order across the "
+            f"{len(distinct)} distinct ones used -- your mapping's assignment order "
+            "CHANGED and could break themes you'd already fine-tuned. Review the result before "
+            "trusting it."
         )
         return {"tier": "compacted", "final_entries": final_entries, "needed": len(distinct),
                 "available": available, "max_new_id": max_new_id, "warning": warning}

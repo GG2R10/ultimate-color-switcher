@@ -139,13 +139,13 @@ class MainWindow(Adw.ApplicationWindow):
 
             dialogs.ask_confirm(
                 self,
-                "Desactivar vínculo automático hex/rgb",
-                "Un mismo color real puede aparecer en tus archivos tanto en formato hex como en rgb. "
-                "Con el vínculo desactivado vas a tener que agregar y asignar cada formato por separado, "
-                "y si igual les asignás el mismo color a mano no vas a recibir ningún aviso especial "
-                "(se van a tratar como dos colores independientes que casualmente coinciden).\n\n"
-                "¿Desactivar de todas formas?",
-                "Desactivar",
+                "Disable automatic hex/rgb linking",
+                "The same real color can appear in your files in both hex and rgb format. "
+                "With linking disabled you'll have to add and assign each format separately, "
+                "and if you assign them the same color by hand anyway you won't get any special "
+                "warning (they'll be treated as two independent colors that just happen to match).\n\n"
+                "Disable anyway?",
+                "Disable",
                 do_disable,
                 destructive=True,
             )
@@ -163,7 +163,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _action_new_palette(self, _action, _param):
         dialogs.prompt_text(
-            self, "Nueva paleta", "Nombre del archivo (sin .csv):", "mi-paleta", "Crear",
+            self, "New palette", "File name (without .csv):", "my-palette", "Create",
             self._on_new_palette_name,
         )
 
@@ -175,7 +175,7 @@ class MainWindow(Adw.ApplicationWindow):
         path = os.path.join(self.config.palettes_created_dir, name)
         palette_store.write_palette_csv(path, [])
         self._set_new_palette(path, [])
-        dialogs.toast(self.toast_overlay, f"Paleta creada: {os.path.basename(path)}")
+        dialogs.toast(self.toast_overlay, f"Palette created: {os.path.basename(path)}")
 
     def _action_import_palette(self, _action, _param):
         dialogs.pick_import_palette_file(self, self._on_import_palette_selected)
@@ -183,14 +183,14 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_import_palette_selected(self, path):
         entries = palette_store.read_palette_csv(path)
         self._set_new_palette(path, entries)
-        dialogs.toast(self.toast_overlay, f"Paleta importada: {len(entries)} color(es)")
+        dialogs.toast(self.toast_overlay, f"Palette imported: {len(entries)} color(s)")
 
     def _action_save_palette_as(self, _action, _param):
         if not self.new_palette_path:
-            dialogs.toast(self.toast_overlay, "Primero creá, importá o generá una paleta.")
+            dialogs.toast(self.toast_overlay, "First create, import, or generate a palette.")
             return
         dialogs.prompt_text(
-            self, "Guardar paleta como…", "Nombre del archivo (sin .csv):", "mi-paleta-copia", "Guardar",
+            self, "Save palette as…", "File name (without .csv):", "my-palette-copy", "Save",
             self._on_save_palette_as_name,
         )
 
@@ -201,7 +201,7 @@ class MainWindow(Adw.ApplicationWindow):
             name += ".csv"
         new_path = os.path.join(self.config.palettes_created_dir, name)
         if os.path.abspath(new_path) == os.path.abspath(self.new_palette_path):
-            dialogs.toast(self.toast_overlay, "Elegí un nombre distinto al de la paleta actual.")
+            dialogs.toast(self.toast_overlay, "Pick a different name than the current palette's.")
             return
         entries = palette_store.read_palette_csv(self.new_palette_path)
         meta = palette_store.read_palette_meta(self.new_palette_path)
@@ -217,11 +217,11 @@ class MainWindow(Adw.ApplicationWindow):
         meta["image"] = None
         palette_store.write_palette_csv(new_path, entries, meta=meta)
         self._set_new_palette(new_path, entries)
-        dialogs.toast(self.toast_overlay, f"Guardado como: {os.path.basename(new_path)}")
+        dialogs.toast(self.toast_overlay, f"Saved as: {os.path.basename(new_path)}")
 
     def _action_add_color(self, _action, _param):
         if not self.new_palette_path:
-            dialogs.toast(self.toast_overlay, "Primero creá o importá una paleta.")
+            dialogs.toast(self.toast_overlay, "First create or import a palette.")
             return
         dialogs.prompt_add_color(self, self._on_add_color)
 
@@ -247,11 +247,11 @@ class MainWindow(Adw.ApplicationWindow):
             return
         self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
         self._refresh_all()
-        dialogs.toast(self.toast_overlay, f"Color editado a #{new_hex}.")
+        dialogs.toast(self.toast_overlay, f"Color changed to #{new_hex}.")
 
     def _on_palette_delete(self, entry):
         dialogs.ask_confirm(
-            self, "Borrar color", f"¿Borrar el color #{entry['hex']} de la paleta?", "Borrar",
+            self, "Delete color", f"Delete color #{entry['hex']} from the palette?", "Delete",
             lambda: self._do_palette_delete(entry), destructive=True,
         )
 
@@ -268,9 +268,9 @@ class MainWindow(Adw.ApplicationWindow):
             dropped = self.mapping.drop_and_shift_new_id(deleted_id)
         self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
         self._refresh_all()
-        msg = "Color borrado."
+        msg = "Color deleted."
         if dropped:
-            msg += f" {dropped} asignación(es) quedaron sin color."
+            msg += f" {dropped} assignment(s) were left unassigned."
         dialogs.toast(self.toast_overlay, msg)
 
     def _action_generate_palette(self, _action, _param):
@@ -286,20 +286,20 @@ class MainWindow(Adw.ApplicationWindow):
             self._ask_reuse_or_regenerate(image_path, existing[0])
             return
         dialogs.prompt_text(
-            self, "Generar paleta", "¿Cuántos colores generar?", "6", "Generar",
+            self, "Generate palette", "How many colors to generate?", "6", "Generate",
             lambda text: self._on_generate_palette_count(image_path, text),
         )
 
     def _ask_reuse_or_regenerate(self, image_path, existing_path):
         n = len(palette_store.read_palette_csv(existing_path))
         body = (
-            f"Ya existe una paleta generada para esta imagen ({n} color(es)), en:\n{existing_path}\n\n"
-            "¿Usar la que ya está (recomendado) o regenerarla desde cero?"
+            f"A palette generated from this image already exists ({n} color(s)), at:\n{existing_path}\n\n"
+            "Use the existing one (recommended) or regenerate it from scratch?"
         )
         dialogs.ask_choice(
-            self, "Paleta ya existente", body,
-            [("use", "Usar la existente", Adw.ResponseAppearance.SUGGESTED),
-             ("regenerate", "Regenerar", Adw.ResponseAppearance.DESTRUCTIVE)],
+            self, "Palette already exists", body,
+            [("use", "Use existing", Adw.ResponseAppearance.SUGGESTED),
+             ("regenerate", "Regenerate", Adw.ResponseAppearance.DESTRUCTIVE)],
             lambda choice: self._on_reuse_or_regenerate_choice(choice, image_path, existing_path),
         )
 
@@ -307,11 +307,11 @@ class MainWindow(Adw.ApplicationWindow):
         if choice == "use":
             entries = palette_store.read_palette_csv(existing_path)
             self._set_new_palette(existing_path, entries)
-            dialogs.toast(self.toast_overlay, f"Usando la paleta existente: {len(entries)} color(es).")
+            dialogs.toast(self.toast_overlay, f"Using the existing palette: {len(entries)} color(s).")
             return
         n_colors = len(palette_store.read_palette_csv(existing_path)) or 6
         dialogs.prompt_text(
-            self, "Regenerar paleta", "¿Cuántos colores generar?", str(n_colors), "Regenerar",
+            self, "Regenerate palette", "How many colors to generate?", str(n_colors), "Regenerate",
             lambda text: self._on_generate_palette_count(image_path, text, out_path=existing_path),
         )
 
@@ -344,25 +344,25 @@ class MainWindow(Adw.ApplicationWindow):
                 # Explicit overrides, not left as None: otherwise a target
                 # out_path that already exists would have its OWN stored
                 # keep_custom_on_regen/hallucinate_on_monochrome/eco_contrast
-                # win over whatever's configured in "Configurar generación de
-                # paleta…", silently ignoring it.
+                # win over whatever's configured in "Configure palette
+                # generation…", silently ignoring it.
                 keep_custom="on" if settings.get("keep_custom_on_regen", True) else "off",
                 hallucinate="on" if settings.get("hallucinate_on_monochrome", True) else "off",
                 eco="on" if settings.get("eco_contrast", False) else "off",
             )
         except Exception as e:
-            dialogs.toast(self.toast_overlay, f"No se pudo generar la paleta: {e}")
+            dialogs.toast(self.toast_overlay, f"Couldn't generate the palette: {e}")
             return
 
         self._set_new_palette(path, entries)
         base = os.path.splitext(os.path.basename(image_path))[0]
-        dialogs.toast(self.toast_overlay, f"Paleta generada: {len(entries)} color(es) desde {base}")
+        dialogs.toast(self.toast_overlay, f"Palette generated: {len(entries)} color(s) from {base}")
         for w in warnings:
             dialogs.toast(self.toast_overlay, f"⚠ {w}")
 
     def _action_modifiers(self, _action, _param):
         if not self.new_palette_path or not self.new_palette:
-            dialogs.toast(self.toast_overlay, "Primero generá o importá una paleta con colores.")
+            dialogs.toast(self.toast_overlay, "First generate or import a palette with colors.")
             return
         dialogs.show_palette_modifiers(
             self, self.config, self.new_palette_path, on_applied=self._on_modifiers_applied,
@@ -373,11 +373,11 @@ class MainWindow(Adw.ApplicationWindow):
         # the main window shows the new colors and re-runs the conflict checks.
         entries = palette_store.read_palette_csv(path)
         self._set_new_palette(path, entries)
-        dialogs.toast(self.toast_overlay, "Modificadores aplicados a la paleta.")
+        dialogs.toast(self.toast_overlay, "Modifiers applied to the palette.")
 
     def _on_palette_image_clicked(self, _button):
         if not self.new_palette_path:
-            dialogs.toast(self.toast_overlay, "Primero creá o importá una paleta.")
+            dialogs.toast(self.toast_overlay, "First create or import a palette.")
             return
         dialogs.pick_image_file(self, self._on_palette_preview_image_picked)
 
@@ -389,7 +389,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _action_snapshot_detect(self, _action, _param):
         dialogs.prompt_text(
-            self, "Guardar snapshot", "Nombre del snapshot (sin .csv):", "detected-manual", "Guardar",
+            self, "Save snapshot", "Snapshot name (without .csv):", "detected-manual", "Save",
             self._on_snapshot_name,
         )
 
@@ -397,7 +397,7 @@ class MainWindow(Adw.ApplicationWindow):
         if not name:
             return
         dest = detect_diff.save_snapshot(self.config, self.detected_colors, name)
-        dialogs.toast(self.toast_overlay, f"Guardado: {os.path.basename(dest)}")
+        dialogs.toast(self.toast_overlay, f"Saved: {os.path.basename(dest)}")
 
     def _action_restart_actions(self, _action, _param):
         dialogs.show_restart_actions_settings(self, self.config)
@@ -409,7 +409,14 @@ class MainWindow(Adw.ApplicationWindow):
         dialogs.show_other_settings(self, self.config)
 
     def _action_manage_palettes(self, _action, _param):
-        dialogs.show_manage_palettes(self, self.config, on_change=self._on_manage_palettes_changed)
+        dialogs.show_manage_palettes(
+            self, self.config, on_change=self._on_manage_palettes_changed, on_load=self._on_load_palette_from_manager,
+        )
+
+    def _on_load_palette_from_manager(self, path):
+        entries = palette_store.read_palette_csv(path)
+        self._set_new_palette(path, entries)
+        dialogs.toast(self.toast_overlay, f"Loaded: {os.path.basename(path)}")
 
     def _on_manage_palettes_changed(self):
         """A palette/mapping was deleted from the manager -- re-sync this
@@ -527,7 +534,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
 
         self._refresh_all()
-        self.status_label.set_label(f"{len(colors)} color(es) detectado(s).")
+        self.status_label.set_label(f"{len(colors)} color(s) detected.")
 
     # ------------------------------------------------------------------ groups
 
@@ -620,7 +627,7 @@ class MainWindow(Adw.ApplicationWindow):
         of color_roles.json, see color_detector.set_pair) with a small
         swatch showing the current link at a glance. A BACKGROUND-tagged
         group is ALSO interactive -- each currently-linked foreground shows
-        its own swatch + an unlink button, plus a "vincular otro
+        its own swatch + an unlink button, plus a "link another
         foreground" selector to add more (many-to-one: unlike the palette
         side, one background can have several linked foregrounds
         simultaneously, so this can't be a single-select dropdown the way
@@ -666,7 +673,7 @@ class MainWindow(Adw.ApplicationWindow):
             current_pair_hex = current_pair.split(":", 1)[1] if current_pair else None
             box.append(_build_swatch_circle(current_pair_hex, size=16))
 
-            options = ["(sin vincular)"] + [f"#{hex_val}" for _k, hex_val in backgrounds]
+            options = ["(not linked)"] + [f"#{hex_val}" for _k, hex_val in backgrounds]
             dropdown = Gtk.DropDown(model=Gtk.StringList.new(options))
             selected = 0
             for i, (_k, hex_val) in enumerate(backgrounds, start=1):
@@ -719,7 +726,7 @@ class MainWindow(Adw.ApplicationWindow):
                 row.append(Gtk.Label(label=f"Foreground → #{fg_hex}", xalign=0,
                                      css_classes=["dim-label", "caption"], hexpand=True))
                 unlink_button = Gtk.Button(icon_name="edit-clear-symbolic", css_classes=["flat", "circular"],
-                                           tooltip_text="Desvincular", valign=Gtk.Align.CENTER)
+                                           tooltip_text="Unlink", valign=Gtk.Align.CENTER)
 
                 def on_unlink(_b, fg_hex=fg_hex):
                     fg_group = self._group_for_hex(fg_hex)
@@ -733,7 +740,7 @@ class MainWindow(Adw.ApplicationWindow):
             if candidates:
                 add_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
                 add_row.append(Gtk.Label(label="+ Foreground →", css_classes=["dim-label", "caption"]))
-                options = ["(vincular otro foreground)"] + [f"#{h}" for h in candidates]
+                options = ["(link another foreground)"] + [f"#{h}" for h in candidates]
                 add_dropdown = Gtk.DropDown(model=Gtk.StringList.new(options))
 
                 bg_key = color_detector.role_key(group[0]["type"], own_hex)
@@ -788,7 +795,7 @@ class MainWindow(Adw.ApplicationWindow):
         self._refresh_all()
 
     def _build_palette_pair_widget(self, entry):
-        """The "Pareja -> color" selector under a palette-color chip (see
+        """The "Pair -> color" selector under a palette-color chip (see
         chip_builders.build_palette_chip's pair_widget param) -- None if
         this color has no role (pairing only makes sense between two
         role-tagged colors). Unlike the detected side (many-to-one, `pair`
@@ -806,13 +813,13 @@ class MainWindow(Adw.ApplicationWindow):
         candidates = [e for e in self.new_palette if e.get("role") == opposite]
 
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6, valign=Gtk.Align.CENTER)
-        box.append(Gtk.Label(label="Pareja →", css_classes=["dim-label", "caption"]))
+        box.append(Gtk.Label(label="Pair →", css_classes=["dim-label", "caption"]))
 
         current_pair_id = entry.get("paired_id")
         current_pair_hex = next((c["hex"] for c in candidates if c["id"] == current_pair_id), None)
         box.append(_build_swatch_circle(current_pair_hex, size=16))
 
-        options = ["(sin vincular)"] + [f"#{c['hex']} (id {c['id']})" for c in candidates]
+        options = ["(not linked)"] + [f"#{c['hex']} (id {c['id']})" for c in candidates]
         dropdown = Gtk.DropDown(model=Gtk.StringList.new(options))
         selected = 0
         for i, c in enumerate(candidates, start=1):
@@ -847,7 +854,7 @@ class MainWindow(Adw.ApplicationWindow):
             return role == "background"
         if idx == 3:
             return role is None
-        return True  # idx == 0 ("Todos"), or nothing selected yet
+        return True  # idx == 0 ("All"), or nothing selected yet
 
     def _on_palette_role_filter_changed(self, _dropdown, _pspec):
         self._refresh_palette_list()
@@ -965,7 +972,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _refresh_wallpaper_panel(self):
         self.mapping_palette_header.set_label(
-            f"Mapping de la paleta: {self.new_palette_path or '(ninguna)'}"
+            f"Palette mapping: {self.new_palette_path or '(none)'}"
         )
         image_path = None
         if self.new_palette_path:
@@ -1052,10 +1059,10 @@ class MainWindow(Adw.ApplicationWindow):
         config_root = os.path.join(os.path.expanduser("~"), ".config")
         for folder, files in color_detector.group_paths_by_top_level(sorted(all_files)):
             if folder == config_root:
-                title = f"{to_home_relative(folder)}  ·  sueltos"
+                title = f"{to_home_relative(folder)}  ·  loose"
             else:
                 title = to_home_relative(folder)
-            expander = Adw.ExpanderRow(title=title, subtitle=f"{len(files)} archivo(s)")
+            expander = Adw.ExpanderRow(title=title, subtitle=f"{len(files)} file(s)")
             expander.set_expanded(True)
 
             for abs_path, display in files:
@@ -1148,9 +1155,9 @@ class MainWindow(Adw.ApplicationWindow):
 
             group_old_ids = {m["id"] for m in group_members}
             if group_old_ids & collision_old_ids:
-                warning = "Colisiona con otro color detectado"
+                warning = "Collides with another detected color"
             elif group_old_ids & convergence_old_ids:
-                warning = "Converge con otro color del mapping (se pierde la distinción)"
+                warning = "Converges with another color in the mapping (loses the distinction)"
             else:
                 warning = None
 
@@ -1207,8 +1214,8 @@ class MainWindow(Adw.ApplicationWindow):
             collisions = conflicts.find_case1_collisions(self.detected_colors, self.new_palette, resolved)
             for c in collisions:
                 text = (
-                    f"El color #{c['new_hex']} elegido para el id {c['old_id']} ya existe en la paleta "
-                    f"detectada (id {c['conflict_with_ids']}). Puede romper el reemplazo de ese otro color."
+                    f"Color #{c['new_hex']} chosen for id {c['old_id']} already exists in the detected "
+                    f"palette (id {c['conflict_with_ids']}). This may break the replacement of that other color."
                 )
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
@@ -1218,8 +1225,8 @@ class MainWindow(Adw.ApplicationWindow):
             )
             for c in convergence:
                 text = (
-                    f"Los colores con id {c['old_ids']} van a terminar todos en #{c['target_hex']}. "
-                    "Si no era intencional, vas a perder la distinción entre ellos en un futuro re-escaneo."
+                    f"Colors with id {c['old_ids']} will all end up as #{c['target_hex']}. "
+                    "If that wasn't intentional, you'll lose the distinction between them on a future re-scan."
                 )
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
@@ -1230,9 +1237,9 @@ class MainWindow(Adw.ApplicationWindow):
             )
             for m in role_mismatches:
                 text = (
-                    f"El color detectado id {m['old_id']} está marcado como {m['detected_role']}, pero se "
-                    f"está mapeando a un color de paleta (id {m['new_id']}) marcado como {m['palette_role']}. "
-                    "Puede generar mal contraste."
+                    f"Detected color id {m['old_id']} is marked as {m['detected_role']}, but it's being "
+                    f"mapped to a palette color (id {m['new_id']}) marked as {m['palette_role']}. "
+                    "This may cause poor contrast."
                 )
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
@@ -1242,31 +1249,31 @@ class MainWindow(Adw.ApplicationWindow):
             )
             for m in pair_mismatches:
                 text = (
-                    f"Los colores detectados id {m['fg_old_id']} (foreground) e id {m['bg_old_id']} "
-                    f"(background) están vinculados como pareja, pero se mapean a colores de paleta "
-                    f"(id {m['fg_new_id']} / id {m['bg_new_id']}) que no están vinculados entre sí. "
-                    "Puede generar mal contraste."
+                    f"Detected colors id {m['fg_old_id']} (foreground) and id {m['bg_old_id']} "
+                    f"(background) are linked as a pair, but they map to palette colors "
+                    f"(id {m['fg_new_id']} / id {m['bg_new_id']}) that aren't linked to each other. "
+                    "This may cause poor contrast."
                 )
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
 
             for d in self._mapping_drift.get("driftable", []):
                 text = (
-                    f"El color detectado id {d['old_id']} (#{d['hex']}) parece haberse movido al "
-                    f"id {d['correct_old_id']} en el último escaneo."
+                    f"Detected color id {d['old_id']} (#{d['hex']}) seems to have moved to "
+                    f"id {d['correct_old_id']} in the last scan."
                 )
                 # The button resolves EVERY pending drift finding at once (not
                 # just this row) -- they were all computed from the same scan,
                 # and the most common case (two colors trading rank) can only
                 # be fixed correctly as one atomic batch, never one at a time
                 # (see mapping_store.apply_drift_relinks).
-                self.warnings_box.append(_build_warning_row(text, "Re-vincular", self._on_relink_drift))
+                self.warnings_box.append(_build_warning_row(text, "Re-link", self._on_relink_drift))
                 added_any = True
 
             for d in self._mapping_drift.get("orphaned", []):
                 text = (
-                    f"El color mapeado id {d['old_id']} (#{d['hex']}) ya no aparece en tus archivos "
-                    "escaneados."
+                    f"Mapped color id {d['old_id']} (#{d['hex']}) no longer appears in your "
+                    "scanned files."
                 )
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
@@ -1274,8 +1281,8 @@ class MainWindow(Adw.ApplicationWindow):
             unpaired = color_detector.tagged_without_pair(detected_roles)
             if unpaired:
                 text = (
-                    f"{len(unpaired)} color(es) detectado(s) están marcados foreground/background pero "
-                    "sin pareja vinculada: no se toman en cuenta para la generación."
+                    f"{len(unpaired)} detected color(s) are marked foreground/background but have no "
+                    "linked pair: they aren't taken into account for generation."
                 )
                 self.warnings_box.append(_build_warning_row(text))
                 added_any = True
@@ -1298,12 +1305,12 @@ class MainWindow(Adw.ApplicationWindow):
                                 continue
                             seen_pairs.add(pair)
                             text = (
-                                f"El id {old_id} (#{color['color']}) también aparece como id {sib['id']} "
-                                f"({_TYPE_DISPLAY.get(sib['type'], sib['type'])}) y no está en el mapping."
+                                f"Id {old_id} (#{color['color']}) also appears as id {sib['id']} "
+                                f"({_TYPE_DISPLAY.get(sib['type'], sib['type'])}) and isn't in the mapping."
                             )
                             self.warnings_box.append(
                                 _build_warning_row(
-                                    text, "Agregar también",
+                                    text, "Add too",
                                     lambda o=old_id, s=sib["id"]: self._quick_link(s, o),
                                 )
                             )
@@ -1342,7 +1349,7 @@ class MainWindow(Adw.ApplicationWindow):
 
     def _on_available_palette_activated(self, _listbox, row):
         if not self.active_group_ids:
-            dialogs.toast(self.toast_overlay, "Elegí primero qué color reemplazar (columna izquierda).")
+            dialogs.toast(self.toast_overlay, "First pick which color to replace (left column).")
             return
         for oid in self.active_group_ids:
             self.mapping.add_or_update(oid, row.item_id)
@@ -1393,18 +1400,18 @@ class MainWindow(Adw.ApplicationWindow):
         changed = []
         if palette_changed:
             self.new_palette = disk_palette
-            changed.append("la paleta")
+            changed.append("the palette")
         if detected_changed:
             # Files changed under us -> re-detect so the mapping lines up with
             # the colors actually in the files now (rebuilds it from mapping.csv).
             self._finish_detection(detect_diff.run_detect(self.config), persist=True)
-            changed.append("los colores detectados")
+            changed.append("the detected colors")
         else:
             self._refresh_all()
 
         dialogs.toast(
             self.toast_overlay,
-            f"Cambios externos detectados ({' y '.join(changed)}). Recargué — revisá y volvé a aplicar.",
+            f"External changes detected ({' and '.join(changed)}). Reloaded — review and re-apply.",
         )
         return True
 
@@ -1412,7 +1419,7 @@ class MainWindow(Adw.ApplicationWindow):
         if self._reload_from_disk_if_changed():
             return  # state was stale; let the user review the refreshed palette/mapping first
         if not self.mapping or not self.mapping.resolved_entries():
-            dialogs.toast(self.toast_overlay, "No hay ningún color mapeado todavía.")
+            dialogs.toast(self.toast_overlay, "No color has been mapped yet.")
             return
 
         entries = self.mapping.resolved_entries()
@@ -1428,8 +1435,8 @@ class MainWindow(Adw.ApplicationWindow):
         if resolution["tier"] == "blocked":
             dialogs.toast(
                 self.toast_overlay,
-                f"No se puede aplicar: la paleta tiene {resolution['available']} color(es), pero "
-                f"el mapping necesita al menos {resolution['needed']} (ids distintos usados).",
+                f"Can't apply: the palette has {resolution['available']} color(s), but "
+                f"the mapping needs at least {resolution['needed']} (distinct ids used).",
             )
             return
         entries = resolution["final_entries"]
@@ -1446,17 +1453,17 @@ class MainWindow(Adw.ApplicationWindow):
             )
             total = sum(r.get("count", 0) for r in results)
             errors = [r for r in results if "error" in r]
-            verb = "Simulado" if dry_run else "Aplicado"
-            msg = f"{verb}: {total} reemplazo(s) en {len(results)} operación(es) de archivo."
+            verb = "Simulated" if dry_run else "Applied"
+            msg = f"{verb}: {total} replacement(s) across {len(results)} file operation(s)."
             if errors:
-                msg += f" ({len(errors)} error(es))"
+                msg += f" ({len(errors)} error(s))"
             dialogs.toast(self.toast_overlay, msg)
 
             if dry_run:
                 self.status_label.set_label(msg)
                 return
 
-            dialogs.toast(self.toast_overlay, f"Backup en: {self.config.backup_dir}")
+            dialogs.toast(self.toast_overlay, f"Backup at: {self.config.backup_dir}")
             role_collisions, pair_collisions = color_detector.rekey_roles_after_apply(
                 self.config.color_roles_json, self.detected_colors, self.new_palette, entries
             )
@@ -1464,13 +1471,13 @@ class MainWindow(Adw.ApplicationWindow):
                 new_keys = ", ".join(k for k, _old in role_collisions)
                 dialogs.toast(
                     self.toast_overlay,
-                    f"{len(role_collisions)} color(es) nuevo(s) quedaron sin rol asignado por convergencia: {new_keys}.",
+                    f"{len(role_collisions)} new color(s) were left without a role assigned due to convergence: {new_keys}.",
                 )
             if pair_collisions:
                 fg_keys = ", ".join(k for k, _old in pair_collisions)
                 dialogs.toast(
                     self.toast_overlay,
-                    f"{len(pair_collisions)} color(es) perdieron su vínculo bg/fg tras el apply: {fg_keys}.",
+                    f"{len(pair_collisions)} color(s) lost their bg/fg link after the apply: {fg_keys}.",
                 )
             # The colors just replaced no longer exist in the files BY
             # DESIGN -- re-stamp this mapping's identity to the NEW colors
@@ -1484,11 +1491,14 @@ class MainWindow(Adw.ApplicationWindow):
             # Files on disk just changed -- the old mapping's ids point at
             # colors that no longer exist, so re-scan and start fresh.
             self._finish_detection(detect_diff.run_detect(self.config), persist=True)
+            restart_actions.write_wallpaper_state(self.config, self.new_palette_path)
             actions = restart_actions.read_restart_actions(self.config)
-            started = restart_actions.run_enabled(actions)
+            started = restart_actions.run_enabled(
+                actions, extra_env=restart_actions.wallpaper_env(self.new_palette_path)
+            )
             if started:
                 names = ", ".join(a["label"] for a in started)
-                dialogs.toast(self.toast_overlay, f"Reiniciando: {names}")
+                dialogs.toast(self.toast_overlay, f"Restarting: {names}")
 
         if (collisions or convergence or reorder_warning) and not dry_run:
             parts = []
@@ -1496,55 +1506,59 @@ class MainWindow(Adw.ApplicationWindow):
                 parts.append(reorder_warning)
             if collisions:
                 names = ", ".join(f"id {c['old_id']}" for c in collisions)
-                parts.append(f"{len(collisions)} color(es) ({names}) ya existen en la paleta detectada.")
+                parts.append(f"{len(collisions)} color(s) ({names}) already exist in the detected palette.")
             if convergence:
                 summary = "; ".join(f"ids {c['old_ids']} → #{c['target_hex']}" for c in convergence)
-                parts.append(f"{len(convergence)} grupo(s) de colores van a converger al mismo resultado: {summary}.")
+                parts.append(f"{len(convergence)} group(s) of colors will converge to the same result: {summary}.")
             body = (
                 " ".join(parts)
-                + "\n\nEsto puede hacer que un futuro re-escaneo no pueda distinguir esos colores "
-                  "(puede ser intencional si es justo lo que buscabas). ¿Aplicar de todas formas?"
+                + "\n\nThis may make it impossible for a future re-scan to tell those colors apart "
+                  "(this may be intentional if it's exactly what you wanted). Apply anyway?"
             )
             dialogs.ask_confirm(
-                self, "Conflictos detectados", body, "Aplicar de todas formas", do_apply, destructive=True,
+                self, "Conflicts detected", body, "Apply anyway", do_apply, destructive=True,
             )
         else:
             do_apply()
 
     def _on_restore_clicked(self, _button):
         if not dialogs.backup_exists(self.config):
-            dialogs.toast(self.toast_overlay, "No se encontró ningún backup. Hacé un Aplicar real primero.")
+            dialogs.toast(self.toast_overlay, "No backup found. Do a real Apply first.")
             return
 
         def do_restore():
             results = color_replacer.restore_files(self.config.files_to_replace, self.config.backup_dir)
             restored = sum(1 for r in results if r["restored"])
-            msg = f"Restaurados {restored}/{len(results)} archivo(s) desde el backup."
+            msg = f"Restored {restored}/{len(results)} file(s) from the backup."
             dialogs.toast(self.toast_overlay, msg)
             # Files on disk just changed back -- re-scan and start fresh, same as after an apply.
             self._finish_detection(detect_diff.run_detect(self.config), persist=True)
+            restart_actions.write_wallpaper_state(self.config, self.new_palette_path)
 
             def do_restart_services():
-                started = restart_actions.run_enabled(restart_actions.read_restart_actions(self.config))
+                started = restart_actions.run_enabled(
+                    restart_actions.read_restart_actions(self.config),
+                    extra_env=restart_actions.wallpaper_env(self.new_palette_path),
+                )
                 if started:
                     names = ", ".join(a["label"] for a in started)
-                    dialogs.toast(self.toast_overlay, f"Reiniciando: {names}")
+                    dialogs.toast(self.toast_overlay, f"Restarting: {names}")
 
             dialogs.ask_confirm(
                 self,
-                "Reiniciar servicios",
-                "¿Querés reiniciar los servicios configurados para que tomen el tema restaurado?",
-                "Reiniciar",
+                "Restart services",
+                "Do you want to restart the configured services so they pick up the restored theme?",
+                "Restart",
                 do_restart_services,
             )
 
         dialogs.ask_confirm(
             self,
-            "Restaurar desde backup",
-            "Esto sobrescribe tus archivos COMPLETOS con la copia de respaldo -- no es solo deshacer "
-            "el reemplazo de colores. Cualquier cambio o código nuevo que hayas agregado a esos "
-            "archivos después del último apply se pierde.\n\n¿Restaurar de todas formas?",
-            "Restaurar",
+            "Restore from backup",
+            "This overwrites your files COMPLETELY with the backup copy -- it's not just undoing "
+            "the color replacement. Any changes or new code you've added to those files since the "
+            "last apply are lost.\n\nRestore anyway?",
+            "Restore",
             do_restore,
             destructive=True,
         )

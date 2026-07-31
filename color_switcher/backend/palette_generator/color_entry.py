@@ -19,7 +19,7 @@ from ..kmeans import kmeans as _kmeans
 class ImageLoadError(ValueError):
     """Raised when the given path can't be opened as an image (missing, a
     directory, or not a valid image file). User-facing: carries a clean
-    Spanish message the CLI/GUI can show verbatim instead of a traceback."""
+    message the CLI/GUI can show verbatim instead of a traceback."""
 
 
 def load_image_samples(image_path: str, sample_size: int = 40000, seed: int = 42):
@@ -31,14 +31,14 @@ def load_image_samples(image_path: str, sample_size: int = 40000, seed: int = 42
     # would never resolve on its own.
     image_path = expand_path(image_path)
     if not os.path.exists(image_path):
-        raise ImageLoadError(f"No existe la imagen: {image_path}")
+        raise ImageLoadError(f"Image doesn't exist: {image_path}")
     if os.path.isdir(image_path):
-        raise ImageLoadError(f"La ruta es un directorio, no una imagen: {image_path}")
+        raise ImageLoadError(f"The path is a directory, not an image: {image_path}")
     try:
         img = Image.open(image_path).convert("RGBA")
     except (UnidentifiedImageError, OSError) as e:
         raise ImageLoadError(
-            f"No se pudo abrir la imagen {image_path}: ¿es un archivo de imagen válido?"
+            f"Couldn't open image {image_path}: is it a valid image file?"
         ) from e
     pixels = np.asarray(img).reshape(-1, 4)
 
