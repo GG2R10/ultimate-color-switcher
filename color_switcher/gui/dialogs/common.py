@@ -6,15 +6,42 @@ import-palette/image file pickers, and the two small style-restyling and
 dialog-shell helpers every hand-built dialog leans on.
 """
 
+import tempfile
+import os
+
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, Gtk
+from PIL import Image
 
 
 def toast(toast_overlay: Adw.ToastOverlay, message: str, timeout: int = 3):
     toast_overlay.add_toast(Adw.Toast.new(message))
+
+
+_GIF_PREVIEW_CACHE = os.path.join(tempfile.gettempdir(), "ucs-gif-preview.png")
+
+
+def resolve_gif_safe_image_source(image_path: str) -> str:
+    """Gtk.Picture/Gtk.Image load files through the container's gdk-pixbuf
+    loaders, which may not include a GIF one at all -- unlike a missing/
+    corrupt static image, that fails to render anything rather than
+    degrading gracefully. Pillow ships its own GIF decoder as an app
+    dependency already (see palette_generator/color_entry.py), so for .gif
+    we bake just the first frame to a cached PNG and point the widget at
+    that instead. Any other format is returned untouched. Shared by the
+    wallpaper preview panel and the "Gestionar paletas" thumbnails."""
+    if not image_path.lower().endswith(".gif"):
+        return image_path
+    try:
+        with Image.open(image_path) as im:
+            im.seek(0)
+            im.convert("RGB").save(_GIF_PREVIEW_CACHE, "PNG")
+        return _GIF_PREVIEW_CACHE
+    except Exception:
+        return image_path
 
 
 def _find_by_css_class(widget: Gtk.Widget, css_class: str):

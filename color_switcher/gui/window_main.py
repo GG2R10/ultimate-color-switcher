@@ -45,6 +45,7 @@ class MainWindow(Adw.ApplicationWindow):
     modifiers_button = Gtk.Template.Child()
     available_detected_listbox = Gtk.Template.Child()
     detected_view_toggle = Gtk.Template.Child()
+    detected_search_entry = Gtk.Template.Child()
     mapping_old_listbox = Gtk.Template.Child()
     palette_left_area = Gtk.Template.Child()
     palette_empty_box = Gtk.Template.Child()
@@ -96,6 +97,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.mapping_new_listbox.connect("row-activated", self._on_mapping_new_activated)
         self.palette_image_button.connect("clicked", self._on_palette_image_clicked)
         self.detected_view_toggle.connect("toggled", self._on_detected_view_toggled)
+        self.detected_search_entry.connect("search-changed", self._on_detected_search_changed)
         self.palette_role_filter.connect("notify::selected", self._on_palette_role_filter_changed)
 
         GLib.idle_add(self._start_detection)
@@ -108,9 +110,11 @@ class MainWindow(Adw.ApplicationWindow):
             ("import-palette", self._action_import_palette),
             ("add-color", self._action_add_color),
             ("generate-palette", self._action_generate_palette),
+            ("save-palette-as", self._action_save_palette_as),
             ("modifiers", self._action_modifiers),
             ("palette-generation-settings", self._action_palette_generation_settings),
             ("other-settings", self._action_other_settings),
+            ("manage-palettes", self._action_manage_palettes),
             ("snapshot-detect", self._action_snapshot_detect),
             ("restart-actions", self._action_restart_actions),
             ("scanned-files-settings", self._action_scanned_files_settings),
@@ -154,6 +158,9 @@ class MainWindow(Adw.ApplicationWindow):
         self.detected_by_folder = toggle_button.get_active()
         self._refresh_detected_list()
 
+    def _on_detected_search_changed(self, _entry):
+        self._refresh_detected_list()
+
     def _action_new_palette(self, _action, _param):
         dialogs.prompt_text(
             self, "Nueva paleta", "Nombre del archivo (sin .csv):", "mi-paleta", "Crear",
@@ -177,6 +184,40 @@ class MainWindow(Adw.ApplicationWindow):
         entries = palette_store.read_palette_csv(path)
         self._set_new_palette(path, entries)
         dialogs.toast(self.toast_overlay, f"Paleta importada: {len(entries)} color(es)")
+
+    def _action_save_palette_as(self, _action, _param):
+        if not self.new_palette_path:
+            dialogs.toast(self.toast_overlay, "Primero creá, importá o generá una paleta.")
+            return
+        dialogs.prompt_text(
+            self, "Guardar paleta como…", "Nombre del archivo (sin .csv):", "mi-paleta-copia", "Guardar",
+            self._on_save_palette_as_name,
+        )
+
+    def _on_save_palette_as_name(self, name):
+        if not name:
+            return
+        if not name.endswith(".csv"):
+            name += ".csv"
+        new_path = os.path.join(self.config.palettes_created_dir, name)
+        if os.path.abspath(new_path) == os.path.abspath(self.new_palette_path):
+            dialogs.toast(self.toast_overlay, "Elegí un nombre distinto al de la paleta actual.")
+            return
+        entries = palette_store.read_palette_csv(self.new_palette_path)
+        meta = palette_store.read_palette_meta(self.new_palette_path)
+        # A "save as" copy is a fork, not another instance of the same
+        # generated palette -- sever its provenance link to the source image
+        # (see palette_store.find_palettes_for_image) so it's never ambiguous
+        # which palette is "the" one auto-detected/reused for that wallpaper.
+        # Keep showing the same wallpaper picture cosmetically via
+        # preview_image, which is independent of that provenance.
+        if meta.get("generated") and meta.get("image") and not meta.get("preview_image"):
+            meta["preview_image"] = meta["image"]
+        meta["generated"] = False
+        meta["image"] = None
+        palette_store.write_palette_csv(new_path, entries, meta=meta)
+        self._set_new_palette(new_path, entries)
+        dialogs.toast(self.toast_overlay, f"Guardado como: {os.path.basename(new_path)}")
 
     def _action_add_color(self, _action, _param):
         if not self.new_palette_path:
@@ -367,6 +408,23 @@ class MainWindow(Adw.ApplicationWindow):
     def _action_other_settings(self, _action, _param):
         dialogs.show_other_settings(self, self.config)
 
+    def _action_manage_palettes(self, _action, _param):
+        dialogs.show_manage_palettes(self, self.config, on_change=self._on_manage_palettes_changed)
+
+    def _on_manage_palettes_changed(self):
+        """A palette/mapping was deleted from the manager -- re-sync this
+        window's in-memory state with disk: the palette currently open here
+        (self.new_palette_path) or its mapping section may be exactly what
+        just got wiped."""
+        if self.new_palette_path and not os.path.isfile(color_detector.expand_path(self.new_palette_path)):
+            self.new_palette_path = None
+            self.new_palette = []
+        elif self.new_palette_path:
+            self.new_palette = palette_store.read_palette_csv(self.new_palette_path)
+        if self.registry is not None:
+            self.mapping = self.registry.for_active()
+        self._refresh_all()
+
     def _action_scanned_files_settings(self, _action, _param):
         dialogs.show_scanned_files_settings(self, self.config, on_change=self._on_scanned_files_changed)
 
@@ -492,17 +550,32 @@ class MainWindow(Adw.ApplicationWindow):
             ordered.append(group)
         return ordered
 
-    def _group_containing(self, old_id):
+    def _detected_group_lookup(self) -> dict:
+        """{old_id: group} for every detected color -- computes
+        _detected_groups_ordered() exactly ONCE and reuses it. Callers that
+        need a group per entry in a loop MUST build this once and look up in
+        it directly (see _refresh_mapping_lists/_mapping_groups_in_order)
+        instead of redoing the full O(detected colors) grouping from scratch
+        per entry -- fine for a single lookup, but O(entries x detected)
+        done per mapping entry. With a few hundred/thousand detected colors
+        (a realistic scan of many dotfiles) that quadratic-ish blowup is
+        exactly what made the mapping screen -- and the move-up/down
+        buttons, which refresh it -- visibly hang."""
+        lookup = {}
         for group in self._detected_groups_ordered():
-            if any(c["id"] == old_id for c in group):
-                return group
-        return None
+            for c in group:
+                lookup[c["id"]] = group
+        return lookup
 
-    def _group_role(self, group):
+    def _group_role(self, group, roles=None):
         """The role currently on file for this group's representative color
         -- role_key is by VALUE (type+hex), so this works regardless of
-        whether the group is currently in the mapping or not."""
-        roles = color_detector.read_color_roles(self.config.color_roles_json)
+        whether the group is currently in the mapping or not. roles: pass an
+        already-loaded read_color_roles() when the caller is looping over
+        many groups in one refresh, so the file isn't re-read/re-parsed per
+        group -- omit only for a genuine one-off lookup."""
+        if roles is None:
+            roles = color_detector.read_color_roles(self.config.color_roles_json)
         return color_detector.role_of(roles, color_detector.role_key(group[0]["type"], group[0]["color"]))
 
     def _on_group_role_clicked(self, group):
@@ -538,7 +611,7 @@ class MainWindow(Adw.ApplicationWindow):
                 return group
         return None
 
-    def _build_pair_widget(self, group):
+    def _build_pair_widget(self, group, roles=None, role=None):
         """The expandable "Background -> color"/"Foreground -> color"
         section under a detected-color chip (see
         chip_builders.build_group_chip's pair_widget param) -- None if
@@ -553,6 +626,12 @@ class MainWindow(Adw.ApplicationWindow):
         simultaneously, so this can't be a single-select dropdown the way
         the foreground side's is).
 
+        roles/role: pass an already-loaded read_color_roles() (and, if the
+        caller already computed it, the group's role via _group_role) when
+        looping over many groups in one refresh -- avoids re-reading
+        color_roles.json and re-deriving the role a 2nd/3rd time per row.
+        Both are computed locally if omitted, for one-off callers.
+
         Deduped/matched by hex VALUE throughout, never by exact role_key: a
         real color detected in both a "hex" and "hex_from_rgb"
         representation carries the SAME role/pairing on each independently
@@ -561,8 +640,10 @@ class MainWindow(Adw.ApplicationWindow):
         foreground could appear duplicated (or get MISSED entirely, if its
         stored `pair` happens to reference a different sibling
         representation than this group's own)."""
-        roles = color_detector.read_color_roles(self.config.color_roles_json)
-        role = self._group_role(group)
+        if roles is None:
+            roles = color_detector.read_color_roles(self.config.color_roles_json)
+        if role is None:
+            role = self._group_role(group, roles)
         own_hex = group[0]["color"]
 
         if role == "foreground":
@@ -784,6 +865,70 @@ class MainWindow(Adw.ApplicationWindow):
             self.active_group_ids = frozenset()
         self._refresh_all()
 
+    def _mapping_groups_in_order(self, group_lookup=None):
+        """The mapping's entries grouped exactly like _refresh_mapping_lists
+        numbers them (hex/rgb siblings collapsed into one row), but keeping
+        each group's actual entry dicts -- the shared basis for both
+        reordering and swapping the source of an existing mapping row.
+        group_lookup: pass an already-built _detected_group_lookup() when the
+        caller (_refresh_mapping_lists) already has one, so it isn't rebuilt
+        a second time in the same refresh. Looks up each group's entries via
+        entries_by_old_id (O(1) each) rather than rescanning self.mapping.entries
+        per group, which used to make this O(mapping entries²)."""
+        groups = []
+        visited = set()
+        entries_by_old_id = {e["old_id"]: e for e in self.mapping.entries}
+        if group_lookup is None:
+            group_lookup = self._detected_group_lookup()
+        for entry in self.mapping.entries:
+            old_id = entry["old_id"]
+            if old_id in visited:
+                continue
+            full_group = group_lookup.get(old_id) or [{"id": old_id}]
+            member_ids = {m["id"] for m in full_group} & entries_by_old_id.keys()
+            member_entries = [entries_by_old_id[oid] for oid in member_ids]
+            visited |= member_ids
+            groups.append((member_ids, member_entries))
+        return groups
+
+    def _reorder_mapping_group(self, group_old_ids, direction: int):
+        """Move the mapping row for this detected-color group one position
+        earlier (direction=-1) or later (direction=+1) among the numbered
+        mapping rows -- the "editable position" reordering the mapping
+        screen didn't have before. Siblings (hex/rgb of the same real
+        color) always move together, since they're numbered as one row."""
+        groups = self._mapping_groups_in_order()
+        idx = next((i for i, (ids, _e) in enumerate(groups) if ids == set(group_old_ids)), None)
+        if idx is None:
+            return
+        new_idx = idx + direction
+        if not (0 <= new_idx < len(groups)):
+            return
+        groups[idx], groups[new_idx] = groups[new_idx], groups[idx]
+        self.mapping.entries = [e for _ids, es in groups for e in es]
+        self.mapping.save()
+        self._refresh_all()
+
+    def _swap_mapping_source(self, group_old_ids, new_group):
+        """Replace which detected color(s) feed an ALREADY-mapped entry with
+        a different (currently unmapped) detected color group, keeping that
+        entry's position and whatever it's currently assigned to -- the
+        source-side equivalent of picking a new target palette color for an
+        existing entry (see _on_available_palette_activated), without first
+        having to remove anything."""
+        old_ids = set(group_old_ids)
+        entries = self.mapping.entries
+        positions = [i for i, e in enumerate(entries) if e["old_id"] in old_ids]
+        if not positions:
+            return
+        insert_at = positions[0]
+        new_id = next((entries[i]["new_id"] for i in positions if entries[i]["new_id"] is not None), None)
+        kept = [e for i, e in enumerate(entries) if i not in positions]
+        new_entries = [{"old_id": m["id"], "new_id": new_id} for m in new_group]
+        kept[insert_at:insert_at] = new_entries
+        self.mapping.entries = kept
+        self.mapping.save()
+
     def _quick_link(self, sibling_id, source_old_id):
         self.mapping.link(sibling_id, link_to_old_id=source_old_id)
         self._refresh_all()
@@ -844,14 +989,32 @@ class MainWindow(Adw.ApplicationWindow):
         self.palette_image_picture.set_visible(has_image)
         self.palette_image_placeholder.set_visible(not has_image)
         if has_image:
-            self.palette_image_picture.set_filename(image_path)
+            self.palette_image_picture.set_filename(dialogs.resolve_gif_safe_image_source(image_path))
+
+    @staticmethod
+    def _group_matches_search(group, query: str) -> bool:
+        """query already lowercased/stripped. Matches on hex, the hex/rgb
+        type label, or any occurrence's file path -- covers "I remember it
+        was in some css file" as well as "I remember the color"."""
+        if not query:
+            return True
+        for c in group:
+            if query in c["color"].lower():
+                return True
+            if query in _TYPE_DISPLAY.get(c["type"], c["type"]).lower():
+                return True
+            if any(query in f.lower() for f in c.get("files", [])):
+                return True
+        return False
 
     def _refresh_detected_list(self):
         self._clear_listbox(self.available_detected_listbox)
         present_ids = {e["old_id"] for e in self.mapping.entries} if self.mapping else set()
+        query = self.detected_search_entry.get_text().strip().lower()
         groups = [
             g for g in self._detected_groups_ordered()
             if not ({c["id"] for c in g} & present_ids)  # already (at least partially) in the mapping
+            and self._group_matches_search(g, query)
         ]
         if self.detected_by_folder:
             self._render_detected_by_folder(groups)
@@ -859,10 +1022,12 @@ class MainWindow(Adw.ApplicationWindow):
             self._render_detected_flat(groups)
 
     def _render_detected_flat(self, groups):
+        roles = color_detector.read_color_roles(self.config.color_roles_json)
         for group in groups:
+            role = self._group_role(group, roles)
             chip = _build_group_chip(
-                group, role=self._group_role(group), role_cb=self._on_group_role_clicked,
-                pair_widget=self._build_pair_widget(group),
+                group, role=role, role_cb=self._on_group_role_clicked,
+                pair_widget=self._build_pair_widget(group, roles, role),
             )
             chip.set_addable(lambda g=group: self._add_group_to_mapping(g))
             row = Gtk.ListBoxRow(child=chip)
@@ -883,6 +1048,7 @@ class MainWindow(Adw.ApplicationWindow):
         if not all_files:
             return
 
+        roles = color_detector.read_color_roles(self.config.color_roles_json)
         config_root = os.path.join(os.path.expanduser("~"), ".config")
         for folder, files in color_detector.group_paths_by_top_level(sorted(all_files)):
             if folder == config_root:
@@ -903,9 +1069,10 @@ class MainWindow(Adw.ApplicationWindow):
                 )
                 expander.add_row(Gtk.ListBoxRow(child=sep_label, activatable=False, selectable=False))
                 for group in groups_here:
+                    role = self._group_role(group, roles)
                     chip = _build_group_chip(
-                        group, role=self._group_role(group), role_cb=self._on_group_role_clicked,
-                        pair_widget=self._build_pair_widget(group),
+                        group, role=role, role_cb=self._on_group_role_clicked,
+                        pair_widget=self._build_pair_widget(group, roles, role),
                     )
                     chip.set_addable(lambda g=group: self._add_group_to_mapping(g))
                     row = Gtk.ListBoxRow(child=chip)
@@ -962,6 +1129,9 @@ class MainWindow(Adw.ApplicationWindow):
         palette_by_id = {p["id"]: p for p in self.new_palette}
         entry_by_old_id = {e["old_id"]: e for e in self.mapping.entries}
         present_ids = set(entry_by_old_id.keys())
+        group_lookup = self._detected_group_lookup()
+        total_groups = len(self._mapping_groups_in_order(group_lookup))
+        roles = color_detector.read_color_roles(self.config.color_roles_json)
 
         visited = set()
         idx = 0
@@ -970,7 +1140,7 @@ class MainWindow(Adw.ApplicationWindow):
             if old_id in visited:
                 continue
 
-            full_group = self._group_containing(old_id) or [detected_by_id[old_id]]
+            full_group = group_lookup.get(old_id) or [detected_by_id[old_id]]
             group_members = [c for c in full_group if c["id"] in present_ids]
             for m in group_members:
                 visited.add(m["id"])
@@ -984,11 +1154,20 @@ class MainWindow(Adw.ApplicationWindow):
             else:
                 warning = None
 
+            group_role = self._group_role(group_members, roles)
             old_chip = _build_group_chip(
                 group_members, number=idx, warning=warning,
                 removable_cb=(lambda ids=tuple(group_old_ids): self._remove_group(ids)),
-                role=self._group_role(group_members), role_cb=self._on_group_role_clicked,
-                pair_widget=self._build_pair_widget(group_members),
+                role=group_role, role_cb=self._on_group_role_clicked,
+                pair_widget=self._build_pair_widget(group_members, roles, group_role),
+                move_up_cb=(
+                    (lambda ids=tuple(group_old_ids): self._reorder_mapping_group(ids, -1))
+                    if idx > 1 else None
+                ),
+                move_down_cb=(
+                    (lambda ids=tuple(group_old_ids): self._reorder_mapping_group(ids, 1))
+                    if idx < total_groups else None
+                ),
             )
             old_row = Gtk.ListBoxRow(child=old_chip)
             old_row.group_ids = tuple(group_old_ids)
@@ -1143,6 +1322,17 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------- row clicks
 
     def _on_available_detected_activated(self, _listbox, row):
+        # A currently-selected mapping row (picked via _on_mapping_old_activated)
+        # means "swap which detected color feeds this entry" instead of "add
+        # a brand new entry" -- the source-side equivalent of picking a new
+        # target palette color for an existing entry, without deleting first.
+        if self.active_group_ids and any(
+            self.mapping._find(oid) is not None for oid in self.active_group_ids
+        ):
+            self._swap_mapping_source(self.active_group_ids, row.group)
+            self.active_group_ids = frozenset()
+            self._refresh_all()
+            return
         self._add_group_to_mapping(row.group)
 
     def _on_mapping_old_activated(self, _listbox, row):
@@ -1322,6 +1512,10 @@ class MainWindow(Adw.ApplicationWindow):
             do_apply()
 
     def _on_restore_clicked(self, _button):
+        if not dialogs.backup_exists(self.config):
+            dialogs.toast(self.toast_overlay, "No se encontró ningún backup. Hacé un Aplicar real primero.")
+            return
+
         def do_restore():
             results = color_replacer.restore_files(self.config.files_to_replace, self.config.backup_dir)
             restored = sum(1 for r in results if r["restored"])
@@ -1347,7 +1541,9 @@ class MainWindow(Adw.ApplicationWindow):
         dialogs.ask_confirm(
             self,
             "Restaurar desde backup",
-            "Esto va a sobrescribir tus archivos actuales con la última copia de respaldo. ¿Continuar?",
+            "Esto sobrescribe tus archivos COMPLETOS con la copia de respaldo -- no es solo deshacer "
+            "el reemplazo de colores. Cualquier cambio o código nuevo que hayas agregado a esos "
+            "archivos después del último apply se pierde.\n\n¿Restaurar de todas formas?",
             "Restaurar",
             do_restore,
             destructive=True,

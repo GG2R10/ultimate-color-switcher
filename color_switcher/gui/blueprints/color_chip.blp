@@ -105,6 +105,26 @@ template $ColorChip: Gtk.Box {
       css-classes: ["flat"];
       tooltip-text: _("Quitar del mapping");
     }
+
+    Gtk.Box move_box {
+      orientation: vertical;
+      spacing: 0;
+      valign: center;
+
+      Gtk.Button move_up_button {
+        icon-name: "go-up-symbolic";
+        visible: false;
+        css-classes: ["flat"];
+        tooltip-text: _("Mover arriba");
+      }
+
+      Gtk.Button move_down_button {
+        icon-name: "go-down-symbolic";
+        visible: false;
+        css-classes: ["flat"];
+        tooltip-text: _("Mover abajo");
+      }
+    }
   }
 
   Gtk.Revealer files_revealer {

@@ -538,4 +538,62 @@ def test_migrate_no_op_when_legacy_mapping_is_empty(tmp_path):
     registry_path = tmp_path / "mappings" / "mappings.json"
     legacy_path = tmp_path / "mappings" / "mapping.csv"
     assert ms.migrate_legacy_mapping_csv_if_needed(str(registry_path), str(legacy_path), str(tmp_path)) is False
-    assert not registry_path.exists()
+
+
+def test_peek_section_returns_none_without_creating_one(tmp_path):
+    """Unlike for_palette, peek_section must never seed/create a section as a
+    side effect -- a read-only `manage mappings show` on a palette with no
+    mapping yet must not leave a fresh empty section behind."""
+    registry_path = tmp_path / "mappings" / "mappings.json"
+    reg = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+    reg.for_palette(str(tmp_path / "a.csv")).add_or_update(1, 1)  # some active section exists
+
+    assert reg.peek_section(str(tmp_path / "never-touched.csv")) is None
+
+    # a second, fresh registry object proves nothing was persisted for it
+    reg2 = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+    assert str(tmp_path / "never-touched.csv") not in [
+        p for p, _s in reg2.all_sections()
+    ]
+
+
+def test_peek_section_returns_the_existing_section(tmp_path):
+    registry_path = tmp_path / "mappings" / "mappings.json"
+    reg = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+    a_path = str(tmp_path / "a.csv")
+    reg.for_palette(a_path).add_or_update(1, 1)
+
+    peeked = reg.peek_section(a_path)
+    assert peeked is not None
+    assert peeked.entries == [{"old_id": 1, "new_id": 1}]
+
+
+def test_remove_section_deletes_it_and_clears_active_if_it_was_active(tmp_path):
+    registry_path = tmp_path / "mappings" / "mappings.json"
+    reg = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+    a_path = str(tmp_path / "a.csv")
+    b_path = str(tmp_path / "b.csv")
+    reg.for_palette(a_path).add_or_update(1, 1)
+    reg.for_palette(b_path).add_or_update(1, 1)  # now active
+
+    assert reg.remove_section(b_path) is True
+    assert reg.active_palette_path() is None  # was active, no reasonable fallback
+    assert reg.peek_section(b_path) is None
+    assert reg.peek_section(a_path) is not None  # untouched
+
+
+def test_remove_section_on_a_palette_with_no_mapping_is_a_no_op(tmp_path):
+    registry_path = tmp_path / "mappings" / "mappings.json"
+    reg = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+    assert reg.remove_section(str(tmp_path / "nothing.csv")) is False
+
+
+def test_remove_all_sections_wipes_everything_and_returns_the_count(tmp_path):
+    registry_path = tmp_path / "mappings" / "mappings.json"
+    reg = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+    reg.for_palette(str(tmp_path / "a.csv")).add_or_update(1, 1)
+    reg.for_palette(str(tmp_path / "b.csv")).add_or_update(1, 1)
+
+    assert reg.remove_all_sections() == 2
+    assert reg.all_sections() == []
+    assert reg.active_palette_path() is None

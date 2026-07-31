@@ -277,6 +277,21 @@ def default_generated_path_for_image(palettes_created_dir: str, image_path: str)
     return os.path.join(expand_path(palettes_created_dir), filename)
 
 
+def delete_palette(path: str) -> bool:
+    """Delete a palette CSV file (`manage palette delete`). Returns whether a
+    file actually existed to remove. Deliberately does NOT touch any mapping
+    section that references it -- a palette and its mapping are independent,
+    separately-deletable things (see `ucs manage`); a mapping can outlive the
+    palette file it was created against (reading a missing new_palette
+    already degrades gracefully everywhere, e.g. read_palette_csv on a
+    missing path just returns [])."""
+    path = expand_path(path)
+    if not os.path.isfile(path):
+        return False
+    os.remove(path)
+    return True
+
+
 def list_palettes(directory: str) -> list:
     """List available palette CSVs under a directory (e.g. palettes/created)."""
     directory = expand_path(directory)

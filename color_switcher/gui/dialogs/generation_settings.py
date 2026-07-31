@@ -15,6 +15,7 @@ from gi.repository import Adw, Gtk
 
 from ...backend import palette_generator as pg
 
+from .backup_settings import build_backup_group
 from .common import _center_group_title
 
 _GENERATION_MODES = ["contrast", "balanced", "shading"]
@@ -544,12 +545,20 @@ def build_other_settings_group(config) -> Adw.PreferencesGroup:
 
 def show_other_settings(parent: Gtk.Widget, config):
     """"Otros…": rarely-touched fine-tuning knobs, reachable from the header
-    menu. Currently just the --my-eyes chroma-boost group; a placeholder
-    name/section for whatever else ends up not fitting elsewhere."""
-    page = Adw.PreferencesPage()
-    page.add(build_other_settings_group(config))
+    menu. The --my-eyes chroma-boost group, plus backup status/delete -- a
+    placeholder name/section for whatever else ends up not fitting
+    elsewhere. Rebuilds itself in place (close + reopen) after deleting the
+    backup, same pattern as dialogs/manage_palettes.py."""
     prefs = Adw.PreferencesDialog()
     prefs.set_title("Otros")
+
+    def _on_backup_change():
+        prefs.close()
+        show_other_settings(parent, config)
+
+    page = Adw.PreferencesPage()
+    page.add(build_other_settings_group(config))
+    page.add(build_backup_group(config, on_change=_on_backup_change))
     prefs.add(page)
     prefs.present(parent)
 

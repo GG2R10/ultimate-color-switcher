@@ -67,7 +67,7 @@ class Config:
         return os.path.join(self.palettes_detected_dir, "color_roles.json")
 
 
-_DEFAULT_CONFIG_JSON = {"files_to_replace": [], "backup_dir": "$HOME/.config-colors-backup"}
+_DEFAULT_CONFIG_JSON = {"files_to_replace": []}
 
 
 def _default_project_dir() -> str:
@@ -85,15 +85,20 @@ def load_config(project_dir: str = None) -> Config:
     if not os.path.isfile(cfg_path):
         # first run: bootstrap an empty config instead of crashing --
         # the user adds files via `ucs config files add` or the GUI menu.
+        # backup_dir nested under project_dir (mappings_dir/palettes_*_dir
+        # already are) -- everything this app owns lives in one place,
+        # instead of the old sibling-of-.config `~/.config-colors-backup`.
+        default_json = dict(_DEFAULT_CONFIG_JSON)
+        default_json["backup_dir"] = to_home_relative(os.path.join(project_dir, "backups"))
         with open(cfg_path, "w", encoding="utf-8") as f:
-            json.dump(_DEFAULT_CONFIG_JSON, f, indent=2)
+            json.dump(default_json, f, indent=2)
             f.write("\n")
 
     with open(cfg_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
     files_to_replace = [expand_path(p) for p in raw.get("files_to_replace", [])]
-    backup_dir = expand_path(raw.get("backup_dir", "~/.config-colors-backup"))
+    backup_dir = expand_path(raw.get("backup_dir", os.path.join(project_dir, "backups")))
     silent_apps = raw.get("silent_apps", [])
     restart_commands = raw.get("restart_commands", [])
 

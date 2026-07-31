@@ -10,12 +10,14 @@ dialogs/ — Dialog helpers used by window_main.py, split by concern:
   settings managers (restart hooks / scanned dotfiles).
 - generation_settings.py: "Configurar generación de paleta…" and "Otros…"
   (mode/scoring/shading/my-eyes knobs).
+- backup_settings.py: the backup status/delete row shown inside "Otros…".
 - modifiers.py: the "Modificadores…" live-shift-preview dialog.
 
 Everything public each submodule defines is re-exported here so callers keep
 using `dialogs.whatever(...)` exactly as before this split -- window_main.py
 never needed to change."""
 
+from .backup_settings import backup_exists, build_backup_group
 from .common import (
     ask_choice,
     ask_confirm,
@@ -24,6 +26,7 @@ from .common import (
     prompt_add_color,
     prompt_pick_color,
     prompt_text,
+    resolve_gif_safe_image_source,
     toast,
 )
 from .generation_settings import (
@@ -33,6 +36,11 @@ from .generation_settings import (
     build_palette_generation_group,
     show_other_settings,
     show_palette_generation_settings,
+)
+from .manage_palettes import (
+    build_bulk_actions_group,
+    build_saved_palettes_group,
+    show_manage_palettes,
 )
 from .modifiers import show_palette_modifiers
 from .onboarding import (
@@ -55,6 +63,8 @@ from .scanned_files import (
 )
 
 __all__ = [
+    "backup_exists",
+    "build_backup_group",
     "ask_choice",
     "ask_confirm",
     "pick_image_file",
@@ -62,11 +72,15 @@ __all__ = [
     "prompt_add_color",
     "prompt_pick_color",
     "prompt_text",
+    "resolve_gif_safe_image_source",
     "toast",
     "build_advanced_generation_group",
+    "build_bulk_actions_group",
     "build_contrast_comparison_group",
     "build_other_settings_group",
     "build_palette_generation_group",
+    "build_saved_palettes_group",
+    "show_manage_palettes",
     "show_other_settings",
     "show_palette_generation_settings",
     "show_palette_modifiers",

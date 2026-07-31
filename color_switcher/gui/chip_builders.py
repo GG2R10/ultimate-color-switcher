@@ -20,7 +20,8 @@ TYPE_DISPLAY = {"hex": "hex", "hex_from_rgb": "rgb"}
 
 
 def build_group_chip(group, number=None, warning=None, removable_cb=None,
-                     role=None, role_cb=None, pair_widget=None) -> ColorChip:
+                     role=None, role_cb=None, pair_widget=None,
+                     move_up_cb=None, move_down_cb=None) -> ColorChip:
     chip = ColorChip()
     representative = group[0]
     chip.set_color(representative["color"])
@@ -45,6 +46,7 @@ def build_group_chip(group, number=None, warning=None, removable_cb=None,
     chip.set_role(role)
     chip.set_role_toggleable((lambda g=group: role_cb(g)) if role_cb is not None else None)
     chip.set_pair_section(pair_widget)
+    chip.set_reorderable(move_up_cb, move_down_cb)
     return chip
 
 

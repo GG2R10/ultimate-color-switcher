@@ -577,8 +577,9 @@ def _resolve_mapping_store_for_show(args, config):
     return registry.for_active()
 
 
-def cmd_mapping_show(args, config):
-    store = _resolve_mapping_store_for_show(args, config)
+def _print_mapping_details(store, config) -> None:
+    """The body of `mapping show`, factored out so `manage mappings show`
+    can print the same detail (possibly for several sections in a row)."""
     old_p, new_p, entries = store.old_palette, store.new_palette, store.entries
     print(f"old_palette: {old_p}")
     print(f"new_palette: {new_p}")
@@ -598,6 +599,11 @@ def cmd_mapping_show(args, config):
         print("\nConflictos (caso 1):")
         for c in collisions:
             print(f"  old_id {c['old_id']} -> #{c['new_hex']} colisiona con id(s) {c['conflict_with_ids']}")
+
+
+def cmd_mapping_show(args, config):
+    store = _resolve_mapping_store_for_show(args, config)
+    _print_mapping_details(store, config)
 
 
 def cmd_mapping_relink(args, config):
@@ -653,15 +659,162 @@ def cmd_mapping_list(args, config):
         print(f"  {palette_path}{marker} -- {len(store.resolved_entries())} entrada(s)")
 
 
-def _print_reorder_banner(warning: str) -> None:
-    """An unmissable, visually distinct banner for tier="compacted" applies --
-    deliberately louder than an ordinary "⚠ ..." line, since this is
-    specifically the "your mapping's assignment order changed and may break
-    a previously-tuned theme" risk resolve_apply_targets exists to surface."""
+def _resolve_explicit_palette_path(target: str, config) -> list:
+    """A `manage mappings/palette` target that's neither None nor "all": a
+    .csv path is treated as a palette path directly; anything else is
+    treated as a wallpaper image and resolved to whatever palette(s) were
+    generated from it, by provenance (see palette_store.find_palettes_for_image
+    -- never by filename, so a renamed palette or a same-looking-but-
+    unrelated filename never gets mismatched)."""
+    expanded = color_detector.expand_path(target)
+    if expanded.lower().endswith(".csv"):
+        return [_resolve_path(target, config.palettes_created_dir, config.project_dir)]
+    return palette_store.find_palettes_for_image(config.palettes_created_dir, expanded)
+
+
+def _resolve_manage_palette_targets(target: str, config, registry) -> list:
+    """`manage palette show/delete`'s target resolution: None -> the active
+    palette (if any); "all" -> every palette CSV that actually exists under
+    palettes_created_dir; else -> _resolve_explicit_palette_path."""
+    if target is None:
+        active = registry.active_palette_path()
+        return [active] if active else []
+    if target == "all":
+        return palette_store.list_palettes(config.palettes_created_dir)
+    return _resolve_explicit_palette_path(target, config)
+
+
+def _resolve_manage_mapping_targets(target: str, config, registry) -> list:
+    """`manage mappings show/delete`'s target resolution -- same idea as
+    _resolve_manage_palette_targets, but "all" means every palette that HAS
+    a mapping SECTION in the registry, not every palette file that exists
+    (those are two different universes -- a palette can exist with no
+    mapping yet, and (rarely) a mapping section can outlive its palette
+    file, see palette_store.delete_palette)."""
+    if target is None:
+        active = registry.active_palette_path()
+        return [active] if active else []
+    if target == "all":
+        return [palette_path for palette_path, _store in registry.all_sections()]
+    return _resolve_explicit_palette_path(target, config)
+
+
+def _manage_empty_message(target: str, kind: str) -> str:
+    """kind: "mapping" (masculine: "el mapping") or "palette" (feminine:
+    "la paleta") -- only affects grammatical agreement."""
+    if kind == "mapping":
+        none_phrase, all_phrase = "ningún mapping activo", "ningún mapping guardado todavía"
+    else:
+        none_phrase, all_phrase = "ninguna paleta activa", "ninguna paleta guardada todavía"
+    if target is None:
+        return f"No hay {none_phrase}."
+    if target == "all":
+        return f"No hay {all_phrase}."
+    return f"No se encontró ninguna paleta asociada a: {target}"
+
+
+def _confirm_manage_delete(target: str, count: int, kind: str, idc: bool) -> bool:
+    """Shared confirm-unless---idc prompt for `manage mappings/palette
+    delete`. kind: "mapping" or "palette" (grammatical agreement only).
+    target == "all" additionally gets the loud ATENCIÓN banner -- an
+    irreversible bulk wipe deserves more than an easy-to-miss "(y/N)"."""
+    if idc:
+        return True
+    plural = "mapping(s)" if kind == "mapping" else "paleta(s)"
+    if target == "all":
+        wipeout = (f"TODOS los mappings guardados ({count})" if kind == "mapping"
+                   else f"TODAS las paletas guardadas ({count})")
+        _print_warning_banner(
+            "¡ATENCIÓN! BORRADO MASIVO",
+            f"Se van a borrar {wipeout}. Esta acción no se puede deshacer.",
+        )
+    try:
+        answer = input(f"¿Borrar {count} {plural}? (y/N): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        answer = ""
+    return answer in ("y", "yes", "s", "si", "sí")
+
+
+def cmd_manage_mappings_show(args, config):
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    palettes = _resolve_manage_mapping_targets(args.target, config, registry)
+    if not palettes:
+        print(_manage_empty_message(args.target, "mapping"))
+        return
+    active = registry.active_palette_path()
+    shown = False
+    for palette_path in palettes:
+        store = registry.peek_section(palette_path)
+        if store is None:
+            continue
+        shown = True
+        marker = "  (activo)" if palette_path == active else ""
+        print(f"\n=== {palette_path}{marker} ===")
+        _print_mapping_details(store, config)
+    if not shown:
+        print(_manage_empty_message(args.target, "mapping"))
+
+
+def cmd_manage_mappings_delete(args, config):
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    palettes = _resolve_manage_mapping_targets(args.target, config, registry)
+    to_delete = [p for p in palettes if registry.peek_section(p) is not None]
+    if not to_delete:
+        print(_manage_empty_message(args.target, "mapping"))
+        return
+    if not _confirm_manage_delete(args.target, len(to_delete), "mapping", args.idc):
+        print("Cancelado.")
+        return
+    if args.target == "all":
+        registry.remove_all_sections()
+    else:
+        for p in to_delete:
+            registry.remove_section(p)
+    print(f"{len(to_delete)} mapping(s) borrado(s).")
+
+
+def cmd_manage_palette_show(args, config):
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    palettes = _resolve_manage_palette_targets(args.target, config, registry)
+    if not palettes:
+        print(_manage_empty_message(args.target, "palette"))
+        return
+    for palette_path in palettes:
+        entries = palette_store.read_palette_csv(palette_path)
+        print(f"\n=== {palette_path} ({len(entries)} colores) ===")
+        _print_palette(entries)
+
+
+def cmd_manage_palette_delete(args, config):
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    palettes = _resolve_manage_palette_targets(args.target, config, registry)
+    to_delete = [p for p in palettes if os.path.isfile(color_detector.expand_path(p))]
+    if not to_delete:
+        print(_manage_empty_message(args.target, "palette"))
+        return
+    if not _confirm_manage_delete(args.target, len(to_delete), "palette", args.idc):
+        print("Cancelado.")
+        return
+    for p in to_delete:
+        palette_store.delete_palette(p)
+    print(f"{len(to_delete)} paleta(s) borrada(s).")
+
+
+def _print_warning_banner(title: str, message: str) -> None:
+    """An unmissable, visually distinct banner -- deliberately louder than an
+    ordinary "⚠ ..." line, for warnings a user could otherwise skim past
+    (a mapping reassignment, or an irreversible bulk delete)."""
     bar = "=" * 70
-    print(f"\n{bar}\n¡ATENCIÓN! REASIGNACIÓN DE MAPPING\n{bar}")
-    print(warning)
+    print(f"\n{bar}\n{title}\n{bar}")
+    print(message)
     print(f"{bar}\n")
+
+
+def _print_reorder_banner(warning: str) -> None:
+    """tier="compacted" applies: the mapping's assignment order changed and
+    may break a previously-tuned theme (see resolve_apply_targets)."""
+    _print_warning_banner("¡ATENCIÓN! REASIGNACIÓN DE MAPPING", warning)
 
 
 def _apply_or_test(args, config, mode):
@@ -775,6 +928,28 @@ def cmd_gui(args, config):
 
 
 def cmd_restore(args, config):
+    if not os.path.isdir(config.backup_dir) or not os.listdir(config.backup_dir):
+        print(f"⚠ No se encontró ningún backup en {config.backup_dir}. "
+              "Necesitás haber hecho al menos un 'ucs apply' real antes de poder restaurar.")
+        sys.exit(1)
+
+    if not args.yolo:
+        _print_warning_banner(
+            "¡ATENCIÓN! RESTAURAR DESDE BACKUP",
+            "Esto sobrescribe tus archivos COMPLETOS con la copia de respaldo -- no es solo "
+            "deshacer el reemplazo de colores. Cualquier cambio o código nuevo que hayas agregado "
+            "a esos archivos DESPUÉS del último apply se pierde. Usá --yolo para saltear esta "
+            "confirmación.",
+        )
+        try:
+            answer = input("¿Restaurar de todas formas? (y/N): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            answer = ""
+        if answer not in ("y", "yes", "s", "si", "sí"):
+            print("Cancelado.")
+            return
+
     results = color_replacer.restore_files(config.files_to_replace, config.backup_dir)
     for r in results:
         status = "restaurado" if r["restored"] else "sin backup"
@@ -1418,6 +1593,9 @@ def build_parser():
                             help="Reiniciar los servicios configurados sin preguntar")
     r_restart.add_argument("--no-restart", dest="restart", action="store_false",
                             help="No reiniciar servicios ni preguntar (omite la confirmación)")
+    r.add_argument("--yolo", action="store_true",
+                    help="No pedir confirmación antes de restaurar (sobrescribe archivos completos, "
+                         "no solo los colores)")
     r.set_defaults(func=cmd_restore)
 
     g = sub.add_parser("gui", help="Lanzar la interfaz gráfica (GTK4 + libadwaita)")
@@ -1485,6 +1663,38 @@ def build_parser():
     sh.add_argument("--force", action="store_true", help="Aplicar aunque haya conflictos de caso 1/convergencia")
     sh.add_argument("--yolo", action="store_true", help="Aplicar aunque sobren colores en la paleta")
     sh.set_defaults(func=cmd_palette_shift, apply=True)
+
+    mg = sub.add_parser("manage", help="Ver/borrar mappings y paletas guardadas")
+    mg_sub = mg.add_subparsers(dest="manage_command", required=True)
+
+    _target_help = (
+        "Omitir para el activo. 'all' para todos. O una ruta a un wallpaper o a una "
+        "paleta (.csv) para el asociado a esa ruta."
+    )
+
+    mgm = mg_sub.add_parser("mappings", help="Ver o borrar mappings guardados")
+    mgm_sub = mgm.add_subparsers(dest="manage_mappings_command", required=True)
+
+    mgms = mgm_sub.add_parser("show", help="Mostrar mapping(s) guardado(s)")
+    mgms.add_argument("target", nargs="?", default=None, help=_target_help)
+    mgms.set_defaults(func=cmd_manage_mappings_show)
+
+    mgmd = mgm_sub.add_parser("delete", help="Borrar mapping(s) guardado(s)")
+    mgmd.add_argument("target", nargs="?", default=None, help=_target_help)
+    mgmd.add_argument("--idc", action="store_true", help="No pedir confirmación (\"I don't care\")")
+    mgmd.set_defaults(func=cmd_manage_mappings_delete)
+
+    mgp = mg_sub.add_parser("palette", help="Ver o borrar paletas guardadas")
+    mgp_sub = mgp.add_subparsers(dest="manage_palette_command", required=True)
+
+    mgps = mgp_sub.add_parser("show", help="Mostrar paleta(s) guardada(s)")
+    mgps.add_argument("target", nargs="?", default=None, help=_target_help)
+    mgps.set_defaults(func=cmd_manage_palette_show)
+
+    mgpd = mgp_sub.add_parser("delete", help="Borrar paleta(s) guardada(s)")
+    mgpd.add_argument("target", nargs="?", default=None, help=_target_help)
+    mgpd.add_argument("--idc", action="store_true", help="No pedir confirmación (\"I don't care\")")
+    mgpd.set_defaults(func=cmd_manage_palette_delete)
 
     return parser
 

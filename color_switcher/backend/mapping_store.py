@@ -632,6 +632,51 @@ class MappingRegistry:
             for key in list(self._data["mappings"])
         ]
 
+    def peek_section(self, palette_path: str) -> "MappingStore":
+        """Read-only lookup: the section for palette_path if one already
+        exists, else None. Unlike for_palette, NEVER creates/seeds a new
+        section as a side effect -- for callers that only want to look
+        (`manage mappings show/delete`), not implicitly start managing a
+        palette that has no mapping yet."""
+        self._data = self._read()
+        key = self._key_for(palette_path)
+        section = self._data["mappings"].get(key)
+        if section is None:
+            return None
+        store = MappingStore(
+            self.path,
+            old_palette=_to_absolute(section.get("old_palette"), self.project_dir),
+            new_palette=_to_absolute(key, self.project_dir),
+            project_dir=self.project_dir, _registry=self, _registry_key=key,
+        )
+        store.entries = [dict(e) for e in section["entries"]]
+        return store
+
+    def remove_section(self, palette_path: str) -> bool:
+        """Delete palette_path's mapping section entirely (`manage mappings
+        delete`). Returns whether a section actually existed to remove. If it
+        was the active one, clears `active` -- there's nothing else to
+        reasonably fall back to; the next for_palette/mapping new picks a
+        new active explicitly."""
+        self._data = self._read()
+        key = self._key_for(palette_path)
+        existed = self._data["mappings"].pop(key, None) is not None
+        if existed:
+            if self._data.get("active") == key:
+                self._data["active"] = None
+            self._write()
+        return existed
+
+    def remove_all_sections(self) -> int:
+        """Wipe every mapping section (`manage mappings delete all`). Returns
+        how many sections existed."""
+        self._data = self._read()
+        count = len(self._data["mappings"])
+        self._data["mappings"] = {}
+        self._data["active"] = None
+        self._write()
+        return count
+
     def _load_into(self, store: "MappingStore") -> None:
         """Registry-mode MappingStore.load(): re-read this store's section
         fresh from disk (picking up anything written by another process/

@@ -240,3 +240,15 @@ def test_add_color_with_role(tmp_path):
     entry = ps.add_color(str(path), "222222", "b", role="foreground")
     assert entry["role"] == "foreground"
     assert ps.read_palette_csv(str(path))[-1]["role"] == "foreground"
+
+
+def test_delete_palette_removes_the_file_and_reports_it_existed(tmp_path):
+    path = tmp_path / "created" / "p.csv"
+    ps.write_palette_csv(str(path), [{"id": 1, "hex": "111111", "label": "a"}])
+
+    assert ps.delete_palette(str(path)) is True
+    assert not path.exists()
+
+
+def test_delete_palette_on_a_missing_file_is_a_no_op(tmp_path):
+    assert ps.delete_palette(str(tmp_path / "nope.csv")) is False

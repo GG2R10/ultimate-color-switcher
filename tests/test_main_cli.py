@@ -706,3 +706,271 @@ def test_automatic_from_image_parser_accepts_hallucinate():
     parser = ucs_main.build_parser()
     args = parser.parse_args(["automatic", "apply", "--from-image", "wall.png", "--hallucinate", "toggle"])
     assert args.hallucinate == "toggle"
+
+
+def _manage_args(command, **kwargs):
+    parser = ucs_main.build_parser()
+    argv = ["manage"] + command
+    for key, value in kwargs.items():
+        if value is True:
+            argv.append(f"--{key}")
+        elif value is not None:
+            argv += [f"--{key}", str(value)]
+    return parser.parse_args(argv)
+
+
+def test_manage_mappings_show_no_target_prints_the_active_mapping(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    fake_project.make_file("app/style.css", "#cbff29")
+    config = fake_project.load_config()
+    detected = detect_diff.detect_with_route(config)["colors"]
+    palette_path = os.path.join(config.palettes_created_dir, "target.csv")
+    palette_store.write_palette_csv(palette_path, [{"id": 1, "hex": "ff00aa", "label": "primary"}])
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    registry.for_palette(palette_path, old_palette=config.detected_palette_csv).add_or_update(detected[0]["id"], 1)
+
+    ucs_main.cmd_manage_mappings_show(_manage_args(["mappings", "show"]), config)
+    out = capsys.readouterr().out
+    assert f"new_palette: {palette_path}" in out
+    assert "(activo)" in out
+
+
+def test_manage_mappings_show_all_lists_every_section(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    config = fake_project.load_config()
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    a_path = os.path.join(config.palettes_created_dir, "a.csv")
+    b_path = os.path.join(config.palettes_created_dir, "b.csv")
+    registry.for_palette(a_path).add_or_update(1, 1)
+    registry.for_palette(b_path).add_or_update(1, 1)
+
+    args = _manage_args(["mappings", "show", "all"])
+    ucs_main.cmd_manage_mappings_show(args, config)
+    out = capsys.readouterr().out
+    assert a_path in out
+    assert b_path in out
+
+
+def test_manage_mappings_show_unmatched_path_says_so(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    config = fake_project.load_config()
+    args = _manage_args(["mappings", "show", os.path.join(config.palettes_created_dir, "nope.csv")])
+    ucs_main.cmd_manage_mappings_show(args, config)
+    out = capsys.readouterr().out
+    assert "No se encontró ninguna paleta asociada a:" in out
+
+
+def test_manage_mappings_delete_with_idc_skips_confirmation(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    config = fake_project.load_config()
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    palette_path = os.path.join(config.palettes_created_dir, "a.csv")
+    registry.for_palette(palette_path).add_or_update(1, 1)
+
+    def _no_input(*_a, **_k):
+        raise AssertionError("must not prompt when --idc is passed")
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    args = _manage_args(["mappings", "delete", palette_path], idc=True)
+    ucs_main.cmd_manage_mappings_delete(args, config)
+
+    registry_after = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    assert registry_after.peek_section(palette_path) is None
+
+
+def test_manage_mappings_delete_without_idc_prompts_and_cancels_on_no(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    config = fake_project.load_config()
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    palette_path = os.path.join(config.palettes_created_dir, "a.csv")
+    registry.for_palette(palette_path).add_or_update(1, 1)
+
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "n")
+    args = _manage_args(["mappings", "delete", palette_path])
+    ucs_main.cmd_manage_mappings_delete(args, config)
+
+    out = capsys.readouterr().out
+    assert "Cancelado" in out
+    registry_after = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    assert registry_after.peek_section(palette_path) is not None  # untouched
+
+
+def test_manage_mappings_delete_all_wipes_registry_after_confirmation(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    config = fake_project.load_config()
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    registry.for_palette(os.path.join(config.palettes_created_dir, "a.csv")).add_or_update(1, 1)
+    registry.for_palette(os.path.join(config.palettes_created_dir, "b.csv")).add_or_update(1, 1)
+
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "y")
+    args = _manage_args(["mappings", "delete", "all"])
+    ucs_main.cmd_manage_mappings_delete(args, config)
+
+    out = capsys.readouterr().out
+    assert "BORRADO MASIVO" in out
+    registry_after = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    assert registry_after.all_sections() == []
+
+
+def test_manage_palette_show_resolves_wallpaper_image_to_its_generated_palette(
+    tmp_path, fake_project, monkeypatch, capsys
+):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    fake_project.make_file("app/style.css", "#cbff29")
+    config = fake_project.load_config()
+    detected = detect_diff.detect_with_route(config)["colors"]
+
+    # `automatic --from-image` reuses whatever mapping is currently active as
+    # its "recipe" -- needs one to exist first (same setup as
+    # test_automatic_from_image_binds_the_applied_mapping_to_the_generated_palette).
+    old_target = os.path.join(config.palettes_created_dir, "yesterday.csv")
+    palette_store.write_palette_csv(old_target, [{"id": 1, "hex": "111111", "label": ""}])
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    registry.for_palette(old_target, old_palette=config.detected_palette_csv).add_or_update(detected[0]["id"], 1)
+
+    img = tmp_path / "wall.png"
+    _make_image(img)
+    auto_args = ucs_main.build_parser().parse_args(
+        ["automatic", "apply", "--from-image", str(img), "--colors", "3", "--yolo"]
+    )
+    ucs_main.cmd_automatic(auto_args, config)
+    capsys.readouterr()  # discard automatic's own output
+
+    args = _manage_args(["palette", "show", str(img)])
+    ucs_main.cmd_manage_palette_show(args, config)
+    out = capsys.readouterr().out
+    generated_path = palette_store.find_palettes_for_image(config.palettes_created_dir, str(img))[0]
+    assert generated_path in out
+
+
+def test_manage_palette_show_no_active_palette_says_so(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    config = fake_project.load_config()
+    ucs_main.cmd_manage_palette_show(_manage_args(["palette", "show"]), config)
+    out = capsys.readouterr().out
+    assert "No hay ninguna paleta activa." in out
+
+
+def test_manage_palette_delete_removes_the_file_but_not_its_mapping(fake_project, monkeypatch, capsys):
+    """Deleting a palette and deleting its mapping are independent actions --
+    a mapping section may reference a palette file that no longer exists."""
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    config = fake_project.load_config()
+    palette_path = os.path.join(config.palettes_created_dir, "a.csv")
+    palette_store.write_palette_csv(palette_path, [{"id": 1, "hex": "111111", "label": ""}])
+    registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    registry.for_palette(palette_path).add_or_update(1, 1)
+
+    args = _manage_args(["palette", "delete", palette_path], idc=True)
+    ucs_main.cmd_manage_palette_delete(args, config)
+
+    assert not os.path.isfile(palette_path)
+    registry_after = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
+    assert registry_after.peek_section(palette_path) is not None  # untouched
+
+
+def test_manage_palette_delete_all_removes_every_palette_file(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    config = fake_project.load_config()
+    a_path = os.path.join(config.palettes_created_dir, "a.csv")
+    b_path = os.path.join(config.palettes_created_dir, "b.csv")
+    palette_store.write_palette_csv(a_path, [{"id": 1, "hex": "111111", "label": ""}])
+    palette_store.write_palette_csv(b_path, [{"id": 1, "hex": "222222", "label": ""}])
+
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "y")
+    ucs_main.cmd_manage_palette_delete(_manage_args(["palette", "delete", "all"]), config)
+
+    assert palette_store.list_palettes(config.palettes_created_dir) == []
+
+
+def _restore_args(**kwargs):
+    kwargs.setdefault("restart", False)
+    kwargs.setdefault("yolo", False)
+    return argparse.Namespace(**kwargs)
+
+
+def test_restore_without_yolo_prompts_and_cancels_on_no(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    target = fake_project.make_file("app/style.css", "original")
+    config = fake_project.load_config()
+    cr.backup_files([target], config.backup_dir)
+    with open(target, "w") as f:
+        f.write("modified")
+
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "n")
+    ucs_main.cmd_restore(_restore_args(), config)
+
+    out = capsys.readouterr().out
+    assert "Cancelado" in out
+    assert open(target).read() == "modified"  # untouched
+
+
+def test_restore_without_yolo_proceeds_on_yes(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    target = fake_project.make_file("app/style.css", "original")
+    config = fake_project.load_config()
+    cr.backup_files([target], config.backup_dir)
+    with open(target, "w") as f:
+        f.write("modified")
+
+    monkeypatch.setattr("builtins.input", lambda *_a, **_k: "y")
+    ucs_main.cmd_restore(_restore_args(), config)
+
+    out = capsys.readouterr().out
+    assert "RESTAURAR DESDE BACKUP" in out
+    assert open(target).read() == "original"
+
+
+def test_restore_with_yolo_skips_confirmation(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    target = fake_project.make_file("app/style.css", "original")
+    config = fake_project.load_config()
+    cr.backup_files([target], config.backup_dir)
+    with open(target, "w") as f:
+        f.write("modified")
+
+    def _no_input(*_a, **_k):
+        raise AssertionError("must not prompt when --yolo is passed")
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    ucs_main.cmd_restore(_restore_args(yolo=True), config)
+    assert open(target).read() == "original"
+
+
+def test_restore_parser_accepts_yolo():
+    parser = ucs_main.build_parser()
+    args = parser.parse_args(["restore", "--yolo"])
+    assert args.yolo is True
+
+
+def test_restore_parser_yolo_defaults_to_false():
+    parser = ucs_main.build_parser()
+    args = parser.parse_args(["restore"])
+    assert args.yolo is False
+
+
+def test_restore_errors_cleanly_when_no_backup_exists(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    fake_project.make_file("app/style.css", "original")
+    config = fake_project.load_config()  # backup_dir created but never populated
+
+    def _no_input(*_a, **_k):
+        raise AssertionError("must not prompt -- there's nothing to confirm without a backup")
+    monkeypatch.setattr("builtins.input", _no_input)
+
+    with pytest.raises(SystemExit) as exc:
+        ucs_main.cmd_restore(_restore_args(), config)
+    assert exc.value.code == 1
+    assert "No se encontró ningún backup" in capsys.readouterr().out
+
+
+def test_restore_errors_cleanly_when_backup_dir_is_empty(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    fake_project.make_file("app/style.css", "original")
+    config = fake_project.load_config()
+    os.makedirs(config.backup_dir, exist_ok=True)  # exists, but empty
+
+    with pytest.raises(SystemExit) as exc:
+        ucs_main.cmd_restore(_restore_args(), config)
+    assert exc.value.code == 1
+    assert "No se encontró ningún backup" in capsys.readouterr().out

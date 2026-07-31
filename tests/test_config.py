@@ -73,10 +73,14 @@ def test_load_config_bootstraps_missing_config_json(tmp_path):
     config = cfg.load_config(project_dir=str(project_dir))
 
     assert config.files_to_replace == []
+    assert config.backup_dir == str(project_dir / "backups")
     assert os.path.isfile(project_dir / "config.json")
     with open(project_dir / "config.json") as f:
         raw = json.load(f)
-    assert raw == cfg._DEFAULT_CONFIG_JSON
+    assert raw["files_to_replace"] == []
+    # backup_dir nested under project_dir (like mappings_dir/palettes_*_dir),
+    # not the old sibling-of-.config `~/.config-colors-backup`.
+    assert raw["backup_dir"] == cfg.to_home_relative(str(project_dir / "backups"))
 
 
 def test_default_project_dir_respects_xdg_config_home(monkeypatch, tmp_path):

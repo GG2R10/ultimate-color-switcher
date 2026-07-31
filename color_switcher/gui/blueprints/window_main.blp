@@ -16,8 +16,16 @@ menu palette_menu {
       action: "win.generate-palette";
     }
     item {
+      label: _("Guardar paleta como…");
+      action: "win.save-palette-as";
+    }
+    item {
       label: _("Configurar generación de paleta…");
       action: "win.palette-generation-settings";
+    }
+    item {
+      label: _("Gestionar paletas…");
+      action: "win.manage-palettes";
     }
     item {
       label: _("Otros…");
@@ -67,7 +75,7 @@ template $MainWindow: Adw.ApplicationWindow {
       [end]
       Gtk.MenuButton {
         menu-model: palette_menu;
-        tooltip-text: _("Paleta, vínculo hex/rgb, reinicios y snapshots");
+        tooltip-text: _("Paleta, vínculo hex/rgb, reinicios, snapshots y gestión de paletas guardadas");
         child: Adw.ButtonContent {
           icon-name: "view-more-symbolic";
           label: _("Opciones");
@@ -127,6 +135,13 @@ template $MainWindow: Adw.ApplicationWindow {
                 tooltip-text: _("Agrupar por archivo en vez de por cantidad de ocurrencias");
                 valign: center;
               }
+            }
+
+            Gtk.SearchEntry detected_search_entry {
+              placeholder-text: _("Buscar color (hex, tipo o archivo)…");
+              margin-start: 12;
+              margin-end: 10;
+              margin-bottom: 4;
             }
 
             Gtk.ScrolledWindow {

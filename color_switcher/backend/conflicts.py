@@ -13,7 +13,7 @@ already tracks as separate detected ids. The GUI should offer to map them
 together ("same as hex format") instead of asking the user twice.
 """
 
-from .color_detector import detected_id_for_role_key, pair_of, role_key, role_of
+from .color_detector import pair_of, role_key, role_of
 
 
 def find_case1_collisions(detected_colors: list, new_palette: list, mapping_entries: list) -> list:
@@ -163,6 +163,10 @@ def find_pair_mismatches(detected_colors: list, new_palette: list, mapping_entri
     """
     palette_by_id = {p["id"]: p for p in new_palette}
     new_id_by_old_id = {e["old_id"]: e.get("new_id") for e in mapping_entries}
+    # Built once (O(detected_colors)) instead of calling detected_id_for_role_key
+    # (an O(detected_colors) linear scan) per foreground-tagged color below --
+    # that used to make this whole function O(foreground-tagged x detected_colors).
+    old_id_by_role_key = {role_key(c["type"], c["color"]): c["id"] for c in detected_colors}
 
     mismatches = []
     seen = set()
@@ -173,7 +177,7 @@ def find_pair_mismatches(detected_colors: list, new_palette: list, mapping_entri
         bg_key = pair_of(detected_roles, fg_key)
         if not bg_key:
             continue
-        bg_old_id = detected_id_for_role_key(detected_colors, bg_key)
+        bg_old_id = old_id_by_role_key.get(bg_key)
         if bg_old_id is None:
             continue
         fg_new_id = new_id_by_old_id.get(c["id"])
