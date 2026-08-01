@@ -153,7 +153,13 @@ def ask_choice(parent: Gtk.Widget, heading: str, body: str, choices: list, on_ch
 
 
 def prompt_text(parent: Gtk.Widget, heading: str, body: str, placeholder: str, ok_label: str, on_submit):
-    """Generic single-line text prompt (used for palette filenames / labels)."""
+    """Generic single-line text prompt (used for palette filenames / labels).
+    placeholder is shown as a greyed hint only -- an EXAMPLE (e.g.
+    "my-palette", or a computed suggested count), never submitted verbatim
+    if the entry is left untouched (entry.get_text() is "" in that case, not
+    the placeholder) -- callers whose placeholder is a real fallback value
+    should treat "" the same as that value themselves (see
+    MainWindow._on_generate_palette_count)."""
     dialog = Adw.AlertDialog.new(heading, body)
     entry = Gtk.Entry(placeholder_text=placeholder)
     entry.set_activates_default(True)

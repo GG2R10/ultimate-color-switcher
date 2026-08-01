@@ -352,6 +352,54 @@ def test_resolve_apply_targets_empty_entries_is_a_trivial_exact_tier():
     assert result["needed"] == 0
 
 
+def test_fallback_generate_colors_no_entries_defaults_to_six():
+    assert ms.fallback_generate_colors([]) == 6
+
+
+def test_fallback_generate_colors_counts_distinct_resolved_new_ids():
+    entries = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": 2}, {"old_id": 3, "new_id": 1}]
+    assert ms.fallback_generate_colors(entries) == 2  # ids 1 and 2 -- 2 distinct roles
+
+
+def test_fallback_generate_colors_all_unresolved_counts_pending_entries_not_the_shared_none():
+    """The bug this fixes: every entry has new_id=None (colors picked for the
+    mapping before any palette ever existed) -- {None} has length 1, which
+    would wrongly suggest generating a single color no matter how many were
+    actually picked. Must fall back to len(entries) instead."""
+    entries = [{"old_id": 1, "new_id": None}, {"old_id": 2, "new_id": None}, {"old_id": 3, "new_id": None}]
+    assert ms.fallback_generate_colors(entries) == 3
+
+
+def test_fallback_generate_colors_mixed_resolved_and_unresolved_ignores_the_unresolved():
+    entries = [{"old_id": 1, "new_id": 1}, {"old_id": 2, "new_id": None}]
+    assert ms.fallback_generate_colors(entries) == 1  # only the resolved one counts as a role
+
+
+def test_fallback_generate_colors_counts_hex_rgb_siblings_as_one_color():
+    """The bug this fixes: with "Auto-link hex/rgb" on (the default), a real
+    color detected in both hex and rgb form lands as TWO entries (one old_id
+    each) once added to the mapping, but it's still just ONE color -- e.g. 8
+    real colors where 2 also have an rgb sibling should suggest 8, not 10."""
+    entries = [{"old_id": i, "new_id": None} for i in range(1, 11)]  # 10 raw entries
+    # ids 1&2 are hex/rgb siblings of the same real color, likewise 3&4 --
+    # 8 real colors total, same shape conflicts.find_case2_siblings returns.
+    siblings = {
+        "aaaaaa": [{"id": 1, "color": "aaaaaa"}, {"id": 2, "color": "aaaaaa"}],
+        "bbbbbb": [{"id": 3, "color": "bbbbbb"}, {"id": 4, "color": "bbbbbb"}],
+    }
+    assert ms.fallback_generate_colors(entries, sibling_groups=siblings) == 8
+
+
+def test_fallback_generate_colors_without_sibling_groups_counts_siblings_separately():
+    """sibling_groups=None (e.g. "Auto-link hex/rgb" switched off) -- hex/rgb
+    representations must count as separate colors, unchanged baseline
+    behavior."""
+    entries = [{"old_id": 1, "new_id": None}, {"old_id": 2, "new_id": None}]
+    siblings = {"aaaaaa": [{"id": 1, "color": "aaaaaa"}, {"id": 2, "color": "aaaaaa"}]}
+    assert ms.fallback_generate_colors(entries, sibling_groups=None) == 2
+    assert ms.fallback_generate_colors(entries) == 2  # default is also None
+
+
 def test_mappingstore_save_load_roundtrip_with_project_dir(tmp_path):
     project_dir = tmp_path / "project"
     (project_dir / "palettes").mkdir(parents=True)
@@ -440,6 +488,59 @@ def test_registry_for_active_on_empty_registry_is_a_harmless_empty_store(tmp_pat
     assert store.entries == []
     store.add_or_update(1, 1)  # must not raise, even with nothing to attach to
     assert store.resolved_entries() == [{"old_id": 1, "new_id": 1}]
+
+
+def test_is_attached_false_only_for_the_dangling_for_active_store(tmp_path):
+    registry_path = tmp_path / "mappings" / "mappings.json"
+    reg = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+
+    assert reg.for_active().is_attached is False  # nothing active yet -- the dangling case
+
+    a_path = str(tmp_path / "a.csv")
+    assert reg.for_palette(a_path).is_attached is True  # bound to a real section
+    assert reg.for_active().is_attached is True  # for_palette above just made it active
+
+    standalone = ms.MappingStore(str(tmp_path / "standalone.csv"))
+    assert standalone.is_attached is True  # no registry at all -- save() always writes for real
+
+
+def test_adopt_unresolved_adds_pending_ids_without_touching_existing_targets(tmp_path):
+    registry_path = tmp_path / "mappings" / "mappings.json"
+    reg = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+    store = reg.for_palette(str(tmp_path / "a.csv"))
+    store.add_or_update(1, 5)
+
+    added = store.adopt_unresolved([1, 2, 3])
+
+    assert added == 2  # 1 was already present, left untouched
+    assert store.entries == [
+        {"old_id": 1, "new_id": 5},
+        {"old_id": 2, "new_id": None},
+        {"old_id": 3, "new_id": None},
+    ]
+
+
+def test_adopt_unresolved_rescues_selections_from_a_dangling_store_into_a_real_one(tmp_path):
+    """The actual bug this fixes: picking detected colors for the mapping
+    before any palette exists builds up entries on for_active()'s dangling,
+    unattached store -- save() silently no-ops there (is_attached is
+    False), so without rescuing them, they vanish the instant a real
+    palette section replaces it (see window_main.MainWindow._set_new_palette)."""
+    registry_path = tmp_path / "mappings" / "mappings.json"
+    reg = ms.MappingRegistry(str(registry_path), project_dir=str(tmp_path))
+
+    dangling = reg.for_active()
+    dangling.add_or_update(1, None)
+    dangling.add_or_update(2, None)
+    assert dangling.is_attached is False
+
+    pending = [e["old_id"] for e in dangling.entries if e["new_id"] is None]
+    real = reg.for_palette(str(tmp_path / "generated.csv"))
+    real.adopt_unresolved(pending)
+
+    assert real.unresolved_ids() == [1, 2]
+    reloaded = reg.for_palette(str(tmp_path / "generated.csv"), set_active=False)
+    assert reloaded.unresolved_ids() == [1, 2]  # actually persisted, not just in-memory
 
 
 def test_registry_all_sections_lists_every_palette(tmp_path):

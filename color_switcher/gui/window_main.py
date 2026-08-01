@@ -78,6 +78,15 @@ class MainWindow(Adw.ApplicationWindow):
         self.registry = None
         self._mapping_drift = {"ok": [], "driftable": [], "orphaned": []}
         self.active_group_ids = frozenset()
+        # True only when active_group_ids was set by an EXPLICIT re-click on
+        # an already-mapped entry (_on_mapping_old_activated/
+        # _on_mapping_new_activated) -- as opposed to the auto-select
+        # _add_group_to_mapping does right after adding a brand new entry,
+        # purely so the very next palette click can assign it a target. Only
+        # this flag being set arms "swap the source" on the next available-
+        # detected click (see _on_available_detected_activated); otherwise
+        # that click just adds a new entry, same as if nothing were active.
+        self.active_group_is_existing = False
         self._welcomed = False  # welcome dialog shows once per session, before anything else
         self.auto_link_siblings = True
         self.detected_by_folder = False
@@ -273,6 +282,18 @@ class MainWindow(Adw.ApplicationWindow):
             msg += f" {dropped} assignment(s) were left unassigned."
         dialogs.toast(self.toast_overlay, msg)
 
+    def _mapping_fallback_colors(self) -> int:
+        """How many colors a fresh generation should default to asking for
+        -- see mapping_store.fallback_generate_colors for the actual rule
+        (same one the CLI's `palette generate`/`automatic --from-image`
+        already used). sibling_groups only passed when "Auto-link hex/rgb"
+        is on -- with it off, a color's hex and rgb representations genuinely
+        count as separate colors, same as everywhere else that setting
+        applies (see _refresh_warnings)."""
+        entries = self.mapping.entries if self.mapping else []
+        siblings = self.siblings if self.auto_link_siblings else None
+        return mapping_store.fallback_generate_colors(entries, sibling_groups=siblings)
+
     def _action_generate_palette(self, _action, _param):
         dialogs.pick_image_file(self, self._on_generate_palette_image_picked)
 
@@ -286,7 +307,8 @@ class MainWindow(Adw.ApplicationWindow):
             self._ask_reuse_or_regenerate(image_path, existing[0])
             return
         dialogs.prompt_text(
-            self, "Generate palette", "How many colors to generate?", "6", "Generate",
+            self, "Generate palette", "How many colors to generate?",
+            str(self._mapping_fallback_colors()), "Generate",
             lambda text: self._on_generate_palette_count(image_path, text),
         )
 
@@ -309,7 +331,7 @@ class MainWindow(Adw.ApplicationWindow):
             self._set_new_palette(existing_path, entries)
             dialogs.toast(self.toast_overlay, f"Using the existing palette: {len(entries)} color(s).")
             return
-        n_colors = len(palette_store.read_palette_csv(existing_path)) or 6
+        n_colors = len(palette_store.read_palette_csv(existing_path)) or self._mapping_fallback_colors()
         dialogs.prompt_text(
             self, "Regenerate palette", "How many colors to generate?", str(n_colors), "Regenerate",
             lambda text: self._on_generate_palette_count(image_path, text, out_path=existing_path),
@@ -319,7 +341,14 @@ class MainWindow(Adw.ApplicationWindow):
         try:
             n_colors = max(1, int(count_text.strip()))
         except ValueError:
-            n_colors = 6
+            # The prompt's suggested count is a placeholder hint, not a real
+            # pre-filled value (see dialogs.prompt_text) -- count_text is ""
+            # whenever the user leaves it as shown, which is the expected,
+            # common case here, not just a parse-error edge case. Falls back
+            # to the mapping's own needed-colors count, and only to 6 (this
+            # app's historical default) when there's no mapping to consult
+            # either -- see mapping_store.fallback_generate_colors.
+            n_colors = self._mapping_fallback_colors()
 
         settings = palette_generator.read_generation_settings(self.config)
         shuffle_arg = None
@@ -444,11 +473,23 @@ class MainWindow(Adw.ApplicationWindow):
         its OWN persistent mapping section (see mapping_store.MappingRegistry)
         -- so unlike before this rework, switching away and back never wipes
         or clobbers a different palette's already-tuned mapping; for_palette
-        loads-or-creates exactly the right section and marks it active."""
+        loads-or-creates exactly the right section and marks it active.
+
+        If the OLD self.mapping was never attached to any section (the user
+        picked some detected colors for the mapping before any palette
+        existed at all -- see MappingStore.is_attached), those pending
+        selections live only in that soon-to-be-discarded object's memory
+        and would otherwise vanish the moment it's replaced below; rescue
+        them into the section that gets bound now."""
         self.new_palette_path = path
         self.new_palette = entries
         if self.registry is not None:
+            pending_old_ids = []
+            if self.mapping is not None and not self.mapping.is_attached:
+                pending_old_ids = [e["old_id"] for e in self.mapping.entries if e["new_id"] is None]
             self.mapping = self.registry.for_palette(path, old_palette=self.config.detected_palette_csv)
+            if pending_old_ids:
+                self.mapping.adopt_unresolved(pending_old_ids)
         self._refresh_all()
 
     # --------------------------------------------------------------- detection
@@ -500,6 +541,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.detected_colors = colors
         self.siblings = conflicts.find_case2_siblings(colors)
         self.active_group_ids = frozenset()
+        self.active_group_is_existing = False
 
         # Continue whatever's currently active in the mapping registry (one
         # section PER palette, see mapping_store.MappingRegistry) instead of
@@ -863,6 +905,10 @@ class MainWindow(Adw.ApplicationWindow):
         for c in group:
             self.mapping.add_or_update(c["id"], None)
         self.active_group_ids = frozenset(c["id"] for c in group)
+        # Auto-selected purely so the next palette click can assign it a
+        # target -- must never arm "swap source" for the NEXT detected click
+        # (see active_group_is_existing).
+        self.active_group_is_existing = False
         self._refresh_all()
 
     def _remove_group(self, old_ids):
@@ -870,6 +916,7 @@ class MainWindow(Adw.ApplicationWindow):
             self.mapping.remove(oid)
         if self.active_group_ids and set(self.active_group_ids) & set(old_ids):
             self.active_group_ids = frozenset()
+            self.active_group_is_existing = False
         self._refresh_all()
 
     def _mapping_groups_in_order(self, group_lookup=None):
@@ -1329,22 +1376,33 @@ class MainWindow(Adw.ApplicationWindow):
     # ------------------------------------------------------------- row clicks
 
     def _on_available_detected_activated(self, _listbox, row):
-        # A currently-selected mapping row (picked via _on_mapping_old_activated)
-        # means "swap which detected color feeds this entry" instead of "add
-        # a brand new entry" -- the source-side equivalent of picking a new
-        # target palette color for an existing entry, without deleting first.
-        if self.active_group_ids and any(
-            self.mapping._find(oid) is not None for oid in self.active_group_ids
-        ):
+        # Only an EXPLICIT re-click on an already-mapped entry (picked via
+        # _on_mapping_old_activated/_on_mapping_new_activated -- never the
+        # auto-select _add_group_to_mapping does right after adding a brand
+        # new entry) arms "swap which detected color feeds this entry"
+        # instead of "add a brand new entry" -- the source-side equivalent of
+        # picking a new target palette color for an existing entry, without
+        # deleting first. Without this distinction, adding two colors in a
+        # row by clicking (not the + button) would silently replace the
+        # first with the second instead of adding both.
+        if self.active_group_ids and self.active_group_is_existing:
+            swapped_hex = row.group[0]["color"]
             self._swap_mapping_source(self.active_group_ids, row.group)
             self.active_group_ids = frozenset()
+            self.active_group_is_existing = False
             self._refresh_all()
+            dialogs.toast(self.toast_overlay, f"Swapped this entry's source to #{swapped_hex}.")
             return
         self._add_group_to_mapping(row.group)
 
     def _on_mapping_old_activated(self, _listbox, row):
         ids = frozenset(row.group_ids)
-        self.active_group_ids = frozenset() if self.active_group_ids == ids else ids
+        if self.active_group_ids == ids:
+            self.active_group_ids = frozenset()
+            self.active_group_is_existing = False
+        else:
+            self.active_group_ids = ids
+            self.active_group_is_existing = True
         self._refresh_mapping_lists()
 
     def _on_available_palette_activated(self, _listbox, row):
@@ -1354,12 +1412,14 @@ class MainWindow(Adw.ApplicationWindow):
         for oid in self.active_group_ids:
             self.mapping.add_or_update(oid, row.item_id)
         self.active_group_ids = frozenset()
+        self.active_group_is_existing = False
         self._refresh_all()
 
     def _on_mapping_new_activated(self, _listbox, row):
         for oid in row.group_ids:
             self.mapping.add_or_update(oid, None)
         self.active_group_ids = frozenset(row.group_ids)
+        self.active_group_is_existing = True
         self._refresh_all()
 
     # --------------------------------------------------------- apply/restore

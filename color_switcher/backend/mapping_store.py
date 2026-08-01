@@ -152,6 +152,44 @@ def drop_and_shift_new_id(entries: list, deleted_new_id: int) -> list:
     return out
 
 
+def fallback_generate_colors(entries: list, sibling_groups: dict = None) -> int:
+    """How many colors a fresh generation should default to asking for when
+    the caller didn't pass an explicit count: the number of distinct roles
+    the mapping actually needs -- its distinct RESOLVED new_id values (a
+    None new_id is "selected but not yet assigned a target," see the module
+    docstring, and carries no role information to count).
+
+    If there isn't a single resolved entry -- e.g. detected colors were
+    picked for the mapping before any palette ever existed, so every entry
+    is still new_id=None (see mapping_store.MappingStore.is_attached) --
+    falls back to how many distinct detected colors are pending instead, so
+    the suggestion still reflects real work done instead of collapsing to a
+    meaningless "1" (every entry sharing the same None isn't 1 role).
+
+    sibling_groups (same {hex: [detected entry, ...]} shape
+    conflicts.find_case2_siblings returns, pass None/{} to disable): in that
+    pending-count fallback, an old_id that's just the hex/rgb sibling of
+    another old_id ALREADY counted is the same real color, not a second one
+    -- without this, auto-linked siblings (the default -- see "Auto-link
+    hex/rgb") would each add their own entry to the mapping and inflate the
+    count, e.g. 10 real colors landing 2 as hex/rgb pairs would count as 12
+    instead of 10. Pass None when the caller's "Auto-link hex/rgb" is
+    switched off, so siblings genuinely count as separate colors.
+
+    6 (the app's historical default) only when there's nothing at all to
+    go on, i.e. entries is empty."""
+    resolved = {e["new_id"] for e in entries if e.get("new_id") is not None}
+    if resolved:
+        return len(resolved)
+    if entries:
+        sibling_key = {}
+        for hex_val, members in (sibling_groups or {}).items():
+            for m in members:
+                sibling_key[m["id"]] = hex_val
+        return len({sibling_key.get(e["old_id"], e["old_id"]) for e in entries})
+    return 6
+
+
 def resolve_apply_targets(entries: list, new_palette: list) -> dict:
     """The single apply-resolution algorithm shared by every apply path (GUI,
     `apply`/`test`, `automatic`/guiless.apply_palette, `palette shift --apply`).
@@ -392,6 +430,36 @@ class MappingStore:
             return
         write_mapping_csv(self.path, self.old_palette, self.new_palette, self.entries,
                            project_dir=self.project_dir)
+
+    @property
+    def is_attached(self) -> bool:
+        """False only for the special "no palette chosen yet" store
+        MappingRegistry.for_active() returns when the registry has no
+        `active` section at all (e.g. a genuinely fresh project) -- save()
+        silently no-ops in that state (see MappingRegistry._save_from),
+        since there's no palette-keyed section to persist into yet. Callers
+        that let the user build up entries against an unattached store (the
+        GUI lets you pick detected colors for the mapping before any
+        palette exists) should rescue them (see adopt_unresolved) before
+        swapping in a real, attached store -- otherwise those selections
+        silently vanish the instant that happens."""
+        return self._registry is None or self._registry_key is not None
+
+    def adopt_unresolved(self, old_ids, persist: bool = True) -> int:
+        """Add each of old_ids not already present as a pending (new_id=None)
+        entry -- for carrying forward selections made against an unattached
+        store (see is_attached) into whichever real section replaces it.
+        Already-present ids are left untouched (their real target, if any,
+        is never overwritten with None). Returns how many were added."""
+        existing = {e["old_id"] for e in self.entries}
+        added = 0
+        for old_id in old_ids:
+            if old_id not in existing:
+                self.add_or_update(old_id, None, persist=False)
+                added += 1
+        if persist and added:
+            self.save()
+        return added
 
     def _find(self, old_id: int):
         for e in self.entries:

@@ -393,17 +393,20 @@ def _parse_on_off(raw: str) -> bool:
 
 def _mapping_fallback_colors(config, mapping_path):
     """How many colors a fresh generation should ask for when the caller
-    didn't pass --colors: the number of distinct roles the mapping actually
-    needs (same convenience both `palette generate` and `automatic
-    --from-image` already had), or 6 if there's no mapping to consult.
-    mapping_path=None consults the currently-active mapping (see
-    mapping_store.MappingRegistry) -- an explicit --mapping always wins."""
+    didn't pass --colors -- see mapping_store.fallback_generate_colors for
+    the actual rule. mapping_path=None consults the currently-active
+    mapping (see mapping_store.MappingRegistry) -- an explicit --mapping
+    always wins. The CLI has no "Auto-link hex/rgb" toggle to consult (GUI-
+    only setting), so this always treats hex/rgb siblings as one color --
+    same as the GUI's own default."""
     if mapping_path:
         _old_p, _new_p, entries = mapping_store.read_mapping_csv(mapping_path, project_dir=config.project_dir)
     else:
         registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
         entries = registry.for_active().entries
-    return len({e["new_id"] for e in entries}) if entries else 6
+    detected_colors = color_detector.read_detected_csv(config.detected_palette_csv)
+    siblings = conflicts.find_case2_siblings(detected_colors)
+    return mapping_store.fallback_generate_colors(entries, sibling_groups=siblings)
 
 
 def _resolve_generate_target(config, image, explicit_out, regenerate, requested_colors, fallback_colors):
