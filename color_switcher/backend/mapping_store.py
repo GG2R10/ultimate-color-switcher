@@ -321,7 +321,7 @@ def refresh_identity_stamps(entries: list, detected_colors: list) -> tuple:
     return new_entries, drift
 
 
-def apply_drift_relinks(entries: list, driftable: list) -> list:
+def apply_drift_relinks(entries: list, driftable: list) -> tuple:
     """Apply every driftable finding from detect_drift in ONE ATOMIC pass --
     each entry's old_id is rewritten by looking up the ORIGINAL (pre-relink)
     old_id in a precomputed {old_id: correct_old_id} map, all from the SAME
@@ -332,15 +332,81 @@ def apply_drift_relinks(entries: list, driftable: list) -> list:
     find the other "in the way" of its target id (or, worse, silently
     corrupt it if processed against a store already mutated by the first
     relink) -- a single-pass remap over the original list sidesteps both
-    problems entirely, for a swap or any longer cycle."""
+    problems entirely, for a swap or any longer cycle.
+
+    A CONVERGED apply (two+ detected colors replaced with the exact same
+    real color, see conflicts.find_target_convergence) makes two+ driftable
+    findings resolve to the SAME correct_old_id. old_id uniqueness is an
+    invariant the rest of the app relies on (entry_by_old_id-style lookups
+    silently collapse to one on a duplicate, hiding the other -- this is
+    what actually broke before this fix, not the relink itself), so rather
+    than ever producing duplicate old_id rows, only the FIRST entry
+    (original list order) ending up at a given old_id is kept; every other
+    one that would land on it too is DROPPED -- never silently guessed which
+    target "wins", mirroring color_detector.rekey_roles_after_apply's same
+    warn-don't-guess precedent for role convergence.
+
+    Returns (new_entries, merged) -- merged is [{"kept_old_id",
+    "dropped_old_id", "dropped_new_id", "correct_old_id"}, ...] for every
+    entry dropped this way, so the caller can warn about it (never silent)."""
     remap = {d["old_id"]: d["correct_old_id"] for d in driftable}
     new_entries = []
+    merged = []
+    by_old_id = {}
     for e in entries:
+        final_old_id = remap.get(e["old_id"], e["old_id"])
+        kept = by_old_id.get(final_old_id)
+        if kept is not None:
+            merged.append({
+                "kept_old_id": kept["old_id"], "dropped_old_id": e["old_id"],
+                "dropped_new_id": e.get("new_id"), "correct_old_id": final_old_id,
+            })
+            continue
         if e["old_id"] in remap:
             e = dict(e)
-            e["old_id"] = remap[e["old_id"]]
+            e["old_id"] = final_old_id
+        by_old_id[final_old_id] = e
         new_entries.append(e)
-    return new_entries
+    return new_entries, merged
+
+
+def check_and_relink_drift(store: "MappingStore", detected_colors: list, persist: bool = True) -> dict:
+    """Load a mapping for REAL USE -- about to be applied (CLI: apply/test/
+    automatic/automatic shift/any --apply tail), or just switched to as the
+    active one (GUI: MainWindow._set_new_palette) -- and immediately resolve
+    any drift, rather than leaving it for the user to notice and click
+    "Re-link" (still how a mapping that ISN'T about to be read/applied gets
+    handled -- e.g. `ucs mapping show`/`mapping list` stay read-only, and the
+    GUI's periodic drift check for whatever's ALREADY the active mapping
+    still just warns). An old_id that's silently WRONG -- coincidentally
+    reused by a DIFFERENT real color since this mapping was last active or
+    applied, since ids are just a rank recomputed on every scan -- is a real
+    correctness risk if a caller reads it before it's resolved:
+    color_replacer.apply_mapping would replace the wrong color, with no
+    error or warning at all. Also the reason this must run BEFORE any
+    collision/convergence check the caller does next -- those are computed
+    from old_id too, and would just be checking garbage otherwise.
+
+    persist=True (the default) writes both the refreshed stamps and the
+    relink back to store's file; pass False only for a dry-run/simulate
+    that must not mutate anything on disk (e.g. `ucs test`, or
+    guiless.apply_palette's dry_run=True) -- store.entries is updated in
+    memory either way, so the caller's subsequent checks and the apply
+    itself (real or simulated) always see corrected ids.
+
+    Returns {"relinked": [...], "merged": [...], "orphaned": [...]}:
+    relinked/orphaned are detect_drift's own finding shapes (empty when
+    nothing needed it); merged is apply_drift_relinks' drop list for a
+    converged/colliding mapping (see its docstring). orphaned is NEVER
+    auto-resolved (no candidate to relink to) -- only ever reported."""
+    new_entries, drift = refresh_identity_stamps(store.entries, detected_colors)
+    merged = []
+    if drift["driftable"]:
+        new_entries, merged = apply_drift_relinks(new_entries, drift["driftable"])
+    store.entries = new_entries
+    if persist:
+        store.save()
+    return {"relinked": drift["driftable"], "merged": merged, "orphaned": drift["orphaned"]}
 
 
 def stamp_applied_entries(entries: list, applied_entries: list, new_palette: list,
@@ -505,19 +571,22 @@ class MappingStore:
             self.save()
         return before
 
-    def apply_drift_relinks(self, driftable: list, persist: bool = True) -> int:
+    def apply_drift_relinks(self, driftable: list, persist: bool = True) -> tuple:
         """Apply every detect_drift "driftable" finding as one ATOMIC rewrite
         of old_id fields (see the module-level apply_drift_relinks -- this
         must never be done as a sequence of one-at-a-time relinks: the most
         common drift scenario is exactly two colors trading rank, and
         resolving entry A's relink before entry B's would find B "in the way"
-        of A's target id, or vice versa, corrupting the swap). Returns how
-        many entries were actually rewritten."""
+        of A's target id, or vice versa, corrupting the swap). Returns
+        (rewritten, merged): rewritten is how many entries had their old_id
+        actually changed; merged is the drop list from the module-level
+        apply_drift_relinks (see its docstring) for a converged apply --
+        never silent about two entries collapsing into one."""
         rewritten = sum(1 for e in self.entries if e["old_id"] in {d["old_id"] for d in driftable})
-        self.entries = apply_drift_relinks(self.entries, driftable)
+        self.entries, merged = apply_drift_relinks(self.entries, driftable)
         if persist:
             self.save()
-        return rewritten
+        return rewritten, merged
 
     def resolved_entries(self) -> list:
         """Entries ready to apply, in insertion order."""

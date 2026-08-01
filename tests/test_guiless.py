@@ -88,6 +88,65 @@ def test_yolo_does_not_bypass_conflicts(fake_project, monkeypatch):
     assert with_force["status"] == "applied"
 
 
+def test_stale_old_id_is_relinked_before_applying_the_wrong_color(fake_project, monkeypatch):
+    """The dangerous case check_and_relink_drift exists for: old_id 1's
+    STAMP says it's really #222222, but the current detection has #111111
+    at id 1 (and #222222 at id 2) -- ids are just a rank recomputed every
+    scan, so this is exactly what "the mapping sat inactive since the files
+    last changed" looks like. Without relinking first, apply_mapping would
+    look up old_id 1, find #111111 there NOW, and replace the WRONG color
+    with no error or warning at all."""
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    fp = fake_project.make_file("app/style.css", "#111111 #222222")
+    config = fake_project.load_config()
+    detected = detect_diff.detect_with_route(config)["colors"]
+    by_hex = {c["color"]: c["id"] for c in detected}
+    assert by_hex["111111"] == 1 and by_hex["222222"] == 2
+
+    mapping_path = mapping_store.new_mapping_path(config.mappings_dir)
+    store = mapping_store.MappingStore(
+        mapping_path, old_palette=config.detected_palette_csv, new_palette="unused.csv"
+    )
+    store.entries = [{"old_id": 1, "new_id": 1, "old_type": "hex", "old_hex": "222222"}]
+    store.save()
+
+    result = guiless.apply_palette([{"hex": "#aaaaaa"}], store.path, config.backup_dir, dry_run=False)
+
+    assert result["status"] == "applied"
+    assert result["pre_apply_drift"]["relinked"] == [
+        {"old_id": 1, "correct_old_id": 2, "type": "hex", "hex": "222222"}
+    ]
+    content = open(fp).read().lower()
+    assert "222222" not in content  # the color the mapping actually intended got replaced
+    assert "111111" in content      # NOT the coincidentally-same-id-but-wrong color
+    assert "aaaaaa" in content
+
+    reloaded = mapping_store.MappingStore(store.path).load()
+    assert reloaded.entries[0]["old_id"] == 2  # the relink was actually persisted
+
+
+def test_dry_run_relinks_in_memory_only_leaves_disk_untouched(fake_project, monkeypatch):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    fake_project.make_file("app/style.css", "#111111 #222222")
+    config = fake_project.load_config()
+    detect_diff.detect_with_route(config)
+
+    mapping_path = mapping_store.new_mapping_path(config.mappings_dir)
+    store = mapping_store.MappingStore(
+        mapping_path, old_palette=config.detected_palette_csv, new_palette="unused.csv"
+    )
+    store.entries = [{"old_id": 1, "new_id": 1, "old_type": "hex", "old_hex": "222222"}]
+    store.save()
+
+    result = guiless.apply_palette([{"hex": "#aaaaaa"}], store.path, config.backup_dir, dry_run=True)
+
+    assert result["status"] == "applied"
+    assert result["pre_apply_drift"]["relinked"]  # detected and reported...
+
+    reloaded = mapping_store.MappingStore(store.path).load()
+    assert reloaded.entries[0]["old_id"] == 1  # ...but never written to disk for a dry run
+
+
 def test_insufficient_palette_blocks_even_with_force(fake_project, monkeypatch):
     """3 distinct roles needed (_setup maps 3 detected colors to 3 distinct
     slots), only 1 palette color given -- there's nothing to assign to the
@@ -188,6 +247,7 @@ def test_convergence_blocks_unless_forced(fake_project, monkeypatch):
     )
     assert forced["status"] == "applied"
     assert forced["stale_mapping_warning"] is True
+    assert forced["convergence"]  # so a caller can auto-relink the mapping's now-stale ids after a real apply
 
 
 def test_dry_run_does_not_modify_files(fake_project, monkeypatch):

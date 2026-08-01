@@ -37,7 +37,7 @@ from .backend import (
 from .backend.config import load_config, read_files_to_replace, to_home_relative, write_files_to_replace
 
 
-def _report_mapping_drift(config, detected_colors, persist=False):
+def _report_mapping_drift(config, detected_colors, persist=False, auto_relink=False):
     """Compare the ACTIVE palette's identity-stamped mapping entries (see
     mapping_store.refresh_identity_stamps) against a fresh detected_colors
     scan and print a summary. Deliberately scoped to the ACTIVE mapping
@@ -54,7 +54,17 @@ def _report_mapping_drift(config, detected_colors, persist=False):
     persist=True (only right after a REAL apply, where files on disk
     actually changed under us) also writes the refreshed stamp back;
     persist=False (e.g. a bare `ucs detect`) never touches the file -- it
-    just reports."""
+    just reports.
+
+    auto_relink=True (only right after an apply that had convergence or a
+    case-1 collision -- see cmd_apply/cmd_test/_report_apply_result)
+    resolves every driftable finding right away instead of just printing
+    'ucs mapping relink': both leave the replaced color coinciding with
+    another real detected color, so the mapping is CERTAIN to be pointing
+    at a stale id for it, unlike ordinary drift (merely possible), so
+    there's nothing for the user to confirm here that isn't already known --
+    see mapping_store.apply_drift_relinks for how the resulting duplicate
+    old_id is resolved (merged, never silently)."""
     registry = mapping_store.MappingRegistry(config.mapping_registry_json, project_dir=config.project_dir)
     store = registry.for_active()
     if not store.entries:
@@ -64,11 +74,40 @@ def _report_mapping_drift(config, detected_colors, persist=False):
         store.entries = new_entries
         store.save()
     if drift["driftable"]:
-        print(f"⚠ {len(drift['driftable'])} mapped color(s) changed id on the last scan "
-              "(the real color still exists, it just moved position). Run "
-              "'ucs mapping relink' to fix them.")
+        if auto_relink:
+            relinked, merged = store.apply_drift_relinks(drift["driftable"])
+            print(f"⚠ {relinked} mapped color(s) changed id after applying a converged palette -- "
+                  "relinked automatically (the real color still exists, it just moved position).")
+            if merged:
+                print(f"  {len(merged)} of those converged onto the same detected color and were merged:")
+                for m in merged:
+                    print(f"    old_id {m['dropped_old_id']} -> merged into old_id {m['kept_old_id']} "
+                          f"(new_id {m['dropped_new_id']} dropped)")
+        else:
+            print(f"⚠ {len(drift['driftable'])} mapped color(s) changed id on the last scan "
+                  "(the real color still exists, it just moved position). Run "
+                  "'ucs mapping relink' to fix them.")
     if drift["orphaned"]:
         print(f"⚠ {len(drift['orphaned'])} mapped color(s) no longer appear in your scanned files. "
+              "Check them by hand ('ucs mapping show').")
+
+
+def _print_drift_relink_result(result: dict) -> None:
+    """Report mapping_store.check_and_relink_drift's outcome -- called right
+    before an apply consults a mapping that may have sat inactive a while,
+    so a relinked (or, for a converged/colliding mapping, merged) old_id is
+    never silent, and an orphaned one (never auto-resolved) still gets
+    flagged even though nothing could be done about it automatically."""
+    if result["relinked"]:
+        print(f"↻ {len(result['relinked'])} mapped color(s) had drifted to a different id -- "
+              "relinked automatically before applying.")
+    if result["merged"]:
+        print(f"  {len(result['merged'])} of those converged onto the same detected color and were merged:")
+        for m in result["merged"]:
+            print(f"    old_id {m['dropped_old_id']} -> merged into old_id {m['kept_old_id']} "
+                  f"(new_id {m['dropped_new_id']} dropped)")
+    if result["orphaned"]:
+        print(f"⚠ {len(result['orphaned'])} mapped color(s) no longer appear in your scanned files. "
               "Check them by hand ('ucs mapping show').")
 
 
@@ -648,8 +687,13 @@ def cmd_mapping_relink(args, config):
             print("Cancelled.")
             return
 
-    relinked = store.apply_drift_relinks(drift["driftable"])
+    relinked, merged = store.apply_drift_relinks(drift["driftable"])
     print(f"\n{relinked} {'entry' if relinked == 1 else 'entries'} relinked.")
+    if merged:
+        print(f"{len(merged)} of those converged onto the same detected color and were merged:")
+        for m in merged:
+            print(f"  old_id {m['dropped_old_id']} -> merged into old_id {m['kept_old_id']} "
+                  f"(new_id {m['dropped_new_id']} dropped)")
 
 
 def cmd_mapping_list(args, config):
@@ -831,6 +875,17 @@ def _apply_or_test(args, config, mode):
 
     detected_path = store.old_palette or config.detected_palette_csv
     detected_colors = color_detector.read_detected_csv(detected_path)
+    # store may have sat inactive since it was last touched/applied -- its
+    # old_ids could be silently WRONG against detected_colors (coincidentally
+    # reused by a different real color since then, since ids are just a rank
+    # recomputed every scan). Resolve that now, BEFORE the collision/
+    # convergence checks below (computed from old_id too, garbage otherwise)
+    # and before it's used to apply anything. persist=False for `ucs test`
+    # -- entries is corrected in memory either way, so the simulated result
+    # is accurate, but nothing is written to disk for a run that's not real.
+    drift_result = mapping_store.check_and_relink_drift(store, detected_colors, persist=(mode != "test"))
+    _print_drift_relink_result(drift_result)
+    entries = store.entries
     new_palette = palette_store.read_palette_csv(new_p) if new_p else []
 
     # Resolve entries against the palette via the one shared resolver every
@@ -899,7 +954,7 @@ def _apply_or_test(args, config, mode):
         store.save()
         print(f"Backup at: {config.backup_dir}")
         print("To undo: ucs restore")
-        _refresh_detected_after_change(config)
+        _refresh_detected_after_change(config, auto_relink=bool(convergence or collisions))
         restart_actions.write_wallpaper_state(config, new_p)
         started = restart_actions.run_enabled(
             restart_actions.read_restart_actions(config), extra_env=restart_actions.wallpaper_env(new_p), cli=True
@@ -908,14 +963,16 @@ def _apply_or_test(args, config, mode):
             print(f"  Running: {a['label']}" + ("" if a["started"] else f" (error: {a['error']})"))
 
 
-def _refresh_detected_after_change(config):
+def _refresh_detected_after_change(config, auto_relink=False):
     """Re-scan and persist detected_palette.csv after files on disk changed
     (a real apply/automatic or a restore) — otherwise the old mapping keeps
-    pointing at colors that no longer exist in the files."""
+    pointing at colors that no longer exist in the files. auto_relink: see
+    _report_mapping_drift -- pass True only right after an apply that had
+    convergence."""
     colors = detect_diff.run_detect(config)
     color_detector.write_detected_csv(colors, config.detected_palette_csv)
     print(f"Colors re-detected and saved to: {config.detected_palette_csv}")
-    _report_mapping_drift(config, colors, persist=True)
+    _report_mapping_drift(config, colors, persist=True, auto_relink=auto_relink)
 
 
 def cmd_test(args, config):
@@ -1064,6 +1121,9 @@ def _report_apply_result(result, args, config, mapping_desc, palette_path=None):
     display string (a path, or "the active mapping") -- only used in messages.
     palette_path, if given, is the applied palette's own path, used to look
     up $UCS_WALLPAPER for the restart actions (see restart_actions.wallpaper_env)."""
+    if "pre_apply_drift" in result:
+        _print_drift_relink_result(result["pre_apply_drift"])
+
     status = result["status"]
     if status == "insufficient_palette":
         print(f"The new palette has {result['available']} color(s), but the mapping needs "
@@ -1097,7 +1157,8 @@ def _report_apply_result(result, args, config, mapping_desc, palette_path=None):
                   "and converged into it. Reassign the role by hand if needed.")
         if not args.test:
             print(f"Backup at: {config.backup_dir}")
-            _refresh_detected_after_change(config)
+            auto_relink = bool(result.get("convergence") or result.get("collisions"))
+            _refresh_detected_after_change(config, auto_relink=auto_relink)
             restart_actions.write_wallpaper_state(config, palette_path)
             started = restart_actions.run_enabled(
                 restart_actions.read_restart_actions(config),

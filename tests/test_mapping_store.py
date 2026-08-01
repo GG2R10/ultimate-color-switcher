@@ -268,9 +268,10 @@ def test_refresh_identity_stamps_never_restamps_drifted_or_orphaned_entries():
 def test_apply_drift_relinks_rekeys_without_touching_new_id():
     entries = [{"old_id": 2, "new_id": 7, "old_type": "hex", "old_hex": "ddeeff"}]
     driftable = [{"old_id": 2, "correct_old_id": 3, "type": "hex", "hex": "ddeeff"}]
-    new_entries = ms.apply_drift_relinks(entries, driftable)
+    new_entries, merged = ms.apply_drift_relinks(entries, driftable)
     assert new_entries == [{"old_id": 3, "new_id": 7, "old_type": "hex", "old_hex": "ddeeff"}]
     assert entries[0]["old_id"] == 2  # input untouched
+    assert merged == []
 
 
 def test_apply_drift_relinks_resolves_a_two_way_rank_swap_atomically():
@@ -287,9 +288,111 @@ def test_apply_drift_relinks_resolves_a_two_way_rank_swap_atomically():
         {"old_id": 1, "correct_old_id": 2, "type": "hex", "hex": "111111"},
         {"old_id": 2, "correct_old_id": 1, "type": "hex", "hex": "222222"},
     ]
-    new_entries = ms.apply_drift_relinks(entries, driftable)
+    new_entries, merged = ms.apply_drift_relinks(entries, driftable)
     by_hex = {e["old_hex"]: e["old_id"] for e in new_entries}
     assert by_hex == {"111111": 2, "222222": 1}
+    assert merged == []
+
+
+def test_apply_drift_relinks_merges_converged_entries_instead_of_duplicating_old_id():
+    """The bug this fixes: a converged apply (two detected colors replaced
+    with the same real color) makes two driftable findings resolve to the
+    SAME correct_old_id. Blindly remapping both would leave two entries
+    sharing one old_id -- an invariant violation the rest of the app relies
+    on (dict-keyed old_id lookups elsewhere silently collapse to one,
+    hiding the other). Must keep only the first (list order) and report the
+    drop, never silently guess which target "wins"."""
+    entries = [
+        {"old_id": 3, "new_id": 2, "old_type": "hex", "old_hex": "aaaaaa"},
+        {"old_id": 7, "new_id": 2, "old_type": "hex", "old_hex": "aaaaaa"},
+    ]
+    driftable = [
+        {"old_id": 3, "correct_old_id": 5, "type": "hex", "hex": "aaaaaa"},
+        {"old_id": 7, "correct_old_id": 5, "type": "hex", "hex": "aaaaaa"},
+    ]
+    new_entries, merged = ms.apply_drift_relinks(entries, driftable)
+
+    assert new_entries == [{"old_id": 5, "new_id": 2, "old_type": "hex", "old_hex": "aaaaaa"}]
+    assert merged == [{"kept_old_id": 5, "dropped_old_id": 7, "dropped_new_id": 2, "correct_old_id": 5}]
+
+
+def test_apply_drift_relinks_merge_keeps_the_first_entrys_own_new_id():
+    """The two converging entries had DIFFERENT targets before the apply --
+    the survivor keeps whichever one was first in the list, the other's
+    target is reported as dropped rather than silently discarded."""
+    entries = [
+        {"old_id": 3, "new_id": 1, "old_type": "hex", "old_hex": "aaaaaa"},
+        {"old_id": 7, "new_id": 9, "old_type": "hex", "old_hex": "aaaaaa"},
+    ]
+    driftable = [
+        {"old_id": 3, "correct_old_id": 5, "type": "hex", "hex": "aaaaaa"},
+        {"old_id": 7, "correct_old_id": 5, "type": "hex", "hex": "aaaaaa"},
+    ]
+    new_entries, merged = ms.apply_drift_relinks(entries, driftable)
+
+    assert new_entries == [{"old_id": 5, "new_id": 1, "old_type": "hex", "old_hex": "aaaaaa"}]
+    assert merged == [{"kept_old_id": 5, "dropped_old_id": 7, "dropped_new_id": 9, "correct_old_id": 5}]
+
+
+def test_check_and_relink_drift_relinks_and_persists(tmp_path):
+    path = tmp_path / "mapping.csv"
+    store = ms.MappingStore(str(path), old_palette="d.csv", new_palette="p.csv")
+    store.add_or_update(2, 7)
+    store.entries[0].update(old_type="hex", old_hex="ddeeff")
+
+    detected = _detected((3, "hex", "ddeeff"))  # same real color, now at a different id
+    result = ms.check_and_relink_drift(store, detected)
+
+    assert result == {"relinked": [{"old_id": 2, "correct_old_id": 3, "type": "hex", "hex": "ddeeff"}],
+                       "merged": [], "orphaned": []}
+    assert store.entries == [{"old_id": 3, "new_id": 7, "old_type": "hex", "old_hex": "ddeeff"}]
+
+    reloaded = ms.MappingStore(str(path)).load()
+    assert reloaded.entries[0]["old_id"] == 3  # actually persisted, not just in-memory
+
+
+def test_check_and_relink_drift_persist_false_fixes_memory_but_not_disk():
+    """dry-run/simulate: the caller's in-memory entries must be corrected
+    (so a simulated apply is accurate), but nothing should be written --
+    covered without tmp_path/save() at all, since a bare MappingStore()
+    with no path would blow up on any real save()."""
+    store = ms.MappingStore("/dev/null/unused.csv", old_palette="d.csv", new_palette="p.csv")
+    store.entries = [{"old_id": 2, "new_id": 7, "old_type": "hex", "old_hex": "ddeeff"}]
+    detected = _detected((3, "hex", "ddeeff"))
+
+    result = ms.check_and_relink_drift(store, detected, persist=False)
+
+    assert result["relinked"]
+    assert store.entries == [{"old_id": 3, "new_id": 7, "old_type": "hex", "old_hex": "ddeeff"}]
+
+
+def test_check_and_relink_drift_merges_converged_entries(tmp_path):
+    path = tmp_path / "mapping.csv"
+    store = ms.MappingStore(str(path), old_palette="d.csv", new_palette="p.csv")
+    store.add_or_update(3, 2)
+    store.add_or_update(7, 2)
+    store.entries[0].update(old_type="hex", old_hex="aaaaaa")
+    store.entries[1].update(old_type="hex", old_hex="aaaaaa")
+
+    detected = _detected((5, "hex", "aaaaaa"))  # both converged onto the same single real color
+    result = ms.check_and_relink_drift(store, detected)
+
+    assert result["merged"] == [{"kept_old_id": 5, "dropped_old_id": 7, "dropped_new_id": 2, "correct_old_id": 5}]
+    assert [e["old_id"] for e in store.entries] == [5]
+
+
+def test_check_and_relink_drift_reports_orphaned_without_touching_it(tmp_path):
+    path = tmp_path / "mapping.csv"
+    store = ms.MappingStore(str(path), old_palette="d.csv", new_palette="p.csv")
+    store.add_or_update(2, 7)
+    store.entries[0].update(old_type="hex", old_hex="ffffff")
+
+    result = ms.check_and_relink_drift(store, _detected())  # the color is gone entirely
+
+    assert result["relinked"] == []
+    assert result["merged"] == []
+    assert result["orphaned"] == [{"old_id": 2, "type": "hex", "hex": "ffffff"}]
+    assert store.entries == [{"old_id": 2, "new_id": 7, "old_type": "hex", "old_hex": "ffffff"}]
 
 
 def test_mappingstore_apply_drift_relinks_persists_and_counts(tmp_path):
@@ -304,12 +407,29 @@ def test_mappingstore_apply_drift_relinks_persists_and_counts(tmp_path):
         {"old_id": 1, "correct_old_id": 2, "type": "hex", "hex": "111111"},
         {"old_id": 2, "correct_old_id": 1, "type": "hex", "hex": "222222"},
     ]
-    count = store.apply_drift_relinks(driftable)
+    count, merged = store.apply_drift_relinks(driftable)
     assert count == 2
+    assert merged == []
+
+
+def test_mappingstore_apply_drift_relinks_reports_merges(tmp_path):
+    path = tmp_path / "mapping.csv"
+    store = ms.MappingStore(str(path), old_palette="d.csv", new_palette="p.csv")
+    store.add_or_update(3, 2)
+    store.add_or_update(7, 2)
+    store.entries[0].update(old_type="hex", old_hex="aaaaaa")
+    store.entries[1].update(old_type="hex", old_hex="aaaaaa")
+
+    driftable = [
+        {"old_id": 3, "correct_old_id": 5, "type": "hex", "hex": "aaaaaa"},
+        {"old_id": 7, "correct_old_id": 5, "type": "hex", "hex": "aaaaaa"},
+    ]
+    _count, merged = store.apply_drift_relinks(driftable)
+    assert merged == [{"kept_old_id": 5, "dropped_old_id": 7, "dropped_new_id": 2, "correct_old_id": 5}]
+    assert [e["old_id"] for e in store.entries] == [5]  # persisted, deduplicated
 
     reloaded = ms.MappingStore(str(path)).load()
-    by_hex = {e["old_hex"]: e["old_id"] for e in reloaded.entries}
-    assert by_hex == {"111111": 2, "222222": 1}
+    assert [e["old_id"] for e in reloaded.entries] == [5]  # the merge was actually persisted, not just in-memory
 
 
 def test_resolve_apply_targets_exact_tier_when_palette_covers_max_new_id():

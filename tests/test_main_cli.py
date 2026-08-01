@@ -337,6 +337,60 @@ def test_apply_does_not_warn_about_other_inactive_palettes_going_stale(fake_proj
     assert "cambiaron de id" not in out
 
 
+def test_apply_relinks_stale_old_id_before_applying_the_wrong_color(fake_project, monkeypatch, capsys):
+    """Same dangerous scenario as guiless.apply_palette's own test -- but
+    through the OTHER CLI apply path (_apply_or_test, behind `ucs apply`/
+    `ucs test`), which doesn't go through guiless.py at all and needed the
+    fix separately. old_id 1's STAMP says it's really #222222, but the
+    current detection has #111111 at id 1 -- without relinking first,
+    apply_mapping would replace the WRONG color with no warning."""
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    fp = fake_project.make_file("app/style.css", "#111111 #222222")
+    config = fake_project.load_config()
+    detected = detect_diff.detect_with_route(config)["colors"]
+    by_hex = {c["color"]: c["id"] for c in detected}
+    assert by_hex["111111"] == 1 and by_hex["222222"] == 2
+
+    palette_store.write_palette_csv(config.generated_palette_csv, [{"id": 1, "hex": "aaaaaa", "label": ""}])
+    store = mapping_store.MappingStore(
+        config.mapping_csv, old_palette=config.detected_palette_csv, new_palette=config.generated_palette_csv,
+        project_dir=config.project_dir,
+    )
+    store.entries = [{"old_id": 1, "new_id": 1, "old_type": "hex", "old_hex": "222222"}]
+    store.save()
+
+    ucs_main.cmd_apply(_args(), config)
+    out = capsys.readouterr().out
+    assert "relinked automatically before applying" in out
+
+    content = open(fp).read().lower()
+    assert "222222" not in content  # the color the mapping actually intended got replaced
+    assert "111111" in content      # NOT the coincidentally-same-id-but-wrong color
+    assert "aaaaaa" in content
+
+
+def test_test_mode_relinks_in_memory_for_an_accurate_simulation_but_never_persists(fake_project, monkeypatch, capsys):
+    monkeypatch.setattr(cr, "HOME", str(fake_project.fakehome))
+    fake_project.make_file("app/style.css", "#111111 #222222")
+    config = fake_project.load_config()
+    detect_diff.detect_with_route(config)
+
+    palette_store.write_palette_csv(config.generated_palette_csv, [{"id": 1, "hex": "aaaaaa", "label": ""}])
+    store = mapping_store.MappingStore(
+        config.mapping_csv, old_palette=config.detected_palette_csv, new_palette=config.generated_palette_csv,
+        project_dir=config.project_dir,
+    )
+    store.entries = [{"old_id": 1, "new_id": 1, "old_type": "hex", "old_hex": "222222"}]
+    store.save()
+
+    ucs_main.cmd_test(_args(), config)
+    out = capsys.readouterr().out
+    assert "relinked automatically before applying" in out  # reported...
+
+    reloaded = mapping_store.MappingStore(config.mapping_csv, project_dir=config.project_dir).load()
+    assert reloaded.entries[0]["old_id"] == 1  # ...but never written to disk for --test
+
+
 def test_apply_rekeys_color_role_to_the_new_hex(fake_project, monkeypatch, capsys):
     config, detected, store = _setup(fake_project, monkeypatch)
     old_key = cd.role_key(detected[0]["type"], detected[0]["color"])

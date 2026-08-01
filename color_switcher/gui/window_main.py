@@ -480,7 +480,14 @@ class MainWindow(Adw.ApplicationWindow):
         existed at all -- see MappingStore.is_attached), those pending
         selections live only in that soon-to-be-discarded object's memory
         and would otherwise vanish the moment it's replaced below; rescue
-        them into the section that gets bound now."""
+        them into the section that gets bound now.
+
+        This mapping may have been inactive a while -- its old_ids could be
+        silently WRONG against the CURRENT detection (coincidentally reused
+        by a different real color since it was last active/applied, since
+        ids are just a rank recomputed every scan), which Apply would use
+        with no warning at all. Resolve that now, not after the user's
+        already clicked Apply -- see mapping_store.check_and_relink_drift."""
         self.new_palette_path = path
         self.new_palette = entries
         if self.registry is not None:
@@ -490,6 +497,17 @@ class MainWindow(Adw.ApplicationWindow):
             self.mapping = self.registry.for_palette(path, old_palette=self.config.detected_palette_csv)
             if pending_old_ids:
                 self.mapping.adopt_unresolved(pending_old_ids)
+            result = mapping_store.check_and_relink_drift(self.mapping, self.detected_colors)
+            self._mapping_drift = {"ok": [], "driftable": [], "orphaned": result["orphaned"]}
+            if result["relinked"]:
+                parts = ", ".join(f"id {d['old_id']} → id {d['correct_old_id']}" for d in result["relinked"])
+                n = len(result["relinked"])
+                dialogs.toast(
+                    self.toast_overlay,
+                    f"{n} mapping entr{'y' if n == 1 else 'ies'} relinked to match the current "
+                    f"detection: {parts}.",
+                )
+            self._toast_drift_merges(result["merged"])
         self._refresh_all()
 
     # --------------------------------------------------------------- detection
@@ -990,12 +1008,31 @@ class MainWindow(Adw.ApplicationWindow):
     def _on_relink_drift(self):
         """One or more detected colors drifted to a different id on the last
         rescan -- explicit, user-triggered re-link (never automatic, see
-        mapping_store.refresh_identity_stamps' docstring). Resolves every
-        pending drift finding as one atomic batch (a rank-swap between two
-        colors, the common case, can only be fixed correctly all at once)."""
-        self.mapping.apply_drift_relinks(self._mapping_drift["driftable"])
+        mapping_store.refresh_identity_stamps' docstring) EXCEPT when called
+        right after an apply that had convergence (see do_apply), where a
+        relink is certain to be needed rather than merely possible. Resolves
+        every pending drift finding as one atomic batch (a rank-swap between
+        two colors, the common case, can only be fixed correctly all at
+        once)."""
+        _rewritten, merged = self.mapping.apply_drift_relinks(self._mapping_drift["driftable"])
         self._mapping_drift["driftable"] = []
         self._refresh_all()
+        self._toast_drift_merges(merged)
+
+    def _toast_drift_merges(self, merged):
+        """merged: apply_drift_relinks' drop list (see its docstring) --
+        shared by _on_relink_drift and _set_new_palette, the two places a
+        drift relink can happen, so a converged/colliding merge is never
+        silent regardless of which one triggered it."""
+        if not merged:
+            return
+        parts = ", ".join(f"id {m['dropped_old_id']} into id {m['kept_old_id']}" for m in merged)
+        n = len(merged)
+        dialogs.toast(
+            self.toast_overlay,
+            f"{n} mapping entr{'y' if n == 1 else 'ies'} converged onto the same detected color "
+            f"and were merged: {parts}.",
+        )
 
     # ------------------------------------------------------------ row builders
 
@@ -1551,6 +1588,17 @@ class MainWindow(Adw.ApplicationWindow):
             # Files on disk just changed -- the old mapping's ids point at
             # colors that no longer exist, so re-scan and start fresh.
             self._finish_detection(detect_diff.run_detect(self.config), persist=True)
+            # A converged or case-1-colliding apply is CERTAIN to have left
+            # the mapping pointing at stale ids -- in both, the replaced
+            # color now coincides with another real detected color, so the
+            # rescan collapses two old_ids into one (see
+            # mapping_store.apply_drift_relinks). Unlike ordinary drift
+            # (possible, not certain, so left for the user to confirm via
+            # the "Re-link" warning), relink right away instead of making
+            # the user click through a warning for something we already know
+            # happened.
+            if (convergence or collisions) and self._mapping_drift.get("driftable"):
+                self._on_relink_drift()
             restart_actions.write_wallpaper_state(self.config, self.new_palette_path)
             actions = restart_actions.read_restart_actions(self.config)
             started = restart_actions.run_enabled(

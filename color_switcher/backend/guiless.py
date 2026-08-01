@@ -85,21 +85,44 @@ def apply_palette(
 
     Returns a dict with "status" in
         {"empty_mapping", "insufficient_palette", "needs_confirmation",
-         "conflicts", "applied"}. On "applied", "reorder_warning" is a string
+         "conflicts", "applied"}. Every status except "empty_mapping" also
+        carries "pre_apply_drift" -- mapping_store.check_and_relink_drift's
+        result for the mapping BEFORE this call did anything else with it
+        (see that function), so a caller can report a relink/merge/orphan
+        that happened even if the run didn't get as far as "applied". On
+        "applied", "reorder_warning" is a string
         (mapping_store.resolve_apply_targets' tier="compacted" warning) when
         the palette was too small for the mapping's highest new_id and had to
-        be compacted, else None.
+        be compacted, else None; "collisions"/"convergence" (only ever
+        non-empty when this was force-applied despite them, since otherwise
+        "conflicts" would have been returned instead) are the same lists
+        conflicts.find_case1_collisions/find_target_convergence produce, for
+        a caller that wants to auto-relink the mapping's now-certainly-stale
+        ids -- both cases leave the replaced color coinciding with another
+        real detected color, so a rescan collapses two old_ids into one --
+        see mapping_store.apply_drift_relinks.
     """
     if isinstance(mapping_path, mapping_store.MappingStore):
-        old_palette_path, entries = mapping_path.old_palette, mapping_path.resolved_entries()
+        store = mapping_path
     else:
-        old_palette_path, _new_palette_path, entries = mapping_store.read_mapping_csv(
-            mapping_path, project_dir=project_dir
-        )
-    if not entries:
+        store = mapping_store.MappingStore(mapping_path, project_dir=project_dir).load()
+    if not store.resolved_entries():
         return {"status": "empty_mapping"}
+    old_palette_path = store.old_palette
 
     detected_colors = color_detector.read_detected_csv(old_palette_path)
+    # store may have sat inactive since it was last touched -- its old_ids
+    # could be silently WRONG against detected_colors (coincidentally reused
+    # by a different real color since then, since ids are just a rank
+    # recomputed every scan). Resolve that now, BEFORE the collision/
+    # convergence checks below (which are computed from old_id too, and
+    # would just be checking garbage otherwise) and before it's used to
+    # apply anything. persist=False for a dry-run/simulate -- store.entries
+    # is corrected in memory either way, so the simulated result is
+    # accurate, but nothing is written to disk for a run that's not real.
+    pre_apply_drift = mapping_store.check_and_relink_drift(store, detected_colors, persist=not dry_run)
+    entries = store.resolved_entries()
+
     palette = _load_palette(palette_source)
 
     assigned_palette = [
@@ -109,12 +132,13 @@ def apply_palette(
 
     resolution = mapping_store.resolve_apply_targets(entries, assigned_palette)
     if resolution["tier"] == "blocked":
-        return {"status": "insufficient_palette",
+        return {"status": "insufficient_palette", "pre_apply_drift": pre_apply_drift,
                 "needed": resolution["needed"], "available": resolution["available"]}
 
     surplus_palette_count = resolution["available"] - resolution["needed"]
     if surplus_palette_count and not yolo:
-        return {"status": "needs_confirmation", "surplus_palette_count": surplus_palette_count}
+        return {"status": "needs_confirmation", "pre_apply_drift": pre_apply_drift,
+                "surplus_palette_count": surplus_palette_count}
 
     resolved_entries = resolution["final_entries"]
 
@@ -124,7 +148,8 @@ def apply_palette(
         detected_colors, assigned_palette, resolved_entries, sibling_groups=siblings
     )
     if (collisions or convergence) and not force:
-        return {"status": "conflicts", "conflicts": collisions, "convergence": convergence}
+        return {"status": "conflicts", "pre_apply_drift": pre_apply_drift,
+                "conflicts": collisions, "convergence": convergence}
 
     results = color_replacer.apply_mapping(
         detected_colors, assigned_palette, resolved_entries, backup_dir, dry_run=dry_run
@@ -138,19 +163,21 @@ def apply_palette(
         # The colors just replaced no longer exist in the files BY DESIGN --
         # re-stamp this mapping's identity to the NEW colors now actually
         # there, so the post-apply drift refresh doesn't mistake "I just
-        # replaced this" for real drift and flag it orphaned.
-        if isinstance(mapping_path, mapping_store.MappingStore):
-            applied_store = mapping_path
-        else:
-            applied_store = mapping_store.MappingStore(mapping_path, project_dir=project_dir).load()
-        applied_store.entries = mapping_store.stamp_applied_entries(
-            applied_store.entries, resolved_entries, assigned_palette, detected_colors,
+        # replaced this" for real drift and flag it orphaned. Reuses the
+        # SAME store the drift-check above already relinked in memory --
+        # a fresh reload here would just be wasted I/O (its relink was
+        # already persisted above, this store already reflects it).
+        store.entries = mapping_store.stamp_applied_entries(
+            store.entries, resolved_entries, assigned_palette, detected_colors,
         )
-        applied_store.save()
+        store.save()
     return {
         "status": "applied",
         "results": results,
         "stale_mapping_warning": bool(collisions or convergence) and force,
+        "pre_apply_drift": pre_apply_drift,
+        "collisions": collisions,
+        "convergence": convergence,
         "reorder_warning": resolution["warning"],
         "role_collisions": role_collisions,
         "pair_collisions": pair_collisions,
